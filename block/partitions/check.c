@@ -34,6 +34,7 @@
 #include "efi.h"
 #include "karma.h"
 #include "sysv68.h"
+#include "cmdline.h"
 #include "emmc.h"
 #include "part_ufs.h"
 
@@ -74,6 +75,9 @@ static int (*check_part[])(struct parsed_partitions *) = {
 	adfspart_check_ADFS,
 #endif
 
+#ifdef CONFIG_CMDLINE_PARTITION
+	cmdline_partition,
+#endif
 #ifdef CONFIG_EFI_PARTITION
 	efi_partition,		/* this must come before msdos */
 #endif
@@ -194,7 +198,7 @@ check_partition(struct gendisk *hd, struct block_device *bdev)
 	else if (warn_no_part)
 		strlcat(state->pp_buf, " unable to read partition table\n", PAGE_SIZE);
 
-		printk(KERN_INFO "%s", state->pp_buf);
+	printk(KERN_INFO "%s", state->pp_buf);
 
 	free_page((unsigned long)state->pp_buf);
 	free_partitions(state);
