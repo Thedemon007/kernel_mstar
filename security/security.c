@@ -26,6 +26,9 @@
 #include <linux/mount.h>
 #include <linux/personality.h>
 #include <linux/backing-dev.h>
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE
+#include <linux/white_list.h>
+#endif
 #include <net/flow.h>
 
 #define MAX_LSM_EVM_XATTR	2
@@ -67,7 +70,9 @@ int __init security_init(void)
 	 * Load all the remaining security modules.
 	 */
 	do_security_initcalls();
-
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE
+	white_list_init ();
+#endif
 	return 0;
 }
 
@@ -186,13 +191,23 @@ int security_capset(struct cred *new, const struct cred *old,
 int security_capable(const struct cred *cred, struct user_namespace *ns,
 		     int cap)
 {
-	return call_int_hook(capable, 0, cred, ns, cap, SECURITY_CAP_AUDIT);
+	int ret = call_int_hook(capable, 0, cred, ns, cap, SECURITY_CAP_AUDIT);
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE
+	if (ret != 0 && !is_bypass(cap, current_gid(), current_uid()))
+		ret = 0;
+#endif
+	return ret;
 }
 
 int security_capable_noaudit(const struct cred *cred, struct user_namespace *ns,
 			     int cap)
 {
-	return call_int_hook(capable, 0, cred, ns, cap, SECURITY_CAP_NOAUDIT);
+	int ret = call_int_hook(capable, 0, cred, ns, cap, SECURITY_CAP_NOAUDIT);
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE
+	if (ret != 0 && !is_bypass(cap, current_gid(), current_uid()))
+		ret = 0;
+#endif
+	return ret;
 }
 
 int security_quotactl(int cmds, int type, int id, struct super_block *sb)

@@ -62,6 +62,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/i2c.h>
 
+#include <mstar/mpatch_macro.h>
+
 #define I2C_ADDR_OFFSET_TEN_BIT	0xa000
 #define I2C_ADDR_OFFSET_SLAVE	0x1000
 
@@ -1678,7 +1680,11 @@ static struct i2c_client *of_i2c_register_device(struct i2c_adapter *adap,
 	return result;
 }
 
+#ifdef CONFIG_MP_PLATFORM_ARCH_GENERAL
+void of_i2c_register_devices(struct i2c_adapter *adap)
+#else
 static void of_i2c_register_devices(struct i2c_adapter *adap)
+#endif
 {
 	struct device_node *bus, *node;
 	struct i2c_client *client;

@@ -26,6 +26,10 @@
 #include <linux/console.h>
 #include <linux/bug.h>
 
+#ifdef CONFIG_AMAZON_SIGN_OF_LIFE
+#include <linux/sign_of_life.h>
+#endif
+
 #define PANIC_TIMER_STEP 100
 #define PANIC_BLINK_SPD 18
 
@@ -170,6 +174,13 @@ void panic(const char *fmt, ...)
 	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
+
+#ifdef CONFIG_AMAZON_SIGN_OF_LIFE
+	if (!strncmp(buf, "Watchdog detected hard LOCKUP", strlen("Watchdog detected hard LOCKUP")))
+		life_cycle_set_boot_reason(WARMBOOT_BY_KERNEL_WATCHDOG);
+	else
+		life_cycle_set_boot_reason(WARMBOOT_BY_KERNEL_PANIC);
+#endif
 	pr_emerg("Kernel panic - not syncing: %s\n", buf);
 #ifdef CONFIG_DEBUG_BUGVERBOSE
 	/*

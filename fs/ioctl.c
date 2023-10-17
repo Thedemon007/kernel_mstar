@@ -473,9 +473,13 @@ int ioctl_preallocate(struct file *filp, void __user *argp)
 
 	return vfs_fallocate(filp, FALLOC_FL_KEEP_SIZE, sr.l_start, sr.l_len);
 }
-
+#ifdef CONFIG_MP_CMA_PATCH_POOL_UTOPIA_TO_KERNEL
+int file_ioctl(struct file *filp, unsigned int cmd,
+		unsigned long arg)
+#else
 static int file_ioctl(struct file *filp, unsigned int cmd,
 		unsigned long arg)
+#endif
 {
 	struct inode *inode = file_inode(filp);
 	int __user *p = (int __user *)arg;
@@ -492,6 +496,9 @@ static int file_ioctl(struct file *filp, unsigned int cmd,
 
 	return vfs_ioctl(filp, cmd, arg);
 }
+#ifdef CONFIG_MP_CMA_PATCH_POOL_UTOPIA_TO_KERNEL
+EXPORT_SYMBOL(file_ioctl);
+#endif
 
 static int ioctl_fionbio(struct file *filp, int __user *argp)
 {
@@ -695,3 +702,6 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 	fdput(f);
 	return error;
 }
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+EXPORT_SYMBOL(sys_ioctl);
+#endif

@@ -336,6 +336,18 @@
 
 #define KEY_MICMUTE		248	/* Mute / unmute the microphone */
 
+#define KEY_LAB126_TP_LOCK	249	/* Amazon Keyboard Lock screen */
+#define KEY_LAB126_TP_UNLOCK	250	/* Amazon Keyboard Unlock screen */
+
+#define KEY_QS_UP		251
+#define KEY_QS_DOWN		252
+#define KEY_QS_SELECT		253
+
+/* The conflict between KEY_SETTINGS and KEY_LAB126_TP_LOCK above is not an issue at run time because of different consumers. */
+#define KEY_SETTINGS		249
+
+
+
 /* Code 255 is reserved for special needs of AT keyboard driver */
 
 #define BTN_MISC		0x100
@@ -642,6 +654,9 @@
  */
 #define KEY_DATA			0x277
 
+/* Add key for Amazon FireTV remote fall back feature */
+#define KEY_IRFALLBACK                  0x278
+
 #define BTN_TRIGGER_HAPPY		0x2c0
 #define BTN_TRIGGER_HAPPY1		0x2c0
 #define BTN_TRIGGER_HAPPY2		0x2c1
@@ -684,6 +699,16 @@
 #define BTN_TRIGGER_HAPPY39		0x2e6
 #define BTN_TRIGGER_HAPPY40		0x2e7
 
+
+/*Amazon customized key */
+#define KEY_APP1                    0x2e8
+#define KEY_APP2                    0x2e9
+#define KEY_APP3                    0x2ea
+#define KEY_APP4                    0x2eb
+#define KEY_VNUMPAD		    0x2ec
+#define KEY_POWER_CEC		    0x2ed
+#define KEY_APP5		    0x2ee
+#define KEY_YOUTUBE		    0x2ef
 /* We avoid low common keys in module aliases so they don't get huge. */
 #define KEY_MIN_INTERESTING	KEY_MUTE
 #define KEY_MAX			0x2ff

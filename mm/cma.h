@@ -11,7 +11,35 @@ struct cma {
 	struct hlist_head mem_head;
 	spinlock_t mem_head_lock;
 #endif
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+	struct cma_measurement *cma_measurement_ptr;
+#endif
 };
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+#define CMA_HEAP_MEASUREMENT_LENG 96
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+struct cma_measurement {
+	const char *cma_heap_name;
+	unsigned int cma_heap_id;
+	struct mutex cma_measurement_lock;
+
+	/* Measure Node Start */
+	unsigned long total_alloc_size_kb;
+	unsigned long total_alloc_time_cost_ms;
+
+	unsigned long total_migration_size_kb;
+	unsigned long total_migration_time_cost_ms;
+	/* Measure Node End */
+
+	/* Reset Node Start */
+	unsigned long cma_measurement_reset;
+	/* Reset Node End */
+};
+#endif
 
 extern struct cma cma_areas[MAX_CMA_AREAS];
 extern unsigned cma_area_count;

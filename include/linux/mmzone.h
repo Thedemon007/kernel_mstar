@@ -139,6 +139,9 @@ enum zone_stat_item {
 	NUMA_OTHER,		/* allocation from other node */
 #endif
 	NR_FREE_CMA_PAGES,
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	NR_ALLOC_BATCH,
+#endif
 	NR_VM_ZONE_STAT_ITEMS };
 
 enum node_stat_item {
@@ -490,11 +493,38 @@ struct zone {
 
 	bool			contiguous;
 
+#ifdef CONFIG_CMA
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	unsigned int total_CMA_size;
+	unsigned int CMA_threshold_low;
+	unsigned int CMA_threshold_high;
+	unsigned long zone_reserve_pages;
+#endif
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	unsigned long managed_cma_pages;
+	/*
+	 * Number of allocation attempt on each movable/cma type
+	 * without switching type. max_try(movable/cma) maintain
+	 * predefined calculated counter and replenish nr_try_(movable/cma)
+	 * with each of them whenever both of them are 0.
+	 */
+	int nr_try_movable;
+	int nr_try_cma;
+	int max_try_movable;
+	int max_try_cma;
+#endif //CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+#endif  //CONFIG_CMA
+
 	ZONE_PADDING(_pad3_)
 	/* Zone statistics */
 	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
 } ____cacheline_internodealigned_in_smp;
 
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+enum zone_flags {
+	ZONE_FAIR_DEPLETED,		/* fair zone policy batch depleted */
+};
+#endif
 enum pgdat_flags {
 	PGDAT_CONGESTED,		/* pgdat has many dirty pages backed by
 					 * a congested BDI

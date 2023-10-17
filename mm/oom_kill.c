@@ -42,6 +42,9 @@
 #include <asm/tlb.h>
 #include "internal.h"
 
+#ifdef CONFIG_NETFLIX_CRASH_MONITOR
+#include "crashmonitor.h"
+#endif
 #define CREATE_TRACE_POINTS
 #include <trace/events/oom.h>
 
@@ -851,6 +854,9 @@ static void oom_kill_process(struct oom_control *oc, const char *message)
 	if (__ratelimit(&oom_rs))
 		dump_header(oc, p);
 
+#ifdef CONFIG_NETFLIX_CRASH_MONITOR
+        crash_monitor(p,OOM);
+#endif
 	pr_err("%s: Kill process %d (%s) score %u or sacrifice child\n",
 		message, task_pid_nr(p), p->comm, points);
 

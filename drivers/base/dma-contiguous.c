@@ -11,7 +11,12 @@
  * License or (at your optional) any later version of the license.
  */
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+/* for using pr_info */
+#define pr_fmt(fmt) "\033[31mFunction = %s, Line = %d, cma: \033[m" fmt , __PRETTY_FUNCTION__, __LINE__
+#else
 #define pr_fmt(fmt) "cma: " fmt
+#endif
 
 #ifdef CONFIG_CMA_DEBUG
 #ifndef DEBUG
@@ -26,6 +31,8 @@
 #include <linux/err.h>
 #include <linux/sizes.h>
 #include <linux/dma-contiguous.h>
+#include <mma_of.h>
+#include <linux/ion.h>
 #include <linux/cma.h>
 
 #ifdef CONFIG_CMA_SIZE_MBYTES
@@ -35,6 +42,420 @@
 #endif
 
 struct cma *dma_contiguous_default_area;
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+#include <cma.h> // under mm, for struct cma
+#include "mdrv_types.h"
+#include "mdrv_system.h"
+/* To store every mstar driver cma_buffer size, including default cma_buffer with index is 0 */
+struct CMA_BootArgs_Config cma_config[MAX_CMA_AREAS];
+struct device mstar_cma_device[MAX_CMA_AREAS];
+int mstar_driver_boot_cma_buffer_num = 0;
+
+struct cma *mstar_cma_device_area[MAX_CMA_AREAS];
+
+EXPORT_SYMBOL(cma_config);
+EXPORT_SYMBOL(mstar_cma_device);
+EXPORT_SYMBOL(mstar_driver_boot_cma_buffer_num);
+
+/*
+  * if  start address has been specified, only convert it to cpu bus address;
+  * else, find start address
+  */
+static bool GetReservedPhysicalAddr(unsigned char miu, unsigned long *start,
+    unsigned long *size)
+
+{
+    unsigned long alignstart = 0, alignfactor = pageblock_nr_pages*PAGE_SIZE;
+
+    if(miu < 0 || miu > 3 || *size == 0)
+        goto GetReservedPhysicalAddr_Fail;
+
+    if(*start != CMA_HEAP_MIUOFFSET_NOCARE)
+    {
+        if(!IS_ALIGNED(*start, alignfactor))
+            goto GetReservedPhysicalAddr_Fail;
+    }
+
+    if(!IS_ALIGNED(*size, alignfactor))
+        goto GetReservedPhysicalAddr_Fail;
+
+    if(*start == CMA_HEAP_MIUOFFSET_NOCARE)
+        return true;
+
+    switch (miu)
+    {
+        case 0:
+        {
+            alignstart = *start + ARM_MIU0_BUS_BASE;
+            break;
+        }
+        case 1:
+        {
+            alignstart = *start + ARM_MIU1_BUS_BASE;
+            break;
+        }
+        case 2:
+        {
+            alignstart = *start + ARM_MIU2_BUS_BASE;
+            break;
+        }
+        case 3:
+        {
+            alignstart = *start + ARM_MIU3_BUS_BASE;
+            break;
+        }
+    }
+
+    *start = alignstart;
+    return true;
+
+GetReservedPhysicalAddr_Fail:
+    printk(CMA_ERR "error: invalid parameters\n");
+    *start = 0;
+    *size = 0;
+    return false;
+}
+
+extern phys_addr_t arm_lowmem_limit;
+static unsigned long _find_in_range(phys_addr_t start, phys_addr_t end, phys_addr_t size, phys_addr_t alignfactor)
+{
+    phys_addr_t ret = 0;
+
+    if((arm_lowmem_limit > start) && (arm_lowmem_limit < end))
+    {
+		/* find from lowmem first*/
+        ret = memblock_find_in_range(start, arm_lowmem_limit, size, alignfactor);
+        if(ret > 0)
+		{
+			//printk("\033[35mFunction = %s, Line = %d, find cma_buffer range from 0x%X to 0x%X\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, arm_lowmem_limit);
+            return ret;
+		}
+
+		/* find from highmem */
+        ret = memblock_find_in_range(arm_lowmem_limit, end, size, alignfactor);
+        if(ret > 0)
+		{
+			//printk("\033[35mFunction = %s, Line = %d, find cma_buffer range from 0x%X to 0x%X\033[m\n", __PRETTY_FUNCTION__, __LINE__, arm_lowmem_limit, end);
+            return ret;
+		}
+    }
+    else if(end > start)
+    {
+        ret = memblock_find_in_range(start, end, size, alignfactor);
+        if(ret > 0)
+		{
+			//printk("\033[35mFunction = %s, Line = %d, find cma_buffer range from 0x%X to 0x%X\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, end);
+            return ret;
+		}
+    }
+
+	printk(CMA_ERR "\033[35mFunction = %s, Line = %d, ERROR!!\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+    return ret;
+}
+
+static unsigned long find_start_addr(unsigned char miu, unsigned long size)
+{
+    unsigned long ret = 0;
+    unsigned long alignfactor = pageblock_nr_pages*PAGE_SIZE;
+
+    switch (miu)
+    {
+        case 0:
+        {
+            ret = _find_in_range(ARM_MIU0_BUS_BASE, ARM_MIU1_BUS_BASE, size, alignfactor);
+            break;
+        }
+        case 1:
+        {
+            ret = _find_in_range(ARM_MIU1_BUS_BASE, ARM_MIU2_BUS_BASE, size, alignfactor);
+            break;
+        }
+        case 2:
+        {
+            ret = _find_in_range(ARM_MIU2_BUS_BASE, ARM_MIU3_BUS_BASE, size, alignfactor);
+            break;
+        }
+        case 3:
+        {
+            ret = _find_in_range(ARM_MIU3_BUS_BASE, CMA_HEAP_MIUOFFSET_NOCARE, size, alignfactor);
+            break;
+        }
+        default:
+            return 0;
+    }
+    return ret;
+}
+
+static bool parse_heap_config(char *cmdline, struct CMA_BootArgs_Config * heapconfig)
+{
+    char *option;
+    int leng = 0;
+    bool has_start = false;
+
+    if(cmdline == NULL)
+        goto INVALID_HEAP_CONFIG;
+
+    option = strstr(cmdline, ",");
+    leng = (int)(option - cmdline);
+    if(leng > (CMA_HEAP_NAME_LENG-1))
+        leng = CMA_HEAP_NAME_LENG -1;
+
+    strncpy(heapconfig->name, cmdline, leng);
+    heapconfig->name[leng] = '\0';
+
+    option = strstr(cmdline, "st=");
+    if(option != NULL)
+        has_start = true;
+
+    option = strstr(cmdline, "sz=");
+    if(option == NULL)
+        goto INVALID_HEAP_CONFIG;
+
+    option = strstr(cmdline, "hid=");
+    if(option == NULL)
+        goto INVALID_HEAP_CONFIG;
+
+
+    option = strstr(cmdline, "miu=");
+    if(option == NULL)
+        goto INVALID_HEAP_CONFIG;
+
+    if(has_start)
+    {
+        sscanf(option, "miu=%d,hid=%d,sz=%lx,st=%lx", &heapconfig->miu,
+        &heapconfig->pool_id, &heapconfig->size, &heapconfig->start);
+    }
+    else
+    {
+        sscanf(option, "miu=%d,hid=%d,sz=%lx", &heapconfig->miu,
+        &heapconfig->pool_id, &heapconfig->size);
+
+        heapconfig->start = CMA_HEAP_MIUOFFSET_NOCARE;
+    }
+
+    if(!GetReservedPhysicalAddr(heapconfig->miu, &heapconfig->start, &heapconfig->size))
+        goto INVALID_HEAP_CONFIG;
+
+    return true;
+
+INVALID_HEAP_CONFIG:
+	heapconfig->size = 0;
+	return false;
+}
+
+int __init setup_cma0_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma0 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma1_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma1 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma2_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma2 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+#ifdef CONFIG_MP_MMA_CMA_ENABLE
+int __init deal_with_ion_cma(void)
+{
+    bool has_start = false;
+    int miu_nu=0,i=0;
+    struct CMA_BootArgs_Config  *heapconfig ;
+    char cma_name[15];
+    int max_heapid = 0;
+
+    memset(cma_name, '\0', 15);
+    strcpy(cma_name, "ION_MMA_CMA");
+
+    miu_nu = mma_of_get_miu_number();
+    for (i = 0; i < mstar_driver_boot_cma_buffer_num; i++) {
+		if (cma_config[i].pool_id > max_heapid)
+			max_heapid = cma_config[i].pool_id;
+    }
+
+    for(i=0;i<miu_nu;i++)
+    {
+        heapconfig = &cma_config[mstar_driver_boot_cma_buffer_num];
+        heapconfig->size = mma_of_get_cma_size(i);
+		//printk("%s %d size=0x%llx ,max_heapid=%d\n"
+		//,__FUNCTION__,i,heapconfig->size,max_heapid);
+        if(heapconfig->size == -1)
+            continue;
+		cma_name[11] = '0' + i; //ION_MMA_CMAx
+		memset(heapconfig->name, '\0', 32);
+		memcpy(heapconfig->name, cma_name, 15);
+		heapconfig->miu = i;
+		heapconfig->pool_id = ++max_heapid;
+		heapconfig->start = mma_of_get_cma_addr(i);
+		//printk("%s %d name=%s ,addr=0x%llx\n",__FUNCTION__,i,heapconfig->name,heapconfig->start);
+        if(heapconfig->start < 0 )
+            heapconfig->start = CMA_HEAP_MIUOFFSET_NOCARE;
+        if(!GetReservedPhysicalAddr(heapconfig->miu, &heapconfig->start, &heapconfig->size))
+            goto INVALID_HEAP_CONFIG;
+
+        mstar_driver_boot_cma_buffer_num++;
+    }
+    return true;
+
+INVALID_HEAP_CONFIG:
+	heapconfig->size = 0;
+	return false;
+
+
+}
+#endif
+int __init setup_cma3_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma3 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma4_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma4 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma5_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma5 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma6_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma6 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma7_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma7 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma8_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma8 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+int __init setup_cma9_info(char *cmdline)
+{
+    if(!parse_heap_config(cmdline, &cma_config[mstar_driver_boot_cma_buffer_num]))
+        printk(CMA_ERR "error: cma9 args invalid\n");
+    else
+        mstar_driver_boot_cma_buffer_num++;
+
+    return 0;
+}
+
+#ifdef CONFIG_MP_MMA_UMA_WITH_NARROW
+u64 mma_dma_zone_size;
+
+int __init setup_dma_size(char *cmdline)
+{
+	sscanf(cmdline,"%lx",&mma_dma_zone_size);
+	return 0;
+}
+#endif
+
+early_param("CMA0", setup_cma0_info);
+early_param("CMA1", setup_cma1_info);
+early_param("CMA2", setup_cma2_info);
+early_param("CMA3", setup_cma3_info);
+early_param("CMA4", setup_cma4_info);
+early_param("CMA5", setup_cma5_info);
+early_param("CMA6", setup_cma6_info);
+early_param("CMA7", setup_cma7_info);
+early_param("CMA8", setup_cma8_info);
+early_param("CMA9", setup_cma9_info);
+#ifdef CONFIG_MP_MMA_UMA_WITH_NARROW
+early_param("DMA_SIZE", setup_dma_size);
+#endif
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+signed long long Show_Diff_Time(char *caller, ktime_t start_time, bool print)
+{
+	ktime_t cost_time = ktime_sub(ktime_get_real(), start_time);
+	do_div(cost_time.tv64, NSEC_PER_MSEC);
+	if(print)
+		printk(KERN_NOTICE "\033[35m%s costs %lld ms\033[m\n\n", caller, cost_time.tv64);
+	else
+		printk(KERN_DEBUG "\033[35m%s costs %lld ms\033[m\n\n", caller, cost_time.tv64);
+
+	return cost_time.tv64;
+}
+
+struct cma *pfn_to_cma(unsigned long start)
+{
+	struct device *search_mstar_cma_device = &mstar_cma_device[0];
+	struct cma *device_cma;
+
+	int dma_declare_index = 0;
+
+	while(dma_declare_index < mstar_driver_boot_cma_buffer_num)
+	{
+		device_cma = dev_get_cma_area(search_mstar_cma_device);
+		//printk("\033[35mFunction = %s, Line = %d, device_cma start from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, device_cma->base_pfn, (device_cma->base_pfn + device_cma->count));
+
+		if( (device_cma->base_pfn <= start) && (start < (device_cma->base_pfn + device_cma->count)) )
+		{
+			//printk("\033[35mFunction = %s, Line = %d, get cma!!\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+			return device_cma;
+		}
+
+		dma_declare_index++;
+		search_mstar_cma_device++;
+	}
+
+	//printk("\033[35mFunction = %s, Line = %d, can not get cma\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+	return NULL;
+}
+#endif
 
 /*
  * Default global CMA area size can be defined in kernel's .config.
@@ -111,6 +532,16 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
 	phys_addr_t selected_limit = limit;
 	bool fixed = false;
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+	int i;
+	int dma_declare_index = 0;
+
+	/*
+	 *  mstar_cma_device store the device with successfully parsed cma buffer info
+	 */
+	struct device *declare_mstar_cma_device = &mstar_cma_device[0];
+#endif
+
 	pr_debug("%s(limit %08lx)\n", __func__, (unsigned long)limit);
 
 	if (size_cmdline != -1) {
@@ -133,14 +564,118 @@ void __init dma_contiguous_reserve(phys_addr_t limit)
 
 	if (selected_size && !dma_contiguous_default_area) {
 		pr_debug("%s: reserving %ld MiB for global area\n", __func__,
-			 (unsigned long)selected_size / SZ_1M);
-
+                        (unsigned long)selected_size / SZ_1M);
+#if 0//CONFIG_MP_MMA_UMA_WITH_NARROW
+		dma_contiguous_reserve_area(selected_size, limit,
+					    limit+selected_size*2,
+					    &dma_contiguous_default_area,
+					    fixed);
+#else
 		dma_contiguous_reserve_area(selected_size, selected_base,
 					    selected_limit,
 					    &dma_contiguous_default_area,
 					    fixed);
+#endif
 	}
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+	/*
+	 * add cma buffer from bootargs, and assigne it to the specific device
+	 * cma buffer is not limited in low memory, also can locate in high memory
+	 */
+
+	while(dma_declare_index < mstar_driver_boot_cma_buffer_num)
+	{
+		pr_info("\033[35mreserving %ld MiB for mstar_driver(%s, pool_id is %d)\033[m\n", cma_config[dma_declare_index].size / SZ_1M, cma_config[dma_declare_index].name, cma_config[dma_declare_index].pool_id);
+
+		BUG_ON(cma_config[dma_declare_index].size == 0);
+		if(CMA_HEAP_MIUOFFSET_NOCARE == cma_config[dma_declare_index].start)
+		{
+			pr_info("find cma_buffer start addr(@miu%d) for %s\033[m\n", cma_config[dma_declare_index].miu, cma_config[dma_declare_index].name);
+			cma_config[dma_declare_index].start = find_start_addr(cma_config[dma_declare_index].miu, cma_config[dma_declare_index].size);
+			BUG_ON(cma_config[dma_declare_index].start == 0);
+		}
+		//check if the reserved memory allocated across 2 memory zones: a part of it in normal zone, the other in high memory
+		if(cma_config[dma_declare_index].start > 0)
+		{
+			if((cma_config[dma_declare_index].start < arm_lowmem_limit)
+				&& (cma_config[dma_declare_index].start + cma_config[dma_declare_index].size > arm_lowmem_limit))
+			{
+				printk(CMA_ERR "Warning: reserved memory allocated across 2 memory zones!!!=========\n");
+			}
+		}
+		dma_contiguous_reserve_area(cma_config[dma_declare_index].size, cma_config[dma_declare_index].start, limit,
+										&mstar_cma_device_area[dma_declare_index], true);
+
+		declare_mstar_cma_device->coherent_dma_mask = ~0;	// not sure, this mask will be used in __dma_alloc while doing cma_alloc, 0xFFFFFFFF is for NULL device
+
+		declare_mstar_cma_device->init_name = cma_config[dma_declare_index].name;
+
+		dma_declare_index++;
+		declare_mstar_cma_device++;
+	}
+
+	//Ian
+	for (i = 0; i < mstar_driver_boot_cma_buffer_num; i++) {
+		if (!IS_ERR(mstar_cma_device_area[i])){
+			dev_set_cma_area(&mstar_cma_device[i], mstar_cma_device_area[i]);
+		}
+		else{
+			pr_info("cma_create_area No-%d cma struct fail\n", i);
+			BUG_ON(1);
+		}
+	}
+#endif
 }
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+void update_zone_total_cma_size(void)
+{
+	struct zone *zone;
+	int dma_declare_index = 0;
+
+	// reset dcma related element
+	for_each_populated_zone(zone) {
+		zone->CMA_threshold_low = 0;
+		zone->CMA_threshold_high = 0;
+		zone->total_CMA_size = 0;
+		printk(KERN_EMERG "\033[35mzone %s, srart 0x%lX, end 0x%lX\033[m\n", zone->name, zone->zone_start_pfn << PAGE_SHIFT, ((zone->zone_start_pfn + zone->spanned_pages) << PAGE_SHIFT));
+	}
+
+	// add default_cma buffer to zone->total_CMA_size
+	for_each_populated_zone(zone) {
+		if ((dma_contiguous_default_area->base_pfn >= zone->zone_start_pfn)
+			&& ((dma_contiguous_default_area->base_pfn + dma_contiguous_default_area->count) < (zone->zone_start_pfn + zone->spanned_pages))) {
+			printk(KERN_EMERG "\033[31mdefault_cma buffer belongs to zone(%s), size is %ld MiB\033[m\n", zone->name, (dma_contiguous_default_area->count << PAGE_SHIFT) / SZ_1M);
+			printk(KERN_EMERG "\033[31m    start 0x%lX, end 0x%lX\033[m\n", dma_contiguous_default_area->base_pfn << PAGE_SHIFT, (dma_contiguous_default_area->base_pfn + dma_contiguous_default_area->count) << PAGE_SHIFT);
+			zone->total_CMA_size += (dma_contiguous_default_area->count << PAGE_SHIFT) / SZ_1M;
+			break;
+		}
+	}
+
+	// add mstar_cma buffer to zone->total_CMA_size
+	while (dma_declare_index < mstar_driver_boot_cma_buffer_num) {
+		// to exclude OTHERS, OTHERS2, OTHERS3 heap(for heaps having prefix of <OTHERS>
+		// since these heaps always occupy memory and won't return back.
+		if (strncmp(cma_config[dma_declare_index].name, "OTHERS", 5)) {
+			for_each_populated_zone(zone) {
+				if ((cma_config[dma_declare_index].start >= (zone->zone_start_pfn << PAGE_SHIFT))
+					&& ((cma_config[dma_declare_index].start + cma_config[dma_declare_index].size) < ((zone->zone_start_pfn + zone->spanned_pages) << PAGE_SHIFT))) {
+					printk(KERN_EMERG "\033[31m\nheap %s belongs to zone(%s), size is %ld MiB\033[m\n", cma_config[dma_declare_index].name, zone->name, cma_config[dma_declare_index].size / SZ_1M);
+					printk(KERN_EMERG "\033[31m    start 0x%lX, end 0x%lX\033[m\n", cma_config[dma_declare_index].start, (cma_config[dma_declare_index].start + cma_config[dma_declare_index].size));
+					zone->total_CMA_size += cma_config[dma_declare_index].size / SZ_1M;
+					break;
+				}
+			}
+		} else
+			printk(KERN_EMERG "\033[31mheap %s having prefix of <OTHERS>, which will not be calculated to zone->total_CMA_size\033[m\n", cma_config[dma_declare_index].name);
+
+		dma_declare_index++;
+	}
+
+	return;
+}
+#endif
 
 /**
  * dma_contiguous_reserve_area() - reserve custom contiguous area

@@ -349,8 +349,15 @@ struct vfs_cap_data {
 
 #define CAP_AUDIT_READ		37
 
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_CAP_DELETE
+/* Overrides all DAC restrictions regarding files removal */
 
-#define CAP_LAST_CAP         CAP_AUDIT_READ
+#define CAP_DAC_OVERRIDE_RM	51
+
+#define CAP_LAST_CAP	CAP_DAC_OVERRIDE_RM
+#else
+#define CAP_LAST_CAP	CAP_AUDIT_READ
+#endif
 
 #define cap_valid(x) ((x) >= 0 && (x) <= CAP_LAST_CAP)
 

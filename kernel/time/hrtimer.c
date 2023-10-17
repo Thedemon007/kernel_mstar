@@ -53,7 +53,11 @@
 #include <asm/uaccess.h>
 
 #include <trace/events/timer.h>
+#if defined(CONFIG_MP_HRT_TIMER_ENABLE)
+long (*hrtimer_patch_function)(struct timespec *tu,struct timespec __user *rmtp) =NULL;
 
+EXPORT_SYMBOL_GPL(hrtimer_patch_function);
+#endif
 #include "tick-internal.h"
 
 /*
@@ -1589,6 +1593,9 @@ out:
 	destroy_hrtimer_on_stack(&t.timer);
 	return ret;
 }
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+EXPORT_SYMBOL(hrtimer_nanosleep);
+#endif
 
 SYSCALL_DEFINE2(nanosleep, struct timespec __user *, rqtp,
 		struct timespec __user *, rmtp)
@@ -1600,7 +1607,10 @@ SYSCALL_DEFINE2(nanosleep, struct timespec __user *, rqtp,
 
 	if (!timespec_valid(&tu))
 		return -EINVAL;
-
+	#if defined(CONFIG_MP_HRT_TIMER_ENABLE)
+	if(hrtimer_patch_function != NULL)
+		return hrtimer_patch_function(&tu,rmtp);
+	#endif
 	return hrtimer_nanosleep(&tu, rmtp, HRTIMER_MODE_REL, CLOCK_MONOTONIC);
 }
 

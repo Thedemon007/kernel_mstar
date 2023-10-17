@@ -19,6 +19,7 @@
 
 #define PSCI_POWER_STATE_TYPE_STANDBY		0
 #define PSCI_POWER_STATE_TYPE_POWER_DOWN	1
+#define PSCI_RET_EOPNOTSUPP            -1
 
 bool psci_tos_resident_on(int cpu);
 
@@ -51,6 +52,7 @@ struct psci_operations {
 
 extern struct psci_operations psci_ops;
 
+void __init psci_arm32_init(void);
 #if defined(CONFIG_ARM_PSCI_FW)
 int __init psci_dt_init(void);
 #else
@@ -64,6 +66,10 @@ bool __init acpi_psci_use_hvc(void);
 #else
 static inline int psci_acpi_init(void) { return 0; }
 static inline bool acpi_psci_present(void) { return false; }
+#endif
+
+#ifdef CONFIG_MP_PLATFORM_ARM
+int _ms_psci_ops_set(void);
 #endif
 
 #endif /* __LINUX_PSCI_H */

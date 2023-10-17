@@ -337,6 +337,9 @@ static int add_persist_attributes(struct device *dev)
 		/* Hubs are automatically enabled for USB_PERSIST,
 		 * no point in creating the attribute file.
 		 */
+#if (MP_USB_MSTAR == 1)
+		dev_attr_persist.attr.mode |= S_IRUGO | S_IWUGO;
+#endif
 		if (udev->descriptor.bDeviceClass != USB_CLASS_HUB)
 			rc = sysfs_add_file_to_group(&dev->kobj,
 					&dev_attr_persist.attr,

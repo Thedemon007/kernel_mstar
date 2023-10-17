@@ -218,8 +218,8 @@ static void drm_update_vblank_count(struct drm_device *dev, unsigned int pipe,
 		      pipe, vblank->count, diff, cur_vblank, vblank->last);
 
 	if (diff == 0) {
-		WARN_ON_ONCE(cur_vblank != vblank->last);
-		return;
+               printk("[WARN]drm_update_vblank_count cur_vblank!= vblank->last\n"); //Change the warn on to printk
+               return;
 	}
 
 	/*

@@ -54,13 +54,33 @@
 #include <linux/writeback.h>
 #include <linux/shm.h>
 #include <linux/kcov.h>
+#include <linux/cpufreq_times.h>
 
 #include "sched/tune.h"
+
+#if defined(CONFIG_MP_FindTaskStatus)
+#include "mdrv_FindTaskStatus.h"
+#endif
+#if defined(CONFIG_MP_BENCHMARK_ACCEL87) || defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+#include "mdrv_benchmark_optimize.h"
+#endif
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
+
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+struct Utopia2K_resource_collection{
+	void (*callback)(pid_t pid);
+};
+struct Utopia2K_resource_collection U2k_RC;
+
+void Utopia2K_resource_collection_Register(void (*callback)(pid_t pid)){
+	U2k_RC.callback = callback;
+}
+EXPORT_SYMBOL(Utopia2K_resource_collection_Register);
+#endif
 
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
@@ -171,6 +191,9 @@ void release_task(struct task_struct *p)
 {
 	struct task_struct *leader;
 	int zap_leader;
+#ifdef CONFIG_CPU_FREQ_TIMES
+	cpufreq_task_times_exit(p);
+#endif
 repeat:
 	/* don't need to get the RCU readlock here - the process is dead and
 	 * can't be modifying its own credentials. But shut RCU-lockdep up */
@@ -659,6 +682,10 @@ static void forget_original_parent(struct task_struct *father,
 	list_splice_tail_init(&father->children, &reaper->children);
 }
 
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+void notify_task_thread_zombie(struct task_struct  *tsk);
+#endif
+
 /*
  * Send signals to all our closest relatives so that they know
  * to properly mourn us..
@@ -687,6 +714,11 @@ static void exit_notify(struct task_struct *tsk, int group_dead)
 	} else {
 		autoreap = true;
 	}
+
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+	printk("\033[31mFunction = %s, Line = %d, notify_task_thread_zombie is not ready, thread_info is not in task->stack\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+	//notify_task_thread_zombie(tsk);
+#endif
 
 	tsk->exit_state = autoreap ? EXIT_DEAD : EXIT_ZOMBIE;
 	if (tsk->exit_state == EXIT_DEAD)
@@ -727,12 +759,67 @@ static void check_stack_usage(void)
 static inline void check_stack_usage(void) {}
 #endif
 
+#if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+extern struct cpu_scaling_list *bench_boost_list;
+extern struct cpu_scaling_list *app_boost_list;
+extern struct mutex app_boost_list_lock;
+extern struct mutex bench_boost_list_lock;
+#endif
+#if defined(CONFIG_MP_BENCHMARK_ACCEL87)
+extern struct cpu_scaling_list *accel87_list_head;
+extern struct cpu_scaling_list *TVOS_list_head;
+extern struct mutex accel87_list_lock;
+#endif
 void __noreturn do_exit(long code)
 {
 	struct task_struct *tsk = current;
 	int group_dead;
 	TASKS_RCU(int tasks_rcu_i);
+#if defined(CONFIG_MP_FindTaskStatus)
+if (tsk != NULL && tsk->comm != NULL) {
+	if (Get_Target_pid() == tsk->tgid) {
+		if (Get_Target_pid() == tsk->pid) {
+			printk("\033[0;41;37m do_exit:%s %d %d \033[m\n", tsk->comm, tsk->tgid, tsk->pid);
+			Delete_Target_pid();
+		}
+	}
+}
+#endif
+#if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+if (tsk!= NULL && tsk->comm != NULL)
+{
+  if (foundSpecialTask(bench_boost_name_list,tsk->comm,LIST_MAX_LENGTH)&& strcmp(tsk->comm,"sh") != 0) {
+      mutex_lock(&bench_boost_list_lock);
+      bench_boost_list=cpu_scaling_list_delete(bench_boost_list,tsk);
+      mutex_unlock(&bench_boost_list_lock);
+  } else if (foundSpecialTask(app_boost_name_list,tsk->comm,LIST_MAX_LENGTH) && strcmp(tsk->comm,"id") != 0) {
+      mutex_lock(&app_boost_list_lock);
+      app_boost_list = cpu_scaling_list_delete(app_boost_list,tsk);
+      mutex_unlock(&app_boost_list_lock);
+  }
+}
+#endif
+#if defined(CONFIG_MP_BENCHMARK_ACCEL87)
+if (tsk!= NULL && tsk->comm != NULL)
+{
+    if(strlen(tsk->comm) >= 4)
+    {
+        if (strstr(tsk->comm, "ABenchMark") || strstr(tsk->comm, "antutu2dtest") || strstr(tsk->comm, "antutu3dtest") || strstr(tsk->comm, "bench64") || strstr(tsk->comm, "remote2d") || strstr(tsk->comm, "benchmark.full") || strstr(tsk->comm, "tvbenchmark") || strstr(tsk->comm, "mark:remote3d")){
+          mutex_lock(&accel87_list_lock);
+          accel87_list_head = accel87_list_delete(accel87_list_head,tsk);
+          mutex_unlock(&accel87_list_lock);
+      }
 
+      //remove TVOS to list
+      if (strstr(tsk->comm, "tvos"))
+      {
+          mutex_lock(&accel87_list_lock);
+          TVOS_list_head = accel87_list_delete(TVOS_list_head,tsk);
+          mutex_unlock(&accel87_list_lock);
+      }
+    }
+}
+#endif
 	profile_task_exit(tsk);
 	kcov_task_exit(tsk);
 
@@ -833,6 +920,11 @@ void __noreturn do_exit(long code)
 	exit_task_work(tsk);
 	exit_thread(tsk);
 
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+	if(U2k_RC.callback)
+		U2k_RC.callback(tsk->pid);
+#endif
+
 	/*
 	 * Flush inherited counters to the parent - before the parent
 	 * gets woken up by child-exit notifications.
@@ -914,7 +1006,51 @@ void
 do_group_exit(int exit_code)
 {
 	struct signal_struct *sig = current->signal;
-
+        struct task_struct *tsk = current;
+#if defined(CONFIG_MP_FindTaskStatus)
+if (tsk != NULL && tsk->comm != NULL) {
+	if (Get_Target_pid() == tsk->tgid) {
+		if (Get_Target_pid() == tsk->pid) {
+			printk("\033[0;41;37m do_group_exit:%s %d %d \033[m\n", tsk->comm, tsk->tgid, tsk->pid);
+			Delete_Target_pid();
+		}
+	}
+}
+#endif
+#if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+if (tsk!= NULL && tsk->comm != NULL)
+{
+        if (foundSpecialTask(bench_boost_name_list,tsk->comm,LIST_MAX_LENGTH)&& strcmp(tsk->comm,"sh") != 0) {
+            mutex_lock(&bench_boost_list_lock);
+            bench_boost_list=cpu_scaling_list_delete(bench_boost_list,tsk);
+            mutex_unlock(&bench_boost_list_lock);
+        } else if (foundSpecialTask(app_boost_name_list,tsk->comm,LIST_MAX_LENGTH) && strcmp(tsk->comm,"id") != 0) {
+            mutex_lock(&app_boost_list_lock);
+            app_boost_list = cpu_scaling_list_delete(app_boost_list,tsk);
+            mutex_unlock(&app_boost_list_lock);
+        }
+}
+#endif
+#if defined(CONFIG_MP_BENCHMARK_ACCEL87)
+if (tsk!= NULL && tsk->comm != NULL)
+{
+    if(strlen(tsk->comm) >= 4)
+    {
+        if (strstr(tsk->comm, "ABenchMark") || strstr(tsk->comm, "antutu2dtest") || strstr(tsk->comm, "antutu3dtest") || strstr(tsk->comm, "bench64") || strstr(tsk->comm, "remote2d") || strstr(tsk->comm, "benchmark.full") || strstr(tsk->comm, "tvbenchmark") || strstr(tsk->comm, "mark:remote3d")){
+            mutex_lock(&accel87_list_lock);
+            accel87_list_head = accel87_list_delete(accel87_list_head,tsk);
+            mutex_unlock(&accel87_list_lock);
+        }
+        //remove TVOS to list
+        if (strstr(tsk->comm, "tvos"))
+        {
+            mutex_lock(&accel87_list_lock);
+            TVOS_list_head = accel87_list_delete(TVOS_list_head,tsk);
+            mutex_unlock(&accel87_list_lock);
+        }
+    }
+}
+#endif
 	BUG_ON(exit_code & 0x80); /* core dumps don't get here */
 
 	if (signal_group_exit(sig))

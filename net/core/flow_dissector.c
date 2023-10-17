@@ -122,7 +122,7 @@ bool __skb_flow_dissect(const struct sk_buff *skb,
 	struct flow_dissector_key_keyid *key_keyid;
 	bool skip_vlan = false;
 	u8 ip_proto = 0;
-	bool ret;
+	bool ret = false;
 
 	if (!data) {
 		data = skb->data;

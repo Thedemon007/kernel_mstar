@@ -31,6 +31,9 @@ enum migrate_reason {
 extern char *migrate_reason_names[MR_TYPES];
 
 #ifdef CONFIG_MIGRATION
+#ifdef CONFIG_MP_CMA_PATCH_KSM_MIGRATION_FAILURE
+extern int migrate_replace_page(struct page *oldpage, struct page *newpage);
+#endif
 
 extern void putback_movable_pages(struct list_head *l);
 extern int migrate_page(struct address_space *,

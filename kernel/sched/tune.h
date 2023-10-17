@@ -16,6 +16,10 @@ struct target_nrg {
 
 int schedtune_cpu_boost(int cpu);
 int schedtune_task_boost(struct task_struct *tsk);
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+int schedtune_set_task_boost(struct task_struct *tsk, s64 boost);
+#endif
+
 
 int schedtune_prefer_idle(struct task_struct *tsk);
 
@@ -28,6 +32,9 @@ void schedtune_dequeue_task(struct task_struct *p, int cpu);
 
 #define schedtune_cpu_boost(cpu)  get_sysctl_sched_cfs_boost()
 #define schedtune_task_boost(tsk) get_sysctl_sched_cfs_boost()
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+#define schedtune_set_task_boost(tsk, boost) set_sysctl_sched_cfs_boost(tas, boost)
+#endif
 
 #define schedtune_exit_task(task) do { } while (0)
 
@@ -44,6 +51,9 @@ int schedtune_accept_deltas(int nrg_delta, int cap_delta,
 
 #define schedtune_cpu_boost(cpu)  0
 #define schedtune_task_boost(tsk) 0
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+#define schedtune_set_task_boost(tak, boost) 0
+#endif
 
 #define schedtune_exit_task(task) do { } while (0)
 

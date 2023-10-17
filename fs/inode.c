@@ -135,7 +135,6 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
-	atomic64_set(&inode->i_sequence, 0);
 	atomic_set(&inode->i_count, 1);
 	inode->i_op = &empty_iops;
 	inode->i_fop = &no_open_fops;
@@ -392,6 +391,14 @@ void __iget(struct inode *inode)
 {
 	atomic_inc(&inode->i_count);
 }
+
+#if (MP_NTFS3G_WRAP==1)
+void __iget_wrap(struct inode * inode)
+{
+	__iget(inode);
+}
+EXPORT_SYMBOL(__iget_wrap);
+#endif
 
 /*
  * get additional reference to inode; caller must already hold one.

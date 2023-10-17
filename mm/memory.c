@@ -2156,11 +2156,18 @@ static int wp_page_copy(struct fault_env *fe, pte_t orig_pte,
 		goto oom;
 
 	if (is_zero_pfn(pte_pfn(orig_pte))) {
-		new_page = alloc_zeroed_user_highpage_movable(vma, fe->address);
+		if (vma->vm_flags & VM_LOCKED)
+			new_page = __alloc_zeroed_user_highpage(0, vma, fe->address);
+		else
+			new_page = alloc_zeroed_user_highpage_movable(vma, fe->address);
 		if (!new_page)
 			goto oom;
 	} else {
-		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
+		if (vma->vm_flags & VM_LOCKED)
+			new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE & ~__GFP_MOVABLE, vma,
+				fe->address);
+		else
+			new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma,
 				fe->address);
 		if (!new_page)
 			goto oom;
@@ -2752,7 +2759,10 @@ static int do_anonymous_page(struct fault_env *fe)
 	/* Allocate our own private page. */
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
-	page = alloc_zeroed_user_highpage_movable(vma, fe->address);
+	if (vma->vm_flags & VM_LOCKED)
+		page = __alloc_zeroed_user_highpage(0, vma, fe->address);
+	else
+		page = alloc_zeroed_user_highpage_movable(vma, fe->address);
 	if (!page)
 		goto oom;
 
@@ -3195,7 +3205,10 @@ static int do_cow_fault(struct fault_env *fe, pgoff_t pgoff)
 	if (unlikely(anon_vma_prepare(vma)))
 		return VM_FAULT_OOM;
 
-	new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, fe->address);
+	if (vma->vm_flags & VM_LOCKED)
+		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE & ~__GFP_MOVABLE, vma, fe->address);
+	else
+		new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, fe->address);
 	if (!new_page)
 		return VM_FAULT_OOM;
 

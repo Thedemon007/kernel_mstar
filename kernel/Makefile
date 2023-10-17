@@ -11,6 +11,14 @@ obj-y     = fork.o exec_domain.o panic.o \
 	    notifier.o ksysfs.o cred.o reboot.o \
 	    async.o range.o smpboot.o ucount.o
 
+# compatiblity with mstar
+EXTRA_CFLAGS      +=  -Idrivers/mstar/mbx/drv
+EXTRA_CFLAGS      +=  -Idrivers/mstar/include
+
+# compatiblity with mstar2
+EXTRA_CFLAGS      +=  -Idrivers/mstar2/drv/mbx
+EXTRA_CFLAGS      +=  -Idrivers/mstar2/include
+
 obj-$(CONFIG_MULTIUSER) += groups.o
 
 ifdef CONFIG_FUNCTION_TRACER
@@ -43,6 +51,7 @@ obj-y += irq/
 obj-y += rcu/
 obj-y += livepatch/
 
+obj-$(CONFIG_MP_HRT_TIMER_ENABLE) += hrtimer-patch.o
 obj-$(CONFIG_CHECKPOINT_RESTORE) += kcmp.o
 obj-$(CONFIG_FREEZER) += freezer.o
 obj-$(CONFIG_PROFILING) += profile.o
@@ -97,6 +106,9 @@ obj-$(CONFIG_TRACEPOINTS) += tracepoint.o
 obj-$(CONFIG_LATENCYTOP) += latencytop.o
 obj-$(CONFIG_ELFCORE) += elfcore.o
 obj-$(CONFIG_FUNCTION_TRACER) += trace/
+#Add for KDEBUGD
+obj-$(CONFIG_KDEBUGD)   += kdebugd/
+###############
 obj-$(CONFIG_TRACING) += trace/
 obj-$(CONFIG_TRACE_CLOCK) += trace/
 obj-$(CONFIG_RING_BUFFER) += trace/

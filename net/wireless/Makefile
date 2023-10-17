@@ -19,7 +19,7 @@ CFLAGS_trace.o := -I$(src)
 
 ccflags-y += -D__CHECK_ENDIAN__
 
-$(obj)/regdb.c: $(src)/db.txt $(src)/genregdb.awk
+$(obj)/regdb.c: $(src)/db$(REGDB_SUFFIX).txt $(src)/genregdb.awk
 	@$(AWK) -f $(srctree)/$(src)/genregdb.awk < $< > $@
 
 clean-files := regdb.c

@@ -17,7 +17,9 @@
 
 #include <linux/types.h>
 #include <linux/idr.h>
+#ifdef CONFIG_TEE_3_2
 #include <linux/kref.h>
+#endif
 #include <linux/list.h>
 #include <linux/tee.h>
 
@@ -29,11 +31,12 @@
 #define TEE_SHM_MAPPED		BIT(0)	/* Memory mapped by the kernel */
 #define TEE_SHM_DMA_BUF		BIT(1)	/* Memory with dma-buf handle */
 #define TEE_SHM_EXT_DMA_BUF	BIT(2)	/* Memory with dma-buf handle */
-#define TEE_SHM_REGISTER	BIT(3)  /* Memory registered in secure world */
-#define TEE_SHM_USER_MAPPED	BIT(4)  /* Memory mapped in user space */
-#define TEE_SHM_POOL		BIT(5)  /* Memory allocated from pool */
+#ifdef CONFIG_TEE_3_2
+#define TEE_SHM_REGISTER		BIT(3)  /* Memory registered in secure world */
+#define TEE_SHM_USER_MAPPED	 BIT(4)  /* Memory mapped in user space */
+#define TEE_SHM_POOL			BIT(5)  /* Memory allocated from pool */
+#endif
 
-struct device;
 struct tee_device;
 struct tee_shm;
 struct tee_shm_pool;
@@ -43,17 +46,19 @@ struct tee_shm_pool;
  * @teedev:	pointer to this drivers struct tee_device
  * @list_shm:	List of shared memory object owned by this context
  * @data:	driver specific context data, managed by the driver
- * @refcount:	reference counter for this structure
+ * @refcount:   reference counter for this structure
  * @releasing:  flag that indicates if context is being released right now.
- *		It is needed to break circular dependency on context during
- *              shared memory release.
+ *			  It is needed to break circular dependency on context during
+ *			  shared memory release.
  */
 struct tee_context {
 	struct tee_device *teedev;
 	struct list_head list_shm;
 	void *data;
-	struct kref refcount;
-	bool releasing;
+#ifdef CONFIG_TEE_3_2
+		struct kref refcount;
+		bool releasing;
+#endif
 };
 
 struct tee_param_memref {
@@ -87,17 +92,17 @@ struct tee_param {
  * @cancel_req:		request cancel of an ongoing invoke or open
  * @supp_revc:		called for supplicant to get a command
  * @supp_send:		called for supplicant to send a response
- * @shm_register:	register shared memory buffer in TEE
- * @shm_unregister:	unregister shared memory buffer in TEE
+ * @shm_register:	   register shared memory buffer in TEE
+ * @shm_unregister:	 unregister shared memory buffer in TEE
  */
 struct tee_driver_ops {
 	void (*get_version)(struct tee_device *teedev,
-			    struct tee_ioctl_version_data *vers);
+				struct tee_ioctl_version_data *vers);
 	int (*open)(struct tee_context *ctx);
 	void (*release)(struct tee_context *ctx);
 	int (*open_session)(struct tee_context *ctx,
-			    struct tee_ioctl_open_session_arg *arg,
-			    struct tee_param *param);
+				struct tee_ioctl_open_session_arg *arg,
+				struct tee_param *param);
 	int (*close_session)(struct tee_context *ctx, u32 session);
 	int (*invoke_func)(struct tee_context *ctx,
 			   struct tee_ioctl_invoke_arg *arg,
@@ -107,10 +112,12 @@ struct tee_driver_ops {
 			 struct tee_param *param);
 	int (*supp_send)(struct tee_context *ctx, u32 ret, u32 num_params,
 			 struct tee_param *param);
-	int (*shm_register)(struct tee_context *ctx, struct tee_shm *shm,
-			    struct page **pages, size_t num_pages,
-			    unsigned long start);
-	int (*shm_unregister)(struct tee_context *ctx, struct tee_shm *shm);
+#ifdef CONFIG_TEE_3_2
+		int (*shm_register)(struct tee_context *ctx, struct tee_shm *shm,
+							struct page **pages, size_t num_pages,
+							unsigned long start);
+		int (*shm_unregister)(struct tee_context *ctx, struct tee_shm *shm);
+#endif
 };
 
 /**
@@ -141,9 +148,9 @@ struct tee_desc {
  * @returns a pointer to a 'struct tee_device' or an ERR_PTR on failure
  */
 struct tee_device *tee_device_alloc(const struct tee_desc *teedesc,
-				    struct device *dev,
-				    struct tee_shm_pool *pool,
-				    void *driver_data);
+					struct device *dev,
+					struct tee_shm_pool *pool,
+					void *driver_data);
 
 /**
  * tee_device_register() - Registers a TEE device
@@ -166,66 +173,67 @@ int tee_device_register(struct tee_device *teedev);
  */
 void tee_device_unregister(struct tee_device *teedev);
 
+#ifdef CONFIG_TEE_3_2
 /**
  * struct tee_shm - shared memory object
- * @teedev:	device used to allocate the object
- * @ctx:	context using the object, if NULL the context is gone
- * @link	link element
- * @paddr:	physical address of the shared memory
- * @kaddr:	virtual address of the shared memory
- * @size:	size of shared memory
- * @offset:	offset of buffer in user space
- * @pages:	locked pages from userspace
- * @num_pages:	number of locked pages
- * @dmabuf:	dmabuf used to for exporting to user space
- * @flags:	defined by TEE_SHM_* in tee_drv.h
- * @id:		unique id of a shared memory object on this device
+ * @teedev:	 device used to allocate the object
+ * @ctx:		context using the object, if NULL the context is gone
+ * @link		link element
+ * @paddr:	  physical address of the shared memory
+ * @kaddr:	  virtual address of the shared memory
+ * @size:	   size of shared memory
+ * @offset:	 offset of buffer in user space
+ * @pages:	  locked pages from userspace
+ * @num_pages:  number of locked pages
+ * @dmabuf:	 dmabuf used to for exporting to user space
+ * @flags:	  defined by TEE_SHM_* in tee_drv.h
+ * @id:		 unique id of a shared memory object on this device
  *
  * This pool is only supposed to be accessed directly from the TEE
  * subsystem and from drivers that implements their own shm pool manager.
  */
 struct tee_shm {
-	struct tee_device *teedev;
-	struct tee_context *ctx;
-	struct list_head link;
-	phys_addr_t paddr;
-	void *kaddr;
-	size_t size;
-	unsigned int offset;
-	struct page **pages;
-	size_t num_pages;
-	struct dma_buf *dmabuf;
-	u32 flags;
-	int id;
+		struct tee_device *teedev;
+		struct tee_context *ctx;
+		struct list_head link;
+		phys_addr_t paddr;
+		void *kaddr;
+		size_t size;
+		unsigned int offset;
+		struct page **pages;
+		size_t num_pages;
+		struct dma_buf *dmabuf;
+		u32 flags;
+		int id;
 };
 
-/**
+ /**
  * struct tee_shm_pool_mgr - shared memory manager
- * @ops:		operations
- * @private_data:	private data for the shared memory manager
+ * @ops:				operations
+ * @private_data:	   private data for the shared memory manager
  */
 struct tee_shm_pool_mgr {
-	const struct tee_shm_pool_mgr_ops *ops;
-	void *private_data;
+		const struct tee_shm_pool_mgr_ops *ops;
+		void *private_data;
 };
 
-/**
+ /**
  * struct tee_shm_pool_mgr_ops - shared memory pool manager operations
- * @alloc:		called when allocating shared memory
- * @free:		called when freeing shared memory
+ * @alloc:			  called when allocating shared memory
+ * @free:			   called when freeing shared memory
  * @destroy_poolmgr:	called when destroying the pool manager
  */
 struct tee_shm_pool_mgr_ops {
-	int (*alloc)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm,
-		     size_t size);
-	void (*free)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm);
-	void (*destroy_poolmgr)(struct tee_shm_pool_mgr *poolmgr);
+		int (*alloc)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm,
+					 size_t size);
+		void (*free)(struct tee_shm_pool_mgr *poolmgr, struct tee_shm *shm);
+		void (*destroy_poolmgr)(struct tee_shm_pool_mgr *poolmgr);
 };
 
-/**
+ /**
  * tee_shm_pool_alloc() - Create a shared memory pool from shm managers
- * @priv_mgr:	manager for driver private shared memory allocations
- * @dmabuf_mgr:	manager for dma-buf shared memory allocations
+ * @priv_mgr:   manager for driver private shared memory allocations
+ * @dmabuf_mgr: manager for dma-buf shared memory allocations
  *
  * Allocation with the flag TEE_SHM_DMA_BUF set will use the range supplied
  * in @dmabuf, others will use the range provided by @priv.
@@ -233,30 +241,31 @@ struct tee_shm_pool_mgr_ops {
  * @returns pointer to a 'struct tee_shm_pool' or an ERR_PTR on failure.
  */
 struct tee_shm_pool *tee_shm_pool_alloc(struct tee_shm_pool_mgr *priv_mgr,
-					struct tee_shm_pool_mgr *dmabuf_mgr);
+										struct tee_shm_pool_mgr *dmabuf_mgr);
 
-/*
+ /*
  * tee_shm_pool_mgr_alloc_res_mem() - Create a shm manager for reserved
  * memory
- * @vaddr:	Virtual address of start of pool
- * @paddr:	Physical address of start of pool
- * @size:	Size in bytes of the pool
+ * @vaddr:	  Virtual address of start of pool
+ * @paddr:	  Physical address of start of pool
+ * @size:	   Size in bytes of the pool
  *
  * @returns pointer to a 'struct tee_shm_pool_mgr' or an ERR_PTR on failure.
  */
 struct tee_shm_pool_mgr *tee_shm_pool_mgr_alloc_res_mem(unsigned long vaddr,
-							phys_addr_t paddr,
-							size_t size,
-							int min_alloc_order);
+														phys_addr_t paddr,
+														size_t size,
+														int min_alloc_order);
 
-/**
+ /**
  * tee_shm_pool_mgr_destroy() - Free a shared memory manager
  */
 static inline void tee_shm_pool_mgr_destroy(struct tee_shm_pool_mgr *poolm)
 {
-	poolm->ops->destroy_poolmgr(poolm);
+		poolm->ops->destroy_poolmgr(poolm);
 }
 
+#endif
 /**
  * struct tee_shm_pool_mem_info - holds information needed to create a shared
  * memory pool
@@ -318,10 +327,11 @@ void *tee_get_drvdata(struct tee_device *teedev);
  */
 struct tee_shm *tee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
 
+#ifdef CONFIG_TEE_3_2
 /**
  * tee_shm_priv_alloc() - Allocate shared memory privately
- * @dev:	Device that allocates the shared memory
- * @size:	Requested size of shared memory
+ * @dev:		Device that allocates the shared memory
+ * @size:	   Requested size of shared memory
  *
  * Allocates shared memory buffer that is not associated with any client
  * context. Such buffers are owned by TEE driver and used for internal calls.
@@ -330,27 +340,38 @@ struct tee_shm *tee_shm_alloc(struct tee_context *ctx, size_t size, u32 flags);
  */
 struct tee_shm *tee_shm_priv_alloc(struct tee_device *teedev, size_t size);
 
-/**
+ /**
  * tee_shm_register() - Register shared memory buffer
- * @ctx:	Context that registers the shared memory
- * @addr:	Address is userspace of the shared buffer
- * @length:	Length of the shared buffer
- * @flags:	Flags setting properties for the requested shared memory.
+ * @ctx:		Context that registers the shared memory
+ * @addr:	   Address is userspace of the shared buffer
+ * @length:	 Length of the shared buffer
+ * @flags:	  Flags setting properties for the requested shared memory.
  *
  * @returns a pointer to 'struct tee_shm'
  */
 struct tee_shm *tee_shm_register(struct tee_context *ctx, unsigned long addr,
-				 size_t length, u32 flags);
+								 size_t length, u32 flags);
 
-/**
+ /**
  * tee_shm_is_registered() - Check if shared memory object in registered in TEE
- * @shm:	Shared memory handle
+ * @shm:		Shared memory handle
  * @returns true if object is registered in TEE
  */
 static inline bool tee_shm_is_registered(struct tee_shm *shm)
 {
-	return shm && (shm->flags & TEE_SHM_REGISTER);
+		return shm && (shm->flags & TEE_SHM_REGISTER);
 }
+#endif
+
+/**
+ * tee_shm_register_fd() - Register shared memory from file descriptor
+ *
+ * @ctx:	Context that allocates the shared memory
+ * @fd:		shared memory file descriptor reference.
+ *
+ * @returns a pointer to 'struct tee_shm'
+ */
+struct tee_shm *tee_shm_register_fd(struct tee_context *ctx, int fd);
 
 /**
  * tee_shm_free() - Free shared memory
@@ -401,6 +422,7 @@ void *tee_shm_get_va(struct tee_shm *shm, size_t offs);
  */
 int tee_shm_get_pa(struct tee_shm *shm, size_t offs, phys_addr_t *pa);
 
+#ifdef CONFIG_TEE_3_2
 /**
  * tee_shm_get_size() - Get size of shared memory buffer
  * @shm:	Shared memory handle
@@ -418,7 +440,7 @@ static inline size_t tee_shm_get_size(struct tee_shm *shm)
  * @returns pointer to pages array
  */
 static inline struct page **tee_shm_get_pages(struct tee_shm *shm,
-					      size_t *num_pages)
+						  size_t *num_pages)
 {
 	*num_pages = shm->num_pages;
 	return shm->pages;
@@ -433,16 +455,21 @@ static inline size_t tee_shm_get_page_offset(struct tee_shm *shm)
 {
 	return shm->offset;
 }
+#endif
 
 /**
  * tee_shm_get_id() - Get id of a shared memory object
  * @shm:	Shared memory handle
  * @returns id
  */
+#ifdef CONFIG_TEE_3_2
 static inline int tee_shm_get_id(struct tee_shm *shm)
 {
-	return shm->id;
+		return shm->id;
 }
+#else
+int tee_shm_get_id(struct tee_shm *shm);
+#endif
 
 /**
  * tee_shm_get_from_id() - Find shared memory object and increase reference
@@ -464,5 +491,32 @@ static inline bool tee_param_is_memref(struct tee_param *param)
 		return false;
 	}
 }
+
+struct tee_context *tee_client_open_context(struct tee_context *start,
+			int (*match)(struct tee_ioctl_version_data *,
+				const void *),
+			const void *data, struct tee_ioctl_version_data *vers);
+
+void tee_client_close_context(struct tee_context *ctx);
+
+void tee_client_get_version(struct tee_context *ctx,
+			struct tee_ioctl_version_data *vers);
+
+int tee_client_open_session(struct tee_context *ctx,
+			struct tee_ioctl_open_session_arg *arg,
+			struct tee_param *param);
+
+int tee_client_close_session(struct tee_context *ctx, u32 session);
+
+int tee_client_invoke_func(struct tee_context *ctx,
+			struct tee_ioctl_invoke_arg *arg,
+			struct tee_param *param);
+
+#ifdef CONFIG_MSTAR_CHIP
+int tee_shm_alloc_tmp(struct tee_shm **shm, int dataSize, struct tee_device *teedev);
+void* tee_shm_get_kaddr(struct tee_shm *shm);
+phys_addr_t* tee_shm_get_paddr(struct tee_shm *shm);
+void tee_shm_free_tmp(struct tee_shm *shm, struct tee_device *teedev);
+#endif
 
 #endif /*__TEE_DRV_H*/

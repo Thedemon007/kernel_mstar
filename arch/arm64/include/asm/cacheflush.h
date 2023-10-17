@@ -20,6 +20,7 @@
 #define __ASM_CACHEFLUSH_H
 
 #include <linux/mm.h>
+#include <asm/outercache.h>
 
 /*
  * This flag is used to indicate that the page pointed to by a pte is clean
@@ -39,6 +40,10 @@
  *	See Documentation/cachetlb.txt for more information. Please note that
  *	the implementation assumes non-aliasing VIPT D-cache and (aliasing)
  *	VIPT or ASID-tagged VIVT I-cache.
+ *
+ *	flush_cache_all()
+ *
+ *		Unconditionally clean and invalidate the entire cache.
  *
  *	flush_cache_mm(mm)
  *
@@ -65,12 +70,19 @@
  *		- kaddr  - page address
  *		- size   - region size
  */
+#define __cpuc_flush_kern_all           flush_cache_all
+#define __cpuc_flush_dcache_area        __flush_dcache_area
+extern void flush_cache_all(void);
 extern void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned long end);
 extern void flush_icache_range(unsigned long start, unsigned long end);
 extern void __flush_dcache_area(void *addr, size_t len);
 extern void __clean_dcache_area_poc(void *addr, size_t len);
 extern void __clean_dcache_area_pou(void *addr, size_t len);
 extern long __flush_cache_user_range(unsigned long start, unsigned long end);
+/* FIXME: see cache.S */
+extern void dmac_map_area(const void *, size_t, int);
+extern void dmac_unmap_area(const void *, size_t, int);
+extern void dmac_flush_range(const void *, const void *);
 
 static inline void flush_cache_mm(struct mm_struct *mm)
 {

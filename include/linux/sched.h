@@ -61,6 +61,7 @@ struct sched_param {
 #include <linux/cgroup-defs.h>
 
 #include <asm/processor.h>
+#include <mstar/mpatch_macro.h>
 
 #define SCHED_ATTR_SIZE_VER0	48	/* sizeof first published struct */
 
@@ -381,6 +382,18 @@ extern void show_regs(struct pt_regs *);
  * trace (or NULL if the entire call-chain of the task should be shown).
  */
 extern void show_stack(struct task_struct *task, unsigned long *sp);
+
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+extern void dump_pid_maps(struct task_struct *task);
+extern void show_user_stack(struct task_struct *task, struct pt_regs * regs);
+#ifdef CONFIG_ARM
+extern void show_usr_info(struct task_struct *task, struct pt_regs *regs, unsigned long addr);
+#elif defined(CONFIG_MIPS)
+extern void show_info(struct task_struct *task, struct pt_regs * regs);
+#endif
+#endif
+#endif /* MP_DEBUG_TOOL_KDEBUG */
 
 extern void cpu_init (void);
 extern void trap_init(void);
@@ -1708,7 +1721,7 @@ struct task_struct {
 
 	struct mm_struct *mm, *active_mm;
 	/* per-thread vma caching */
-	u64 vmacache_seqnum;
+	u32 vmacache_seqnum;
 	struct vm_area_struct *vmacache[VMACACHE_SIZE];
 #if defined(SPLIT_RSS_COUNTING)
 	struct task_rss_stat	rss_stat;
@@ -2060,7 +2073,12 @@ struct task_struct {
 	 */
 	u64 timer_slack_ns;
 	u64 default_timer_slack_ns;
-
+#if (MP_DEBUG_TOOL_COREDUMP == 1) || (MP_DEBUG_TOOL_KDEBUG == 1)
+         /* VDLinux, based VDLP.Mstar default patch No.5,show fault user stack, 2010-01-29 */
+#ifdef CONFIG_SHOW_FAULT_TRACE_INFO
+         unsigned long user_ssp;  /* user mode start sp */
+#endif
+#endif /* MP_DEBUG_TOOL_COREDUMP */
 #ifdef CONFIG_KASAN
 	unsigned int kasan_depth;
 #endif
@@ -2427,6 +2445,12 @@ extern void thread_group_cputime_adjusted(struct task_struct *p, cputime_t *ut, 
 /*
  * Per process flags
  */
+#ifdef CONFIG_MP_RESERVED_VMA_PATCH_FOR_DFB
+#define PF_MAPPED_DFB   0x00000001      /* I have mapped DFB to my vma*/
+#endif
+#if (MP_MSTAR_STR_PROCESS_FREEZE_LATE == 1)
+#define PF_FREEZE_LATE 0x00000002   /* Threads to be frozen along with kernel threads */
+#endif
 #define PF_EXITING	0x00000004	/* getting shut down */
 #define PF_EXITPIDONE	0x00000008	/* pi exit done on shut down */
 #define PF_VCPU		0x00000010	/* I'm a virtual CPU */
@@ -3074,6 +3098,31 @@ static inline void mmdrop_async(struct mm_struct *mm)
 		INIT_WORK(&mm->async_put_work, mmdrop_async_fn);
 		schedule_work(&mm->async_put_work);
 	}
+}
+
+/*
+ * This has to be called after a get_task_mm()/mmget_not_zero()
+ * followed by taking the mmap_sem for writing before modifying the
+ * vmas or anything the coredump pretends not to change from under it.
+ *
+ * It also has to be called when mmgrab() is used in the context of
+ * the process, but then the mm_count refcount is transferred outside
+ * the context of the process to run down_write() on that pinned mm.
+ *
+ * NOTE: find_extend_vma() called from GUP context is the only place
+ * that can modify the "mm" (notably the vm_start/end) under mmap_sem
+ * for reading and outside the context of the process, so it is also
+ * the only case that holds the mmap_sem for reading that must call
+ * this function. Generally if the mmap_sem is hold for reading
+ * there's no need of this check after get_task_mm()/mmget_not_zero().
+ *
+ * This function can be obsoleted and the check can be removed, after
+ * the coredump code will hold the mmap_sem for writing before
+ * invoking the ->core_dump methods.
+ */
+static inline bool mmget_still_valid(struct mm_struct *mm)
+{
+    return likely(!mm->core_state);
 }
 
 static inline bool mmget_not_zero(struct mm_struct *mm)
@@ -3800,5 +3849,19 @@ void cpufreq_add_update_util_hook(int cpu, struct update_util_data *data,
 				    unsigned int flags));
 void cpufreq_remove_update_util_hook(int cpu);
 #endif /* CONFIG_CPU_FREQ */
+
+
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_BOOST_PERFORMANCE)
+typedef struct _dyn_cpuset
+{
+    struct cpuset *ptr;
+    cpumask_var_t org_cpus_allowed;
+    cpumask_var_t new_cpus_allowed;
+    int org_nr_cpus_allowed;
+    int new_nr_cpus_allowed;
+    bool imbalance;
+} dyn_cpuset_t;
+#endif
+
 
 #endif

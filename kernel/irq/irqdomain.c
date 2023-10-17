@@ -627,7 +627,11 @@ unsigned int irq_create_fwspec_mapping(struct irq_fwspec *fwspec)
 	}
 
 	if (irq_domain_is_hierarchy(domain)) {
+#if defined (CONFIG_MP_PLATFORM_ARM_64bit_PORTING) || defined (CONFIG_MP_PLATFORM_ARM_32bit_PORTING)
+		virq = __irq_domain_alloc_irqs(domain, hwirq, 1, NUMA_NO_NODE, fwspec, false, NULL);	// we use hwirq as irq_base, then the virq will be as hwirq
+#else
 		virq = irq_domain_alloc_irqs(domain, 1, NUMA_NO_NODE, fwspec);
+#endif
 		if (virq <= 0)
 			return 0;
 	} else {

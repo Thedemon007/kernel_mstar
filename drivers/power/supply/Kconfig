@@ -69,6 +69,12 @@ config TEST_POWER
 	help
 	  This driver is used for testing. It's safe to say M here.
 
+
+config MSTAR_POWER
+	tristate "MStar Power"
+	help
+		Implement kernel power driver for MSTAR T22.
+
 config BATTERY_88PM860X
 	tristate "Marvell 88PM860x battery driver"
 	depends on MFD_88PM860X

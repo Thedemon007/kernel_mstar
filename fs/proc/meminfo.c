@@ -19,6 +19,10 @@
 #include <asm/pgtable.h>
 #include "internal.h"
 
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+extern void get_cma_status(struct seq_file *m);
+#endif
+
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
 }
@@ -173,9 +177,34 @@ static const struct file_operations meminfo_proc_fops = {
 	.release	= single_release,
 };
 
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+static int cmainfo_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "CMA heap info(name,alloc,in cache,fail,total free): \n");
+	get_cma_status(m);
+
+	return 0;
+}
+
+static int cmainfo_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cmainfo_proc_show, NULL);
+}
+
+static const struct file_operations cmainfo_proc_fops = {
+	.open		= cmainfo_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+#endif
+
 static int __init proc_meminfo_init(void)
 {
 	proc_create("meminfo", 0, NULL, &meminfo_proc_fops);
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+	proc_create("cmainfo", 0, NULL, &cmainfo_proc_fops);
+#endif
 	return 0;
 }
 fs_initcall(proc_meminfo_init);

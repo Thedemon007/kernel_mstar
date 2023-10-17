@@ -440,6 +440,12 @@ out:
 
 SYSCALL_DEFINE2(access, const char __user *, filename, int, mode)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (filename)
+		strncpy_from_user (current_thread_info()->lfn, filename, strlen_user(filename)>127? 127: strlen_user(filename)+1);
+	current_thread_info()->sc_mode_flag = mode;
+#endif
 	return sys_faccessat(AT_FDCWD, filename, mode);
 }
 
@@ -1082,17 +1088,47 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 	return fd;
 }
 
+#define	DEFFN	"NA"
 SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	int len = strlen_user(filename);
+
+	memset(current_thread_info()->lfn, 0, 128);
+	strncpy(current_thread_info()->lfn, DEFFN, 2);
+	if(!len)
+		printk("\033[0;37;44m(CAP_DEBUG)  %s, %d, filename len = %d\033[m\n",__func__,__LINE__,len);
+	if (filename && len)
+		strncpy_from_user(current_thread_info()->lfn, filename, len>127? 127: len);
+
+	current_thread_info()->sc_mode_flag = flags;
+#endif
 	if (force_o_largefile())
 		flags |= O_LARGEFILE;
 
 	return do_sys_open(AT_FDCWD, filename, flags, mode);
 }
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+EXPORT_SYMBOL(sys_open);
+#endif
 
 SYSCALL_DEFINE4(openat, int, dfd, const char __user *, filename, int, flags,
 		umode_t, mode)
 {
+	long ret;
+
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	int len = strlen_user(filename);
+
+	memset(current_thread_info()->lfn, 0, 128);
+	strncpy(current_thread_info()->lfn, DEFFN, 2);
+	if(!len)
+		printk("\033[0;37;44m(CAP_DEBUG) %s, %d, filename len = %d\033[m\n",__func__,__LINE__,len);
+	if (filename && len)
+		strncpy_from_user(current_thread_info()->lfn, filename, len>127? 127: len);
+
+	current_thread_info()->sc_mode_flag = flags;
+#endif
 	if (force_o_largefile())
 		flags |= O_LARGEFILE;
 

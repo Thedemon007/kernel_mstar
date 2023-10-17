@@ -66,6 +66,7 @@
  */
 #define OPTEE_MSG_ATTR_META			BIT(8)
 
+#ifdef CONFIG_TEE_3_2
 /*
  * Pointer to a list of pages used to register user-defined SHM buffer.
  * Used with OPTEE_MSG_ATTR_TYPE_TMEM_*.
@@ -92,7 +93,15 @@
  * The size of 4KB is chosen because this is the smallest page size for ARM
  * architectures. If REE uses larger pages, it should divide them to 4KB ones.
  */
-#define OPTEE_MSG_ATTR_NONCONTIG		BIT(9)
+#define OPTEE_MSG_ATTR_NONCONTIG                BIT(9)
+#else
+/*
+ * The temporary shared memory object is not physically contigous and this
+ * temp memref is followed by another fragment until the last temp memref
+ * that doesn't have this bit set.
+ */
+#define OPTEE_MSG_ATTR_FRAGMENT			BIT(9)
+#endif
 
 /*
  * Memory attributes for caching passed with temp memrefs. The actual value
@@ -115,10 +124,13 @@
 #define OPTEE_MSG_LOGIN_APPLICATION_USER	0x00000005
 #define OPTEE_MSG_LOGIN_APPLICATION_GROUP	0x00000006
 
+#ifdef CONFIG_TEE_3_2
 /*
  * Page size used in non-contiguous buffer entries
  */
-#define OPTEE_MSG_NONCONTIG_PAGE_SIZE		4096
+#define OPTEE_MSG_NONCONTIG_PAGE_SIZE           4096
+
+#endif
 
 /**
  * struct optee_msg_param_tmem - temporary memory reference parameter

@@ -113,6 +113,9 @@ static inline int dma_declare_contiguous(struct device *dev, phys_addr_t size,
 
 struct page *dma_alloc_from_contiguous(struct device *dev, size_t count,
 				       unsigned int order);
+#ifdef CONFIG_MP_MMA_CMA_ENABLE
+int  deal_with_ion_cma(void);
+#endif
 bool dma_release_from_contiguous(struct device *dev, struct page *pages,
 				 int count);
 

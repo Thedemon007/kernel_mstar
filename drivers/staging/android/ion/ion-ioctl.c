@@ -22,13 +22,58 @@
 #include "ion_priv.h"
 #include "compat_ion.h"
 
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+#include <asm/cacheflush.h>
+#include <asm/outercache.h>
+#endif
+
 union ion_ioctl_arg {
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+	struct ion_cache_flush_data cache_flush;
+#endif
 	struct ion_fd_data fd;
 	struct ion_allocation_data allocation;
 	struct ion_handle_data handle;
 	struct ion_custom_data custom;
+	struct ion_user_data bus_addr_info; // for keeping bus_addr to msos layer, msos layer will change to miu/offset
+	struct ion_cust_allocation_data cust_allocation;
 	struct ion_heap_query query;
 };
+
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+static int ion_cache_flush(unsigned long start, unsigned long end)
+{
+	struct mm_struct *mm = current->active_mm;
+	struct vm_area_struct *vma;
+	int ret=0;
+
+	if (end < start)
+		return -EINVAL;
+
+	down_read(&mm->mmap_sem);
+	vma = find_vma(mm, start);
+	if (vma && vma->vm_start < end) {
+		if (start < vma->vm_start)
+			start = vma->vm_start;
+		if (end > vma->vm_end)
+			end = vma->vm_end;
+
+		dmac_flush_range((void*)(start& PAGE_MASK), (void*)PAGE_ALIGN(end));
+		outer_flush_range(start, end);
+#ifndef CONFIG_OUTER_CACHE
+		{
+			extern void Chip_Flush_Miu_Pipe(void);
+			Chip_Flush_Miu_Pipe();
+		}
+#endif
+		up_read(&mm->mmap_sem);
+		return ret;
+	}
+
+	up_read(&mm->mmap_sem);
+	return -EINVAL;
+}
+#endif
 
 static int validate_ioctl_arg(unsigned int cmd, union ion_ioctl_arg *arg)
 {
@@ -96,10 +141,10 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	{
 		struct ion_handle *handle;
 
-		handle = ion_alloc(client, data.allocation.len,
+		handle = __ion_alloc(client, data.allocation.len,
 						data.allocation.align,
 						data.allocation.heap_id_mask,
-						data.allocation.flags);
+						data.allocation.flags, true);
 		if (IS_ERR(handle))
 			return PTR_ERR(handle);
 
@@ -128,15 +173,11 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	{
 		struct ion_handle *handle;
 
-		mutex_lock(&client->lock);
-		handle = ion_handle_get_by_id_nolock(client, data.handle.handle);
-		if (IS_ERR(handle)) {
-			mutex_unlock(&client->lock);
+		handle = ion_handle_get_by_id(client, data.handle.handle);
+		if (IS_ERR(handle))
 			return PTR_ERR(handle);
-		}
-		data.fd.fd = ion_share_dma_buf_fd_nolock(client, handle);
-		ion_handle_put_nolock(handle);
-		mutex_unlock(&client->lock);
+		data.fd.fd = ion_share_dma_buf_fd(client, handle);
+		ion_handle_put(handle);
 		if (data.fd.fd < 0)
 			ret = data.fd.fd;
 		break;
@@ -165,6 +206,52 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 						data.custom.arg);
 		break;
 	}
+	case ION_IOC_GET_CMA_BUFFER_INFO:
+	{
+		/* add this to keep bus_addr info to msos layer */
+		struct ion_handle *handle;
+		struct ion_heap *heap;
+
+		ion_phys_addr_t bus_addr;
+		size_t buffer_len;
+
+		handle = ion_handle_get_by_id(client, data.bus_addr_info.handle);
+		if (IS_ERR(handle))
+			return PTR_ERR(handle);
+
+		heap = handle->buffer->heap;
+		heap->ops->phys(heap, handle->buffer, &bus_addr, &buffer_len);
+		data.bus_addr_info.bus_addr = (unsigned long)bus_addr;
+		ion_handle_put(handle);
+		break;
+	}
+	case ION_IOC_CUST_ALLOC:
+	{
+		struct ion_handle *handle;
+
+		handle = ion_cust_alloc(client, data.cust_allocation.start,
+					data.cust_allocation.len,
+					data.cust_allocation.align,
+					data.cust_allocation.heap_id_mask,
+					data.cust_allocation.flags,
+					&data.cust_allocation.miu,
+					&data.cust_allocation.miu_offset, true);
+
+		if (IS_ERR(handle))
+			return PTR_ERR(handle);
+
+		data.cust_allocation.handle = handle->id;
+
+		cleanup_handle = handle;
+		break;
+	}
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+	case ION_IOC_CACHE_FLUSH:
+	{
+		ion_cache_flush(data.cache_flush.start, data.cache_flush.start+data.cache_flush.len);
+		break;
+	}
+#endif
 	case ION_IOC_HEAP_QUERY:
 		ret = ion_query_heaps(client, &data.query);
 		break;
@@ -174,10 +261,14 @@ long ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	if (dir & _IOC_READ) {
 		if (copy_to_user((void __user *)arg, &data, _IOC_SIZE(cmd))) {
-			if (cleanup_handle)
+			if (cleanup_handle) {
 				ion_free(client, cleanup_handle);
+				ion_handle_put(cleanup_handle);
+			}
 			return -EFAULT;
 		}
 	}
+	if (cleanup_handle)
+		ion_handle_put(cleanup_handle);
 	return ret;
 }

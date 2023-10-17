@@ -103,6 +103,8 @@ static const char *const compat_hwcap2_str[] = {
 };
 #endif /* CONFIG_COMPAT */
 
+extern const char *machine_name;
+extern ptrdiff_t mstar_pm_base;
 static int c_show(struct seq_file *m, void *v)
 {
 	int i, j;
@@ -156,6 +158,24 @@ static int c_show(struct seq_file *m, void *v)
 		seq_printf(m, "CPU variant\t: 0x%x\n", MIDR_VARIANT(midr));
 		seq_printf(m, "CPU part\t: 0x%03x\n", MIDR_PARTNUM(midr));
 		seq_printf(m, "CPU revision\t: %d\n\n", MIDR_REVISION(midr));
+
+#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+		seq_puts(m, "\n");
+		seq_printf(m, "Hardware\t: %s\n", machine_name);
+#endif
+
+	uint16_t efuse_did[4];
+
+	efuse_did[0] = *(volatile unsigned short *)(mstar_pm_base + (0x3800 << 1));
+	efuse_did[1] = *(volatile unsigned short *)(mstar_pm_base + (0x3802 << 1));
+	efuse_did[2] = *(volatile unsigned short *)(mstar_pm_base + (0x3804 << 1));
+	efuse_did[3] = *(volatile unsigned short *)(mstar_pm_base + (0x3808 << 1));
+
+	seq_printf(m, "Serial\t\t: %04x%04x%04x%04x\n\n",
+		/* Serial only has 48 bits */
+		efuse_did[3], efuse_did[2],
+		efuse_did[1], efuse_did[0]);
+
 	}
 
 	return 0;

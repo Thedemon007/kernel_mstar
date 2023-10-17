@@ -271,6 +271,15 @@ static struct sched_domain_topology_level arm64_topology[] = {
 	{ NULL, },
 };
 
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_BOOST_PERFORMANCE)
+int eas_min_capacity_orig = SCHED_CAPACITY_SCALE;
+extern int eas_max_boost_value;
+#if defined(CONFIG_MP_EAS_ADAPTIVE)
+extern int scale_loading_for_big_to_little;
+extern int num_little_cpus, num_big_cpus;
+#endif
+#endif
+
 static void update_cpu_capacity(unsigned int cpu)
 {
 	unsigned long capacity = SCHED_CAPACITY_SCALE;
@@ -279,6 +288,23 @@ static void update_cpu_capacity(unsigned int cpu)
 		int max_cap_idx = cpu_core_energy(cpu)->nr_cap_states - 1;
 		capacity = cpu_core_energy(cpu)->cap_states[max_cap_idx].cap;
 	}
+
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_BOOST_PERFORMANCE)
+    if (capacity < eas_min_capacity_orig) {
+        eas_min_capacity_orig = capacity;
+        eas_max_boost_value = (((eas_min_capacity_orig * 100) + (SCHED_CAPACITY_SCALE-1)) >> SCHED_CAPACITY_SHIFT);
+#if defined(CONFIG_MP_EAS_ADAPTIVE)
+        scale_loading_for_big_to_little = (SCHED_CAPACITY_SCALE * 100)/eas_min_capacity_orig;
+#endif
+    }
+#endif
+
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+    if (capacity == SCHED_CAPACITY_SCALE)
+        num_big_cpus++;
+    else
+        num_little_cpus++;
+#endif
 
 	set_capacity_scale(cpu, capacity);
 

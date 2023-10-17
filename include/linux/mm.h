@@ -24,6 +24,45 @@
 #include <linux/err.h>
 #include <linux/page_ref.h>
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+enum {
+	CNT_FREE_PAGES,
+	CNT_FREE_CMA_PAGES,
+	CNT_FILE_PAGES,
+
+	CNT_PAGES_TYPE,
+};
+
+/* this is for counting memory usage */
+enum {
+	__alloc_pages_nodemask_count, /* 0 */
+	__perform_reclaim_count, /* 1 */
+	try_to_free_pages_count, /* 2 */
+	do_try_to_free_pages_count, /* 3 */
+	shrink_zones_count, /* 4 */
+	shrink_slab_count, /* 5 */
+	shrink_slab_node_count, /* 6 */
+	lowmem_scan_count, /* 7 */
+	__alloc_pages_direct_compact_count, /* 8 */
+	DB_MAX_CNT,
+};
+
+typedef struct
+{
+    char name[30];
+    atomic_t lone_time;
+	atomic_t do_cnt;
+	atomic_t pass_cnt;
+	atomic_t failed_cnt;
+
+	atomic_t min_page_cnt[CNT_PAGES_TYPE];
+	atomic_t max_page_cnt[CNT_PAGES_TYPE];
+	atomic_t order0_cnt[MIGRATE_TYPES];
+	atomic_t failed_order[MAX_ORDER];
+	atomic_t pass_order[MAX_ORDER];
+}db_time_table;
+#endif
+
 struct mempolicy;
 struct anon_vma;
 struct anon_vma_chain;
@@ -463,6 +502,14 @@ static inline int get_page_unless_zero(struct page *page)
 }
 
 extern int page_is_ram(unsigned long pfn);
+
+#ifdef CONFIG_CMA
+#include <asm/dma-contiguous.h>
+#define CMA_DEBUG KERN_DEBUG
+#define CMA_WARNING KERN_NOTICE
+#define CMA_ERR KERN_ERR
+#define CMA_NOTICE KERN_NOTICE
+#endif
 
 enum {
 	REGION_INTERSECTS,
@@ -1180,26 +1227,6 @@ void zap_page_range(struct vm_area_struct *vma, unsigned long address,
 		unsigned long size, struct zap_details *);
 void unmap_vmas(struct mmu_gather *tlb, struct vm_area_struct *start_vma,
 		unsigned long start, unsigned long end);
-/*
- * This has to be called after a get_task_mm()/mmget_not_zero()
- * followed by taking the mmap_sem for writing before modifying the
- * vmas or anything the coredump pretends not to change from under it.
- *
- * NOTE: find_extend_vma() called from GUP context is the only place
- * that can modify the "mm" (notably the vm_start/end) under mmap_sem
- * for reading and outside the context of the process, so it is also
- * the only case that holds the mmap_sem for reading that must call
- * this function. Generally if the mmap_sem is hold for reading
- * there's no need of this check after get_task_mm()/mmget_not_zero().
- *
- * This function can be obsoleted and the check can be removed, after
- * the coredump code will hold the mmap_sem for writing before
- * invoking the ->core_dump methods.
- */
-static inline bool mmget_still_valid(struct mm_struct *mm)
-{
-	return likely(!mm->core_state);
-}
 
 /**
  * mm_walk - callbacks for walk_page_range

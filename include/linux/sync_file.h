@@ -13,6 +13,8 @@
 #ifndef _LINUX_SYNC_FILE_H
 #define _LINUX_SYNC_FILE_H
 
+#define MSTAR_SYNC_FILE_VERSION KERNEL_VERSION(4, 9, 68)
+
 #include <linux/types.h>
 #include <linux/kref.h>
 #include <linux/ktime.h>

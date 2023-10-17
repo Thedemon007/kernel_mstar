@@ -246,6 +246,7 @@ config PAGE_OWNER
 	select STACKTRACE
 	select STACKDEPOT
 	select PAGE_EXTENSION
+	select MP_DEBUG_TOOL_MSTAR_PAGE_OWNER
 	help
 	  This keeps track of what call chain is the owner of a page, may
 	  help to find bare alloc_page(s) leaks. Even if you include this
@@ -386,6 +387,13 @@ config MAGIC_SYSRQ
 	  send a BREAK and then within 5 seconds a command keypress. The
 	  keys are documented in <file:Documentation/sysrq.txt>. Don't say Y
 	  unless you really know what this hack does.
+
+config AMAZON_MAGIC_SYSRQ
+	bool "Amazon Magic SysRq key"
+	depends on MAGIC_SYSRQ
+	default n
+	help
+	  If you say Y here, you will have two additional controls for sysrq.
 
 config MAGIC_SYSRQ_DEFAULT_ENABLE
 	hex "Enable magic SysRq key functions by default"
@@ -763,14 +771,40 @@ config LOCKUP_DETECTOR
 	  The overhead should be minimal.  A periodic hrtimer runs to
 	  generate interrupts and kick the watchdog task every 4 seconds.
 	  An NMI is generated every 10 seconds or so to check for hardlockups.
+	  If NMIs are not available on the platform, every 12 seconds the
+	  hrtimer interrupt on one cpu will be used to check for hardlockups
+	  on the next cpu.
 
 	  The frequency of hrtimer and NMI events and the soft and hard lockup
 	  thresholds can be controlled through the sysctl watchdog_thresh.
 
-config HARDLOCKUP_DETECTOR
-	def_bool y
+config HARDLOCKUP_DETECTOR_NMI
+	def_bool n
 	depends on LOCKUP_DETECTOR && !HAVE_NMI_WATCHDOG
 	depends on PERF_EVENTS && HAVE_PERF_EVENTS_NMI
+
+config HARDLOCKUP_DETECTOR_OTHER_CPU
+	def_bool y
+	depends on LOCKUP_DETECTOR && SMP
+	depends on !HARDLOCKUP_DETECTOR_NMI && !HAVE_NMI_WATCHDOG
+
+config HARDLOCKUP_DETECTOR
+	def_bool y
+	depends on HARDLOCKUP_DETECTOR_NMI || HARDLOCKUP_DETECTOR_OTHER_CPU
+
+config DEBUG_LAST_SCHED_TASK
+	bool "print last scheduled task on hard lockup"
+	depends on HARDLOCKUP_DETECTOR_OTHER_CPU
+	help
+	  Enabling this option prints last scheduled task when hard lockup
+	  detected.
+
+	  On cpus like arm/arm64, which don't have NMI interrupt, any cpu
+	  stuck with interrupts disabled can cause a hardware watchdog
+	  reset with no debugging info on stuck cpu.
+	  A better option is FIQ based all cpu backtrace. But on some SoC
+	  FIQ is fully occupied by Trust Zone and cannot be used for such
+	  purpose.
 
 config BOOTPARAM_HARDLOCKUP_PANIC
 	bool "Panic (Reboot) On Hard Lockups"

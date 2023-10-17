@@ -506,6 +506,8 @@ struct hid_device {							/* device report descriptor */
 	__u32 version;							/* HID version */
 	enum hid_type type;						/* device type (mouse, kbd, ...) */
 	unsigned country;						/* HID country */
+	__s32 battery_level;	/* normalized battery value */
+	__s32 received_battery_level;	/* received battery value */
 	struct hid_report_enum report_enum[HID_REPORT_TYPES];
 	struct work_struct led_work;					/* delayed LED worker */
 
@@ -524,6 +526,7 @@ struct hid_device {							/* device report descriptor */
 	struct power_supply *battery;
 	__s32 battery_min;
 	__s32 battery_max;
+	__s32 battery_val;
 	__s32 battery_report_type;
 	__s32 battery_report_id;
 #endif
@@ -757,6 +760,9 @@ struct hid_ll_driver {
 	int (*output_report) (struct hid_device *hdev, __u8 *buf, size_t len);
 
 	int (*idle)(struct hid_device *hdev, int report, int idle, int reqtype);
+
+	void (*battery_level_ind) (struct hid_device *hdev,
+			unsigned int battery_level);
 };
 
 #define	PM_HINT_FULLON	1<<5

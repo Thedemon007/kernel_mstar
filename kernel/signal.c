@@ -44,6 +44,9 @@
 #include <asm/siginfo.h>
 #include <asm/cacheflush.h>
 #include "audit.h"	/* audit_signal_info() */
+#ifdef CONFIG_NETFLIX_CRASH_MONITOR
+#include "crashmonitor.h"
+#endif
 
 /*
  * SLAB caches for signal bits.
@@ -2312,6 +2315,9 @@ relock:
 			 * first and our do_group_exit call below will use
 			 * that value and ignore the one we pass it.
 			 */
+#ifdef CONFIG_NETFLIX_CRASH_MONITOR
+     		        crash_monitor(current,COREDUMP);
+#endif
 			do_coredump(&ksig->info);
 		}
 

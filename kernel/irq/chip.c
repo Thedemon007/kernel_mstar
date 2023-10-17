@@ -767,6 +767,10 @@ void handle_percpu_devid_irq(struct irq_desc *desc)
 		trace_irq_handler_entry(irq, action);
 		res = action->handler(irq, raw_cpu_ptr(action->percpu_dev_id));
 		trace_irq_handler_exit(irq, action, res);
+#ifdef CONFIG_MP_INTR_ERROR_CHECK_NON_STOP
+	void irq_abnormal_check(struct irq_desc *desc, unsigned int type, unsigned int val);
+	irq_abnormal_check(desc, 0, 0);
+#endif
 	} else {
 		unsigned int cpu = smp_processor_id();
 		bool enabled = cpumask_test_cpu(cpu, desc->percpu_enabled);
@@ -786,6 +790,37 @@ static void
 __irq_do_set_handler(struct irq_desc *desc, irq_flow_handler_t handle,
 		     int is_chained, const char *name)
 {
+	if (!handle) {
+		handle = handle_bad_irq;
+	} else {
+		if (WARN_ON(desc->irq_data.chip == &no_irq_chip))
+		{
+			printk("desc->irq_data.chip = 0x%p, no_irq_chip = 0x%p, irq = %d\n", desc->irq_data.chip, &no_irq_chip, desc->irq_data.irq);
+			return;
+		}
+	}
+
+	/* Uninstall? */
+	if (handle == handle_bad_irq) {
+		if (desc->irq_data.chip != &no_irq_chip)
+			mask_ack_irq(desc);
+		irq_state_set_disabled(desc);
+		if (is_chained)
+			desc->action = NULL;
+		desc->depth = 1;
+	}
+	desc->handle_irq = handle;
+	desc->name = name;
+
+	if (handle != handle_bad_irq && is_chained) {
+		irq_settings_set_noprobe(desc);
+		irq_settings_set_norequest(desc);
+		irq_settings_set_nothread(desc);
+		desc->action = &chained_action;
+		irq_startup(desc, true);
+	}
+
+#if 0
 	if (!handle) {
 		handle = handle_bad_irq;
 	} else {
@@ -850,6 +885,7 @@ __irq_do_set_handler(struct irq_desc *desc, irq_flow_handler_t handle,
 		desc->action = &chained_action;
 		irq_startup(desc, true);
 	}
+#endif
 }
 
 void

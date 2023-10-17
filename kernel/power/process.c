@@ -19,6 +19,9 @@
 #include <linux/kmod.h>
 #include <trace/events/power.h>
 #include <linux/wakeup_reason.h>
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+#include "power.h"
+#endif
 #include <linux/cpuset.h>
 
 /*
@@ -66,7 +69,9 @@ static int try_to_freeze_tasks(bool user_only)
 
 		if (!todo || time_after(jiffies, end_time))
 			break;
-
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+        if(!is_mstar_str())
+#endif
 		if (pm_wakeup_pending()) {
 #ifdef CONFIG_PM_SLEEP
 			pm_get_active_wakeup_sources(suspend_abort,
@@ -242,7 +247,11 @@ void thaw_kernel_threads(void)
 
 	read_lock(&tasklist_lock);
 	for_each_process_thread(g, p) {
-		if (p->flags & (PF_KTHREAD | PF_WQ_WORKER))
+		if (p->flags & (PF_KTHREAD | PF_WQ_WORKER
+#if (MP_MSTAR_STR_PROCESS_FREEZE_LATE == 1)
+                                | PF_FREEZE_LATE
+#endif
+                    ))
 			__thaw_task(p);
 	}
 	read_unlock(&tasklist_lock);

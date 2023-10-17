@@ -48,12 +48,20 @@
 #include <linux/of.h>
 #include <linux/rcupdate.h>
 
+#ifdef CONFIG_AMAZON_MAGIC_SYSRQ
+#include <linux/kthread.h>
+#endif
+
 #include <asm/ptrace.h>
 #include <asm/irq_regs.h>
 
 /* Whether we react on sysrq keys or just ignore them */
 static int __read_mostly sysrq_enabled = CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE;
+#ifdef CONFIG_MP_DEBUG_TOOL_SYSRQ
+static bool __read_mostly sysrq_always_enabled = CONFIG_MP_DEBUG_TOOL_SYSRQ_FORCE_ENABLE;
+#else
 static bool __read_mostly sysrq_always_enabled;
+#endif
 
 static bool sysrq_on(void)
 {
@@ -149,6 +157,60 @@ static struct sysrq_key_op sysrq_crash_op = {
 	.action_msg	= "Trigger a crash",
 	.enable_mask	= SYSRQ_ENABLE_DUMP,
 };
+
+#ifdef CONFIG_AMAZON_MAGIC_SYSRQ
+static DEFINE_SPINLOCK(wdt_lock);
+static int softlockup_req;
+static int hardlockup_req;
+static void hardlockup_thread_func(void *data)
+{
+	(void)data;
+	unsigned long flags;
+
+	/* To know which cpu this thread is executed on */
+	pr_info("hard lockup trigger started!\n");
+
+	spin_lock_irqsave(&wdt_lock, flags);
+	while (1)
+		;
+	spin_unlock_irqrestore(&wdt_lock, flags);
+}
+
+static void sysrq_handle_wdt_hwlockup(int key)
+{
+	hardlockup_req = 1;
+}
+
+static struct sysrq_key_op sysrq_wdt_hwlockup_op = {
+	.handler	= sysrq_handle_wdt_hwlockup,
+	.help_msg	= "hardlockup(x)",
+	.action_msg	= "Trigger a hard lockup",
+	.enable_mask	= SYSRQ_ENABLE_DUMP,
+};
+
+static void softlockup_thread_func(void *data)
+{
+	(void)data;
+	/* To know which cpu this thread is executed on */
+	pr_info("soft lockup trigger started!\n");
+	spin_lock(&wdt_lock);
+	while (1)
+		;
+	spin_unlock(&wdt_lock);
+}
+
+static void sysrq_handle_wdt_swlockup(int key)
+{
+	softlockup_req = 1;
+}
+
+static struct sysrq_key_op sysrq_wdt_swlockup_op = {
+	.handler	= sysrq_handle_wdt_swlockup,
+	.help_msg	= "softlockup(y)",
+	.action_msg	= "Trigger a soft lockup",
+	.enable_mask	= SYSRQ_ENABLE_DUMP,
+};
+#endif
 
 static void sysrq_handle_reboot(int key)
 {
@@ -481,12 +543,16 @@ static struct sysrq_key_op *sysrq_key_table[36] = {
 	/* v: May be registered for frame buffer console restore */
 	NULL,				/* v */
 	&sysrq_showstate_blocked_op,	/* w */
-	/* x: May be registered on mips for TLB dump */
+#ifdef CONFIG_AMAZON_MAGIC_SYSRQ
+	&sysrq_wdt_hwlockup_op,		/* x */
+	&sysrq_wdt_swlockup_op,		/* y */
+#else
 	/* x: May be registered on ppc/powerpc for xmon */
 	/* x: May be registered on sparc64 for global PMU dump */
 	NULL,				/* x */
 	/* y: May be registered on sparc64 for global register dump */
 	NULL,				/* y */
+#endif
 	&sysrq_ftrace_dump_op,		/* z */
 };
 
@@ -578,6 +644,22 @@ void __handle_sysrq(int key, bool check_mask)
 	}
 	rcu_read_unlock();
 	rcu_sysrq_end();
+#ifdef CONFIG_AMAZON_MAGIC_SYSRQ
+	if (softlockup_req) {
+		struct task_struct *tsk =
+			kthread_run(&softlockup_thread_func, (void *)0, "slockup-trigger");
+		/* bind to cpu 1 to avoid interference from other issues like fence timeout */
+		set_cpus_allowed_ptr(tsk, cpumask_of(1));
+		softlockup_req = 0;
+	}
+	if (hardlockup_req) {
+		struct task_struct *tsk =
+			kthread_run(&hardlockup_thread_func, (void *)0, "hlockup-trigger");
+		/* bind to cpu 1 to make SoC interrupts (binded to cpu 0) still work */
+		set_cpus_allowed_ptr(tsk, cpumask_of(1));
+		hardlockup_req = 0;
+	}
+#endif
 }
 
 void handle_sysrq(int key)

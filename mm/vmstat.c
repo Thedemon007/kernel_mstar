@@ -946,7 +946,9 @@ const char * const vmstat_text[] = {
 	"numa_other",
 #endif
 	"nr_free_cma",
-
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	"nr_alloc_batch",
+#endif
 	/* Node-based counters */
 	"nr_inactive_anon",
 	"nr_active_anon",
@@ -1588,9 +1590,12 @@ int vmstat_refresh(struct ctl_table *table, int write,
 		val = atomic_long_read(&vm_zone_stat[i]);
 		if (val < 0) {
 			switch (i) {
+	#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+			case NR_ALLOC_BATCH:
+	#endif
 			case NR_PAGES_SCANNED:
 				/*
-				 * This is often seen to go negative in
+				 * These are often seen to go negative in
 				 * recent kernels, but not to go permanently
 				 * negative.  Whilst it would be nicer not to
 				 * have exceptions, rooting them out would be

@@ -18,6 +18,12 @@
 
 #include "power.h"
 
+#ifdef CONFIG_MP_MSTAR_STR_BASE
+#ifdef CONFIG_MSTAR_PM
+#include <mdrv_pm.h>
+#endif
+#endif
+
 DEFINE_MUTEX(pm_mutex);
 
 #ifdef CONFIG_PM_SLEEP
@@ -293,6 +299,49 @@ power_attr_ro(pm_wakeup_irq);
 static inline void pm_print_times_init(void) {}
 #endif /* CONFIG_PM_SLEEP_DEBUG */
 
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+static int pm_is_state_entering = 0;
+static int pm_state_value = 0;
+static int pm_is_mstar_str = 0;
+static int pm_str_max_cnt = 0;
+
+void set_state_value(int value)
+{
+    pm_state_value=value;
+}
+
+int get_state_value(void)
+{
+    return pm_state_value;
+}
+
+void set_state_entering(void)
+{
+    pm_is_state_entering=1;
+}
+
+int get_state_entering(void)
+{
+    return pm_is_state_entering;
+}
+
+void clear_state_entering(void)
+{
+    set_state_value(0);
+    pm_is_state_entering=0;
+}
+
+int is_mstar_str(void)
+{
+    return pm_is_mstar_str;
+}
+
+int get_str_max_cnt(void)
+{
+    return pm_str_max_cnt;
+}
+#endif
+
 struct kobject *power_kobj;
 
 /**
@@ -361,6 +410,25 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 	error = pm_autosleep_lock();
 	if (error)
 		return error;
+#if 0 /* @TODO: SOPHIA-67 make STR follow Android standard */
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+    // for mstar str, we skip wakelock
+    // and earlysuspend/lateresume to speedup suspend
+    {
+        char *p;
+        int len;
+        p = memchr(buf, '\n', n);
+        len = p ? p - buf : n;
+        if (len == 4 && !strncmp(buf, "mstr", len)) {
+            state = PM_SUSPEND_MEM;
+            pm_is_mstar_str = 1;
+            error = pm_suspend(state);
+            pm_is_mstar_str = 0;
+            goto out;
+        }
+    }
+#endif
+#endif
 
 	if (pm_autosleep_state() > PM_SUSPEND_ON) {
 		error = -EBUSY;
@@ -381,6 +449,83 @@ static ssize_t state_store(struct kobject *kobj, struct kobj_attribute *attr,
 }
 
 power_attr(state);
+
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+/**
+ *  suspending - indicate whether is suspending.
+ *
+ *  show() returns whether is suspending, which is hard-coded to
+ *  '0' (suspending completed and resumed), '1' (is suspending)
+ *
+ */
+static ssize_t state_entering_show(struct kobject *kobj, struct kobj_attribute *attr,
+              char *buf)
+{
+    char *s = buf;
+    s +=sprintf(s,"%d\n",pm_is_state_entering);
+    return (s - buf);
+}
+static ssize_t state_entering_store(struct kobject *kobj, struct kobj_attribute *attr,
+               const char *buf, size_t n)
+{
+    int num=0;
+    int ncontent=0;
+    num=sscanf(buf,"%d",&ncontent);
+    if(num && (ncontent==1 || ncontent==2))
+    {
+        pm_is_state_entering=ncontent;
+        return n;
+    }
+    return -EINVAL;
+}
+
+power_attr(state_entering);
+
+/**
+ *  str_max_cnt - indicate the max continuously str cnt .
+ */
+static ssize_t str_max_cnt_show(struct kobject *kobj, struct kobj_attribute *attr,
+              char *buf)
+{
+    char *s = buf;
+    s +=sprintf(s,"%d\n",pm_str_max_cnt);
+    return (s - buf);
+}
+static ssize_t str_max_cnt_store(struct kobject *kobj, struct kobj_attribute *attr,
+               const char *buf, size_t n)
+{
+    int num=0;
+    int ncontent=0;
+    num=sscanf(buf,"%d",&ncontent);
+    if(num)
+    {
+        pm_str_max_cnt=ncontent;
+        return n;
+    }
+    return -EINVAL;
+}
+
+power_attr(str_max_cnt);
+
+#ifdef CONFIG_MSTAR_PM
+/*
+ *  pm_copy - PM_CopyBin2Dram, for Fusion project.
+ */
+static ssize_t pm_copy_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+{
+    return 0;
+}
+static ssize_t pm_copy_store(struct kobject *kobj, struct kobj_attribute *attr, const char *buf, size_t n)
+{
+    int error = 0;
+    if (!strcmp(buf, "pm"))
+		error = MDrv_PM_CopyBin2Dram();
+    return error ? error : n;
+}
+
+power_attr(pm_copy);
+#endif
+#endif
 
 #ifdef CONFIG_PM_SLEEP
 /*
@@ -595,6 +740,13 @@ power_attr(pm_freeze_timeout);
 
 static struct attribute * g[] = {
 	&state_attr.attr,
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+    &state_entering_attr.attr,
+    &str_max_cnt_attr.attr,
+#ifdef CONFIG_MSTAR_PM
+    &pm_copy_attr.attr,
+#endif
+#endif
 #ifdef CONFIG_PM_TRACE
 	&pm_trace_attr.attr,
 	&pm_trace_dev_match_attr.attr,

@@ -458,6 +458,7 @@ int msdos_partition(struct parsed_partitions *state)
 	int slot;
 	u32 disksig;
 
+	sect.v = NULL; // Avoid PB -1 due to uninitialized sect
 	data = read_part_sector(state, 0, &sect);
 	if (!data)
 		return -1;
@@ -490,6 +491,11 @@ int msdos_partition(struct parsed_partitions *state)
 	p = (struct partition *) (data + 0x1be);
 	for (slot = 1; slot <= 4; slot++, p++) {
 		if (p->boot_ind != 0 && p->boot_ind != 0x80) {
+#if (MP_SCSI_MSTAR_SD_CARD_HOTPLUG == 1)
+			 // Maybe fat or ntfs boot sector, without a partition table
+			put_dev_sector(sect);
+			return 0;
+#else
 			/*
 			 * Even without a valid boot inidicator value
 			 * its still possible this is valid FAT filesystem
@@ -505,6 +511,7 @@ int msdos_partition(struct parsed_partitions *state)
 				put_dev_sector(sect);
 				return 0;
 			}
+#endif
 		}
 	}
 

@@ -84,8 +84,8 @@ struct optee_supp {
  * @supp:		supplicant synchronization struct for RPC to supplicant
  * @pool:		shared memory pool
  * @memremaped_shm	virtual address of memory in shared memory pool
- * @sec_caps:		secure world capabilities defined by
- *			OPTEE_SMC_SEC_CAP_* in optee_smc.h
+ * @sec_caps:		   secure world capabilities defined by
+ *					  OPTEE_SMC_SEC_CAP_* in optee_smc.h
  */
 struct optee {
 	struct tee_device *supp_teedev;
@@ -96,7 +96,9 @@ struct optee {
 	struct optee_supp supp;
 	struct tee_shm_pool *pool;
 	void *memremaped_shm;
-	u32 sec_caps;
+#ifdef CONFIG_TEE_3_2
+		u32 sec_caps;
+#endif
 };
 
 struct optee_session {
@@ -120,17 +122,20 @@ struct optee_rpc_param {
 	u32	a6;
 	u32	a7;
 };
-
+#ifdef CONFIG_TEE_3_2
 /* Holds context that is preserved during one STD call */
 struct optee_call_ctx {
-	/* information about pages list used in last allocation */
-	void *pages_list;
-	size_t num_entries;
+		/* information about pages list used in last allocation */
+		void *pages_list;
+		size_t num_entries;
 };
 
 void optee_handle_rpc(struct tee_context *ctx, struct optee_rpc_param *param,
-		      struct optee_call_ctx *call_ctx);
+					  struct optee_call_ctx *call_ctx);
 void optee_rpc_finalize_call(struct optee_call_ctx *call_ctx);
+#else
+void optee_handle_rpc(struct tee_context *ctx, struct optee_rpc_param *param);
+#endif
 
 void optee_wait_queue_init(struct optee_wait_queue *wq);
 void optee_wait_queue_exit(struct optee_wait_queue *wq);
@@ -145,41 +150,44 @@ void optee_supp_uninit(struct optee_supp *supp);
 void optee_supp_release(struct optee_supp *supp);
 
 int optee_supp_recv(struct tee_context *ctx, u32 *func, u32 *num_params,
-		    struct tee_param *param);
+			struct tee_param *param);
 int optee_supp_send(struct tee_context *ctx, u32 ret, u32 num_params,
-		    struct tee_param *param);
+			struct tee_param *param);
 
 u32 optee_do_call_with_arg(struct tee_context *ctx, phys_addr_t parg);
 int optee_open_session(struct tee_context *ctx,
-		       struct tee_ioctl_open_session_arg *arg,
-		       struct tee_param *param);
+			   struct tee_ioctl_open_session_arg *arg,
+			   struct tee_param *param);
 int optee_close_session(struct tee_context *ctx, u32 session);
 int optee_invoke_func(struct tee_context *ctx, struct tee_ioctl_invoke_arg *arg,
-		      struct tee_param *param);
+			  struct tee_param *param);
 int optee_cancel_req(struct tee_context *ctx, u32 cancel_id, u32 session);
 
 void optee_enable_shm_cache(struct optee *optee);
 void optee_disable_shm_cache(struct optee *optee);
 
+#ifdef CONFIG_TEE_3_2
 int optee_shm_register(struct tee_context *ctx, struct tee_shm *shm,
-		       struct page **pages, size_t num_pages,
-		       unsigned long start);
+					   struct page **pages, size_t num_pages,
+					   unsigned long start);
 int optee_shm_unregister(struct tee_context *ctx, struct tee_shm *shm);
 
 int optee_shm_register_supp(struct tee_context *ctx, struct tee_shm *shm,
-			    struct page **pages, size_t num_pages,
-			    unsigned long start);
+							struct page **pages, size_t num_pages,
+							unsigned long start);
 int optee_shm_unregister_supp(struct tee_context *ctx, struct tee_shm *shm);
+#endif
 
 int optee_from_msg_param(struct tee_param *params, size_t num_params,
 			 const struct optee_msg_param *msg_params);
 int optee_to_msg_param(struct optee_msg_param *msg_params, size_t num_params,
-		       const struct tee_param *params);
-
+			   const struct tee_param *params);
+#ifdef CONFIG_TEE_3_2
 u64 *optee_allocate_pages_list(size_t num_entries);
 void optee_free_pages_list(void *array, size_t num_entries);
 void optee_fill_pages_list(u64 *dst, struct page **pages, int num_pages,
-			   size_t page_offset);
+					   size_t page_offset);
+#endif
 
 /*
  * Small helpers

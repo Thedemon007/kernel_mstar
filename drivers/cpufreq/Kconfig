@@ -217,6 +217,7 @@ config CPU_FREQ_GOV_INTERACTIVE
 	depends on CPU_FREQ
 	select CPU_FREQ_GOV_ATTR_SET
 	select IRQ_WORK
+        select MP_DVFS_INTERACTIVE_PATCH
 	help
 	  'interactive' - This driver adds a dynamic cpufreq policy governor
 	  designed for latency-sensitive workloads.

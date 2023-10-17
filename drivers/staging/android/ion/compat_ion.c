@@ -39,12 +39,48 @@ struct compat_ion_handle_data {
 	compat_int_t handle;
 };
 
+#if (MP_ION_PATCH_MSTAR==1)
+struct compat_ion_user_data {
+    compat_int_t handle;
+    compat_ulong_t bus_addr;
+};
+
+struct compat_ion_cust_allocation_data {
+    compat_size_t start;
+    compat_size_t len;
+    compat_size_t align;
+    compat_uint_t heap_id_mask;
+    compat_uint_t flags;
+    compat_int_t handle;
+    compat_ulong_t miu_offset;
+    unsigned char miu;
+};
+#endif
+
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+struct compat_ion_cache_flush_data {
+	compat_size_t start;
+	compat_size_t len;
+};
+#endif
+
 #define COMPAT_ION_IOC_ALLOC	_IOWR(ION_IOC_MAGIC, 0, \
 				      struct compat_ion_allocation_data)
 #define COMPAT_ION_IOC_FREE	_IOWR(ION_IOC_MAGIC, 1, \
 				      struct compat_ion_handle_data)
 #define COMPAT_ION_IOC_CUSTOM	_IOWR(ION_IOC_MAGIC, 6, \
 				      struct compat_ion_custom_data)
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+#define COMPAT_ION_IOC_CACHE_FLUSH      _IOW(ION_IOC_MAGIC, 10, \
+						struct compat_ion_cache_flush_data)
+#endif
+#if (MP_ION_PATCH_MSTAR==1)
+#define COMPAT_ION_IOC_CUST_ALLOC       _IOWR(ION_IOC_MAGIC, 9, \
+                      struct compat_ion_cust_allocation_data)
+#define COMPAT_ION_IOC_GET_CMA_BUFFER_INFO      _IOWR(ION_IOC_MAGIC, 11,\
+                      struct compat_ion_user_data)
+#endif
+
 
 static int compat_get_ion_allocation_data(
 			struct compat_ion_allocation_data __user *data32,
@@ -81,6 +117,115 @@ static int compat_get_ion_handle_data(
 
 	return err;
 }
+
+#if (MP_ION_PATCH_MSTAR==1)
+static int compat_get_ion_user_data(
+			struct compat_ion_user_data __user *data32,
+			struct ion_user_data __user *data)
+{
+	compat_ulong_t ul;
+	compat_int_t i;
+	int err;
+
+	err = get_user(i,&data32->handle);
+	err |= put_user(i,&data->handle);
+	err |= get_user(ul,&data32->bus_addr);
+	err |= put_user(ul,&data->bus_addr);
+	return err;
+}
+
+static int compat_put_ion_user_data(
+			struct compat_ion_user_data __user *data32,
+			struct ion_user_data __user *data)
+{
+	compat_ulong_t ul;
+	compat_int_t i;
+	int err;
+
+	err = get_user(i,&data->handle);
+	err |= put_user(i,&data32->handle);
+	err |= get_user(ul,&data->bus_addr);
+	err |= put_user(ul,&data32->bus_addr);
+	return err;
+}
+
+static int compat_get_ion_cust_allocation_data(
+			struct compat_ion_cust_allocation_data __user *data32,
+			struct ion_cust_allocation_data __user *data)
+{
+    compat_ulong_t ul;
+    compat_size_t s;
+    compat_uint_t ui;
+    compat_int_t i;
+    unsigned char uc;
+    int err;
+
+    err = get_user(s,&data32->start);
+    err |= put_user(s,&data->start);
+    err |= get_user(s,&data32->len);
+    err |= put_user(s,&data->len);
+    err |= get_user(s,&data32->align);
+    err |= put_user(s,&data->align);
+    err |= get_user(ui,&data32->heap_id_mask);
+    err |= put_user(ui,&data->heap_id_mask);
+    err |= get_user(ui,&data32->flags);
+    err |= put_user(ui,&data->flags);
+    err |= get_user(i,&data32->handle);
+    err |= put_user(i,&data->handle);
+    err |= get_user(ul,&data32->miu_offset);
+    err |= put_user(ul,&data->miu_offset);
+    err |= get_user(uc,&data32->miu);
+    err |= put_user(uc,&data->miu);
+    return err;
+}
+
+static int compat_put_ion_cust_allocation_data(
+			struct compat_ion_cust_allocation_data __user *data32,
+			struct ion_cust_allocation_data __user *data)
+{
+    compat_ulong_t ul;
+    compat_size_t s;
+    compat_uint_t ui;
+    compat_int_t i;
+    unsigned char uc;
+    int err;
+
+    err = get_user(s,&data->start);
+    err |= put_user(s,&data32->start);
+    err |= get_user(s,&data->len);
+    err |= put_user(s,&data32->len);
+    err |= get_user(s,&data->align);
+    err |= put_user(s,&data32->align);
+    err |= get_user(ui,&data->heap_id_mask);
+    err |= put_user(ui,&data32->heap_id_mask);
+    err |= get_user(ui,&data->flags);
+    err |= put_user(ui,&data32->flags);
+    err |= get_user(i,&data->handle);
+    err |= put_user(i,&data32->handle);
+    err |= get_user(ul,&data->miu_offset);
+    err |= put_user(ul,&data32->miu_offset);
+    err |= get_user(uc,&data->miu);
+    err |= put_user(uc,&data32->miu);
+    return err;
+}
+#endif
+
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+static int compat_get_ion_flush_cache_data(
+	struct compat_ion_cache_flush_data __user *data32,
+	struct ion_cache_flush_data __user *data)
+{
+	int err;
+	compat_size_t s;
+
+	err = get_user(s,&data32->start);
+	err |= put_user(s,&data->start);
+	err |= get_user(s,&data32->len);
+	err |= put_user(s,&data->len);
+
+	return err;
+}
+#endif
 
 static int compat_put_ion_allocation_data(
 			struct compat_ion_allocation_data __user *data32,
@@ -189,7 +334,68 @@ long compat_ion_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case ION_IOC_SYNC:
 		return filp->f_op->unlocked_ioctl(filp, cmd,
 						(unsigned long)compat_ptr(arg));
+#if (MP_ION_PATCH_MSTAR==1)
+	case COMPAT_ION_IOC_GET_CMA_BUFFER_INFO:
+	{
+		struct compat_ion_user_data __user *data32;
+		struct ion_user_data __user *data;
+		int err;
+
+		data32 = compat_ptr(arg);
+		data = compat_alloc_user_space(sizeof(*data));
+		if (data == NULL)
+			return -EFAULT;
+
+		err = compat_get_ion_user_data(data32, data);
+		if (err)
+			return err;
+		ret = filp->f_op->unlocked_ioctl(filp, ION_IOC_GET_CMA_BUFFER_INFO,
+							(unsigned long)data);
+		err = compat_put_ion_user_data(data32, data);
+		return ret ? ret : err;
+	}
+	case COMPAT_ION_IOC_CUST_ALLOC:
+	{
+		struct compat_ion_cust_allocation_data __user *data32;
+		struct ion_cust_allocation_data __user *data;
+		int err;
+
+		data32 = compat_ptr(arg);
+		data = compat_alloc_user_space(sizeof(*data));
+		if (data == NULL)
+			return -EFAULT;
+
+		err = compat_get_ion_cust_allocation_data(data32, data);
+		if (err)
+			return err;
+		ret = filp->f_op->unlocked_ioctl(filp, ION_IOC_CUST_ALLOC,
+							(unsigned long)data);
+		err = compat_put_ion_cust_allocation_data(data32, data);
+		return ret ? ret : err;
+	}
+#endif
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+	case COMPAT_ION_IOC_CACHE_FLUSH:
+	{
+		struct compat_ion_cache_flush_data __user *data32;
+		struct ion_cache_flush_data __user *data;
+		int err;
+
+		data32 = compat_ptr(arg);
+		data = compat_alloc_user_space(sizeof(*data));
+		if (data == NULL)
+			return -EFAULT;
+
+		err = compat_get_ion_flush_cache_data(data32, data);
+		if(err)
+			return err;
+		return filp->f_op->unlocked_ioctl(filp, ION_IOC_CACHE_FLUSH,
+			(unsigned long)data);
+	}
+#endif
+#if (MP_ION_PATCH_MSTAR==1)
 	default:
 		return -ENOIOCTLCMD;
 	}
+#endif
 }

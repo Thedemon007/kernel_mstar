@@ -22,6 +22,14 @@
 #include <linux/pm_runtime.h>
 #include <linux/badblocks.h>
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD_COUNTER_MONITOR
+#include <kdebugd/kdebugd.h>
+#include <linux/time.h>
+#include <kdebugd/sec_diskusage.h>
+#endif
+#endif /* MP_DEBUG_TOOL_KDEBUG */
+
 #include "blk.h"
 
 static DEFINE_MUTEX(block_class_lock);
@@ -1873,3 +1881,25 @@ static void disk_release_events(struct gendisk *disk)
 	WARN_ON_ONCE(disk->ev && disk->ev->block != 1);
 	kfree(disk->ev);
 }
+
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD_COUNTER_MONITOR
+
+void sec_diskusage_update(struct sec_diskdata *pdisk_data)
+{
+       struct class_dev_iter iter;
+       struct device *dev;
+
+       mutex_lock(&block_class_lock);
+       class_dev_iter_init(&iter, &block_class, NULL, &disk_type);
+       while ((dev = class_dev_iter_next(&iter))) {
+                struct gendisk *disk = dev_to_disk(dev);
+
+                BUG_ON(!disk);
+                sec_diskstats_dump_entry(disk, pdisk_data);
+       }
+       class_dev_iter_exit(&iter);
+       mutex_unlock(&block_class_lock);
+}
+#endif
+#endif /* MP_DEBUG_TOOL_KDEBUG */

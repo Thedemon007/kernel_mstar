@@ -48,7 +48,11 @@ bool freezing_slow_path(struct task_struct *p)
 	if (pm_nosig_freezing || cgroup_freezing(p))
 		return true;
 
-	if (pm_freezing && !(p->flags & PF_KTHREAD))
+	if (pm_freezing && !(p->flags & PF_KTHREAD)
+#if (MP_MSTAR_STR_PROCESS_FREEZE_LATE == 1)
+                             && (!(p->flags & PF_FREEZE_LATE))
+#endif
+            )
 		return true;
 
 	return false;
@@ -145,6 +149,39 @@ bool freeze_task(struct task_struct *p)
 	spin_unlock_irqrestore(&freezer_lock, flags);
 	return true;
 }
+
+extern const char *get_task_state(struct task_struct *tsk);
+
+static inline bool is_task_running(struct task_struct *p)
+{
+	unsigned int state = (p->state | p->exit_state) & TASK_REPORT;
+
+	return (state == TASK_RUNNING);
+}
+
+static inline void _dump_mi_task(struct task_struct *p)
+{
+	if (strstr(p->comm, "MI_")) {
+		pr_info("Mstar Kernel Debug: MI-kthread (%s) in %s mode\n",
+			p->comm, get_task_state(p));
+	}
+}
+
+void mstar_forzen_task_check(struct task_struct *p)
+{
+	unsigned long flags;
+
+//	_dump_mi_task(p);
+
+	spin_lock_irqsave(&freezer_lock, flags);
+	if (!frozen(p) && is_task_running(p) && (p->flags & PF_KTHREAD)) {
+		pr_err("Mstar Kernel: %s not be frozen and in %s, force to sleep\n",
+			p->comm, get_task_state(p));
+          	wake_up_state(p, TASK_INTERRUPTIBLE);
+	}
+	spin_unlock_irqrestore(&freezer_lock, flags);
+}
+EXPORT_SYMBOL(mstar_forzen_task_check);
 
 void __thaw_task(struct task_struct *p)
 {

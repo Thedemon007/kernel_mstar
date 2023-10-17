@@ -22,7 +22,7 @@
 #include <linux/types.h>
 
 #include <asm/hwcap.h>
-
+#include <mstar/mpatch_macro.h>
 
 /*
  * PSR bits
@@ -89,6 +89,15 @@ struct user_hwdebug_state {
 		__u32	pad;
 	}		dbg_regs[16];
 };
+
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+//reference arch/arm64/include/asm/ptrace.h for kdebug
+#define ARM_cpsr       regs[16]
+#define ARM_pc         pc
+#define ARM_lr         regs[14]
+#define ARM_sp         sp
+#define ARM_fp         regs[11]
+#endif
 
 #endif /* __ASSEMBLY__ */
 

@@ -49,6 +49,10 @@
 #include "sd_ops.h"
 #include "sdio_ops.h"
 
+#ifdef CONFIG_MMC_MSTAR_MMC_EMMC
+#include "eMMC.h"
+#endif
+
 /* If the device is not responding */
 #define MMC_CORE_TIMEOUT_MS	(10 * 60 * 1000) /* 10 minute timeout */
 
@@ -62,6 +66,7 @@
 #define MMC_ERASE_TIMEOUT_MS	(60 * 1000) /* 60 s */
 
 static const unsigned freqs[] = { 400000, 300000, 200000, 100000 };
+extern struct completion mmc_done;
 
 /*
  * Enabling software CRCs on the data blocks can be a significant (30%)
@@ -234,8 +239,8 @@ EXPORT_SYMBOL(mmc_request_done);
 
 static void __mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 {
+	#if 0	/*apply for rpmb access blocking issue by using MTK patch*/
 	int err;
-
 	/* Assumes host controller has been runtime resumed by mmc_claim_host */
 	err = mmc_retune(host);
 	if (err) {
@@ -243,6 +248,7 @@ static void __mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
 		mmc_request_done(host, mrq);
 		return;
 	}
+	#endif
 
 	/*
 	 * For sdio rw commands we must wait for card busy otherwise some
@@ -2834,7 +2840,10 @@ void mmc_rescan(struct work_struct *work)
 			break;
 	}
 	mmc_release_host(host);
-
+#if !defined(CONFIG_MP_PURE_SN_32BIT) && !defined(CONFIG_MSTAR_ARM_BD_FPGA)
+	if (!mmc_card_is_removable(host))
+		complete(&mmc_done);
+#endif
  out:
 	if (host->caps & MMC_CAP_NEEDS_POLL)
 		mmc_schedule_delayed_work(&host->detect, HZ);
@@ -3075,6 +3084,26 @@ EXPORT_SYMBOL(mmc_set_embedded_sdio_data);
 static int __init mmc_init(void)
 {
 	int ret;
+	#if (!defined CONFIG_MSTAR_SDMMC) && (!defined (CONFIG_MSTAR_FCIE_HOST)) && (!defined (CONFIG_MSTAR_SDIO_HOST))
+	U16 u16_regval = 0;
+
+	#ifdef IP_FCIE_VERSION_5
+	u16_regval = REG_FCIE(FCIE_NC_FUN_CTL);	//fcie reset doesn't reset to default value
+
+	if( (u16_regval & BIT0) == BIT0 )		//if nc_en is set
+	{
+		return 0;
+	}
+	#else
+	u16_regval = REG_FCIE(FCIE_REG16h);
+
+	if( (u16_regval & BIT_KERN_CHK_NAND_EMMC) == BIT_KERN_CHK_NAND_EMMC )
+	{
+		if( (u16_regval & BIT_KERN_EMMC) != BIT_KERN_EMMC )
+			return 0;
+	}
+	#endif
+	#endif
 
 	ret = mmc_register_bus();
 	if (ret)

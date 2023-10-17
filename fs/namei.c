@@ -347,6 +347,24 @@ int generic_permission(struct inode *inode, int mask)
 			if (capable_wrt_inode_uidgid(inode,
 						     CAP_DAC_READ_SEARCH))
 				return 0;
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_CAP_DELETE
+#if defined(CONFIG_ARM64)
+	int scno = current_pt_regs()->syscallno;
+#elif defined(CONFIG_ARM)
+	int scno = current_thread_info()->syscall;
+#endif
+
+	if (capable_wrt_inode_uidgid(inode, CAP_DAC_OVERRIDE_RM) &&
+		( scno ==__NR_unlink
+			|| scno == __NR_rmdir
+			|| scno == __NR_lstat64
+			|| scno == __NR_openat
+			|| scno == __NR_access
+		)
+	)
+			return 0;
+#endif
+
 		return -EACCES;
 	}
 	/*
@@ -3837,6 +3855,12 @@ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, umode_t, mode)
 	int error;
 	unsigned int lookup_flags = LOOKUP_DIRECTORY;
 
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (pathname)
+		strncpy_from_user(current_thread_info()->lfn, pathname, strlen_user(pathname)>127? 127: strlen_user(pathname)+1);
+	current_thread_info()->sc_mode_flag = mode;
+#endif
 retry:
 	dentry = user_path_create(dfd, pathname, &path, lookup_flags);
 	if (IS_ERR(dentry))
@@ -3857,6 +3881,12 @@ retry:
 
 SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (pathname)
+		strncpy_from_user(current_thread_info()->lfn, pathname, strlen_user(pathname)>127? 127: strlen_user(pathname)+1);
+	current_thread_info()->sc_mode_flag = mode;
+#endif
 	return sys_mkdirat(AT_FDCWD, pathname, mode);
 }
 
@@ -3966,6 +3996,13 @@ exit1:
 
 SYSCALL_DEFINE1(rmdir, const char __user *, pathname)
 {
+
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (pathname)
+		strncpy_from_user (current_thread_info()->lfn, pathname, strlen_user(pathname)>127? 127: strlen_user(pathname)+1);
+        current_thread_info()->sc_mode_flag = 0;
+#endif
 	return do_rmdir(AT_FDCWD, pathname);
 }
 
@@ -4117,6 +4154,12 @@ SYSCALL_DEFINE3(unlinkat, int, dfd, const char __user *, pathname, int, flag)
 	if ((flag & ~AT_REMOVEDIR) != 0)
 		return -EINVAL;
 
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (pathname)
+		strncpy_from_user (current_thread_info()->lfn, pathname, strlen_user(pathname)>127? 127: strlen_user(pathname)+1);
+	current_thread_info()->sc_mode_flag = flag;
+#endif
 	if (flag & AT_REMOVEDIR)
 		return do_rmdir(dfd, pathname);
 
@@ -4125,6 +4168,13 @@ SYSCALL_DEFINE3(unlinkat, int, dfd, const char __user *, pathname, int, flag)
 
 SYSCALL_DEFINE1(unlink, const char __user *, pathname)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+
+	if (pathname)
+		strncpy_from_user(current_thread_info()->lfn, pathname, strlen_user(pathname)>127? 127: strlen_user(pathname)+1);
+	current_thread_info()->sc_mode_flag = 0;
+#endif
 	return do_unlinkat(AT_FDCWD, pathname);
 }
 
@@ -4571,6 +4621,12 @@ SYSCALL_DEFINE5(renameat2, int, olddfd, const char __user *, oldname,
 	if (flags & RENAME_EXCHANGE)
 		target_flags = 0;
 
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (oldname)
+		strncpy_from_user(current_thread_info()->lfn, oldname, strlen_user(oldname)>127? 127: strlen_user(oldname)+1 );
+        current_thread_info()->sc_mode_flag = flags;
+#endif
 retry:
 	from = user_path_parent(olddfd, oldname,
 				&old_path, &old_last, &old_type, lookup_flags);
@@ -4694,6 +4750,12 @@ SYSCALL_DEFINE4(renameat, int, olddfd, const char __user *, oldname,
 
 SYSCALL_DEFINE2(rename, const char __user *, oldname, const char __user *, newname)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (oldname)
+		strncpy_from_user(current_thread_info()->lfn, oldname, strlen_user(oldname)>127? 127: strlen_user(oldname)+1);
+        current_thread_info()->sc_mode_flag = 0;
+#endif
 	return sys_renameat2(AT_FDCWD, oldname, AT_FDCWD, newname, 0);
 }
 

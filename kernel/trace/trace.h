@@ -558,7 +558,9 @@ static __always_inline void trace_clear_recursion(int bit)
 	barrier();
 	current->trace_recursion = val;
 }
-
+#if (MP_DEBUG_TOOL_OPROFILE == 1)
+#define TRACE_PIPE_ALL_CPU	-1
+#endif /*MP_DEBUG_TOOL_OPROFILE*/
 static inline struct ring_buffer_iter *
 trace_buffer_iter(struct trace_iterator *iter, int cpu)
 {

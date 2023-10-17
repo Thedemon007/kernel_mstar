@@ -13,6 +13,8 @@
  *
  */
 
+#ifdef CONFIG_TEE_3_2
+
 #ifndef SHM_POOL_H
 #define SHM_POOL_H
 
@@ -20,4 +22,5 @@
 
 struct tee_shm_pool_mgr *optee_shm_pool_alloc_pages(void);
 
+#endif
 #endif

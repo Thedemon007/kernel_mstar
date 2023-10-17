@@ -58,6 +58,19 @@
  */
 s64 memstart_addr __ro_after_init = -1;
 phys_addr_t arm64_dma_phys_limit __ro_after_init;
+#ifdef CONFIG_MP_MMA_UMA_WITH_NARROW
+extern u64 mma_dma_zone_size;
+#endif
+#ifdef CONFIG_MSTAR_CHIP
+#ifdef CONFIG_PSTORE_RAM
+#include <linux/pstore_ram.h>
+extern struct ramoops_platform_data ramoops_data;
+#endif
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DEFAULT_BUFFER_LIMITTED_TO_LX0
+extern unsigned long lx_mem_addr;
+#endif
 
 #ifdef CONFIG_BLK_DEV_INITRD
 static int __init early_initrd(char *p)
@@ -82,7 +95,11 @@ early_param("initrd", early_initrd);
  * currently assumes that for memory starting above 4G, 32-bit devices will
  * use a DMA offset.
  */
+#ifndef CONFIG_MP_MMA_UMA_WITH_NARROW
 static phys_addr_t __init max_zone_dma_phys(void)
+#else
+phys_addr_t __init max_zone_dma_phys(void)
+#endif
 {
 	phys_addr_t offset = memblock_start_of_DRAM() & GENMASK_ULL(63, 32);
 	return min(offset + (1ULL << 32), memblock_end_of_DRAM());
@@ -173,6 +190,15 @@ static void __init arm64_memory_present(void)
 }
 #endif
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+extern phys_addr_t arm_lowmem_limit;
+void reserve_page_trace_mem(phys_addr_t beg,phys_addr_t end);
+#endif
+
+#ifdef CONFIG_MSTAR_IPAPOOL
+extern void ipa_contiguous_reserve(void);
+#endif
+
 static phys_addr_t memory_limit = (phys_addr_t)ULLONG_MAX;
 
 /*
@@ -237,9 +263,13 @@ void __init arm64_memblock_init(void)
 		 * initrd to become inaccessible via the linear mapping.
 		 * Otherwise, this is a no-op
 		 */
+#if (MP_PLATFORM_ARM_64bit_BOOTARGS_NODTB == 1)
+		u64 base = __pa(initrd_start) & PAGE_MASK;
+		u64 size = PAGE_ALIGN(__pa(initrd_end)) - base;
+#else
 		u64 base = initrd_start & PAGE_MASK;
 		u64 size = PAGE_ALIGN(initrd_end) - base;
-
+#endif
 		/*
 		 * We can only add back the initrd memory if we don't end up
 		 * with more memory than we can address via the linear mapping.
@@ -284,23 +314,77 @@ void __init arm64_memblock_init(void)
 	memblock_reserve(__pa_symbol(_text), _end - _text);
 #ifdef CONFIG_BLK_DEV_INITRD
 	if (initrd_start) {
+#if (MP_PLATFORM_ARM_64bit_BOOTARGS_NODTB == 1)
+		memblock_reserve(__virt_to_phys(initrd_start), initrd_end - initrd_start);
+#else
 		memblock_reserve(initrd_start, initrd_end - initrd_start);
 
 		/* the generic initrd code expects virtual addresses */
 		initrd_start = __phys_to_virt(initrd_start);
 		initrd_end = __phys_to_virt(initrd_end);
+
+#endif
 	}
+#endif
+
+#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+	/*
+	 * Reserve the page tables.  These are already in use,
+	 * and can only be in node 0.
+	 */
+	memblock_reserve(__pa(swapper_pg_dir), SWAPPER_DIR_SIZE);
+	memblock_reserve(__pa(idmap_pg_dir), IDMAP_DIR_SIZE);
+#endif
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+    reserve_page_trace_mem(PHYS_OFFSET, arm_lowmem_limit);
 #endif
 
 	early_init_fdt_scan_reserved_mem();
 
 	/* 4GB maximum for 32-bit only capable devices */
 	if (IS_ENABLED(CONFIG_ZONE_DMA))
+	{
+#ifdef CONFIG_MP_MMA_UMA_WITH_NARROW
+		if(mma_dma_zone_size > 0){
+			arm64_dma_phys_limit =mma_dma_zone_size + memblock_start_of_DRAM();
+                        printk("szie 0x%lx limit 0x%lx",mma_dma_zone_size,arm64_dma_phys_limit);
+                }
+		else{
+			arm64_dma_phys_limit = max_zone_dma_phys();
+			printk("\033[35m MMAP Need Set DMA ZONE SIZE !!!!!!!!!!!!!\033[m\n");
+		}
+#else
 		arm64_dma_phys_limit = max_zone_dma_phys();
+#endif
+	}
 	else
 		arm64_dma_phys_limit = PHYS_MASK + 1;
-	high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
+
+        high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
+
+#ifndef CONFIG_MP_CMA_PATCH_CMA_DEFAULT_BUFFER_LIMITTED_TO_LX0
+	/* reserve memory for DMA contigouos allocations */
+	// this is original case, we only find default cma_buffer @ whole lowmem(usually @ the backend of lowmem)
+	printk("\033[35mFunction = %s, Line = %d, find cma_default buffer at whole lowmem\033[m\n", __PRETTY_FUNCTION__, __LINE__);
 	dma_contiguous_reserve(arm64_dma_phys_limit);
+#else
+	// this is to limit cma default buffer at LX_MEM(LX0)
+	printk("\033[35mFunction = %s, Line = %d, find cma_default buffer at only LX0\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+	dma_contiguous_reserve(min((lx_mem_addr+lx_mem_size), (unsigned long)arm64_dma_phys_limit));
+#endif
+
+
+#ifdef CONFIG_MSTAR_CHIP
+	/* Reserve 16K for put magic Key,new magic mechanism*/
+	memblock_reserve(PHYS_OFFSET, 16 * 1024);
+
+#ifdef CONFIG_PSTORE_RAM
+	/* Reserve this to do ramoops (the region is defined @ dts).
+	 * The ramoops_data is defined @ fs/pstore/ram.c, you can change the setting.
+	 */
+	memblock_reserve(ramoops_data.mem_address, ramoops_data.mem_size);
+#endif
+#endif
 
 	memblock_allow_resize();
 }
@@ -404,9 +488,15 @@ static void __init free_unused_memmap(void)
  */
 void __init mem_init(void)
 {
+#ifndef CONFIG_MP_MMA_UMA_WITH_NARROW
 	if (swiotlb_force == SWIOTLB_FORCE ||
-	    max_pfn > (arm64_dma_phys_limit >> PAGE_SHIFT))
+		max_pfn > (arm64_dma_phys_limit >> PAGE_SHIFT))
 		swiotlb_init(1);
+#else
+	if (swiotlb_force == SWIOTLB_FORCE ||
+		max_pfn > (max_zone_dma_phys() >> PAGE_SHIFT))
+		swiotlb_init(1);
+#endif
 	else
 		swiotlb_force = SWIOTLB_NO_FORCE;
 
@@ -491,6 +581,7 @@ void __init mem_init(void)
 
 void free_initmem(void)
 {
+#if !defined(CONFIG_MP_MSTAR_STR_BASE)
 	free_reserved_area(lm_alias(__init_begin),
 			   lm_alias(__init_end),
 			   0, "unused kernel");
@@ -500,6 +591,7 @@ void free_initmem(void)
 	 * is not supported by kallsyms.
 	 */
 	unmap_kernel_range((u64)__init_begin, (u64)(__init_end - __init_begin));
+#endif
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD

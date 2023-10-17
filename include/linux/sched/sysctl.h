@@ -26,6 +26,19 @@ extern unsigned int sysctl_sched_use_walt_task_util;
 extern unsigned int sysctl_sched_walt_init_task_load_pct;
 extern unsigned int sysctl_sched_walt_cpu_high_irqload;
 #endif
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_BOOST_PERFORMANCE)
+extern int sysctl_enable_eas_adaptive;
+extern int sysctl_enable_eas;
+extern int sysctl_wakeup_nr_running_limit;
+extern int sysctl_load_balance_nr_running_limit;
+extern int sysctl_dynamic_cpuset;
+#endif
+#ifdef CONFIG_MP_EAS_BOOST_PERFORMANCE_DEBUG
+extern int sysctl_eas_disable_enenry_saving;
+extern int sysctl_eas_boost_value;
+#endif
+
+
 
 enum sched_tunable_scaling {
 	SCHED_TUNABLESCALING_NONE,
@@ -73,10 +86,19 @@ static inline unsigned int get_sysctl_sched_cfs_boost(void)
 {
 	return sysctl_sched_cfs_boost;
 }
+static inline int set_sysctl_sched_cfs_boost(struct task_struct *tsk, s64 boost)
+{
+    sysctl_sched_cfs_boost = boost;
+    return 0;
+}
 #else
 static inline unsigned int get_sysctl_sched_cfs_boost(void)
 {
 	return 0;
+}
+static inline int set_sysctl_sched_cfs_boost(struct task_struct *tsk, s64 boost)
+{
+    return 0;
 }
 #endif
 

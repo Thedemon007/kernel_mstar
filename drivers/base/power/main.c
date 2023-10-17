@@ -34,7 +34,7 @@
 #include <linux/cpuidle.h>
 #include <linux/timer.h>
 #include <linux/wakeup_reason.h>
-
+#include <linux/freezer.h>
 #include "../base.h"
 #include "power.h"
 
@@ -1137,6 +1137,9 @@ int dpm_suspend_noirq(pm_message_t state)
 			list_move(&dev->power.entry, &dpm_noirq_list);
 		put_device(dev);
 
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+        if(!is_mstar_str())
+#endif
 		if (async_error)
 			break;
 	}
@@ -1279,6 +1282,9 @@ int dpm_suspend_late(pm_message_t state)
 		}
 		put_device(dev);
 
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+        if(!is_mstar_str())
+#endif
 		if (async_error)
 			break;
 	}
@@ -1343,12 +1349,30 @@ static int legacy_suspend(struct device *dev, pm_message_t state,
 	return error;
 }
 
+static int mstar_see_no_freeze_task(void)
+{
+	struct task_struct *g, *p;
+
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, p) {
+		/* Skip current suspend task */
+		if (p == current)
+			continue;
+
+		mstar_forzen_task_check(p);
+	}
+	read_unlock(&tasklist_lock);
+
+	return 0;
+}
+
 /**
  * device_suspend - Execute "suspend" callbacks for given device.
  * @dev: Device to handle.
  * @state: PM transition of the system being carried out.
  * @async: If true, the device is being suspended asynchronously.
  */
+#define MI_MODULE "mik.0"
 static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 {
 	pm_callback_t callback = NULL;
@@ -1374,6 +1398,9 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	if (pm_runtime_barrier(dev) && device_may_wakeup(dev))
 		pm_wakeup_event(dev, 0);
 
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+    if(!is_mstar_str())
+#endif
 	if (pm_wakeup_pending()) {
 		pm_get_active_wakeup_sources(suspend_abort,
 			MAX_SUSPEND_ABORT_LEN);
@@ -1444,6 +1471,10 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 
 	error = dpm_run_callback(callback, dev, state, info);
 
+	/* After mi module suspended, make sure no kthread still alive */
+	if (!strcmp(dev_name(dev), MI_MODULE))
+		mstar_see_no_freeze_task();
+
  End:
 	if (!error) {
 		struct device *parent = dev->parent;
@@ -1472,6 +1503,7 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	TRACE_SUSPEND(error);
 	return error;
 }
+#undef MI_MODULE
 
 static void async_suspend(void *data, async_cookie_t cookie)
 {
@@ -1740,8 +1772,39 @@ void dpm_for_each_dev(void *data, void (*fn)(struct device *, void *))
 	list_for_each_entry(dev, &dpm_list, power.entry)
 		fn(dev, data);
 	device_pm_unlock();
+
 }
 EXPORT_SYMBOL_GPL(dpm_for_each_dev);
+
+void dpm_move_before(struct device *deva, struct device *devb)
+{
+	if(!deva || !devb)
+		return;
+
+	device_pm_move_before(deva, devb);
+}
+EXPORT_SYMBOL_GPL(dpm_move_before);
+
+struct device* dpm_get_dev(const char* name)
+{
+	struct device *tmp_dev;
+
+	if(!name)
+		return NULL;
+
+	device_pm_lock();
+	list_for_each_entry(tmp_dev, &dpm_list, power.entry)
+		if(!strcmp(dev_name(tmp_dev), name)) {
+			pr_debug("Get dpm dev: %s\n", name);
+			device_pm_unlock();
+			return tmp_dev;
+		}
+
+	device_pm_unlock();
+	return NULL;
+
+}
+EXPORT_SYMBOL_GPL(dpm_get_dev);
 
 static bool pm_ops_is_empty(const struct dev_pm_ops *ops)
 {

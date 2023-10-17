@@ -26,7 +26,9 @@
 #include <linux/spinlock.h>
 #include <linux/notifier.h>
 #include <linux/suspend.h>
-
+#if defined(CONFIG_MSTAR_PM)
+#include <linux/input.h>
+#endif
 
 #define MAX_WAKEUP_REASON_IRQS 32
 static int irq_list[MAX_WAKEUP_REASON_IRQS];
@@ -40,6 +42,69 @@ static ktime_t last_monotime; /* monotonic time before last suspend */
 static ktime_t curr_monotime; /* monotonic time after last suspend */
 static ktime_t last_stime; /* monotonic boottime offset before last suspend */
 static ktime_t curr_stime; /* monotonic boottime offset after last suspend */
+
+#if defined(CONFIG_MSTAR_PM)
+static struct pwrkey_handle_t {
+	int count;
+	int nfx_key_cnt;
+	unsigned int keycode;
+} pwrkey_handle;
+
+extern u8 MDrv_PM_GetPowerOnKey(void);
+
+int mstar_cust_pwrkey_handler(unsigned int keycode)
+{
+	switch (keycode) {
+	/* poweron key */
+	case 0x46:
+		pwrkey_handle.keycode = keycode;
+		break;
+		/* netflix key */
+	case 0x03:
+		pwrkey_handle.nfx_key_cnt ++;
+		pwrkey_handle.keycode = keycode;
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static ssize_t mstar_resume_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
+		char *buf)
+{
+	int buf_offset = 0;
+	int sel;
+	unsigned int keycode = pwrkey_handle.keycode;
+	const char *reason[] = {
+		"POWER",
+		"NETFLIX",
+		"OTHERS",
+	};
+
+	if (keycode == 0)
+		keycode = MDrv_PM_GetPowerOnKey();
+
+	switch (keycode) {
+	case 0x46:
+		sel = 0;
+		break;
+	case 0x03:
+		sel = 1;
+		break;
+	default:
+		sel = 2;
+	}
+
+	buf_offset += sprintf(buf + buf_offset,
+			"power on keycode: %x, reason: %s, resume: %d, netflix_key_count = %d\n",
+			(unsigned int)keycode, reason[sel], pwrkey_handle.count,
+			pwrkey_handle.nfx_key_cnt);
+
+	return buf_offset;
+}
+#endif
 
 static ssize_t last_resume_reason_show(struct kobject *kobj, struct kobj_attribute *attr,
 		char *buf)
@@ -60,12 +125,40 @@ static ssize_t last_resume_reason_show(struct kobject *kobj, struct kobj_attribu
 						irq_list[irq_no]);
 		}
 	}
+#if defined(CONFIG_MSTAR_PM)
+	int sel;
+	unsigned int keycode = pwrkey_handle.keycode;
+	const char *reason[] = {
+		"POWER",
+		"NETFLIX",
+		"OTHERS",
+	};
+
+	if (keycode == 0)
+		keycode = MDrv_PM_GetPowerOnKey();
+
+	switch (keycode) {
+	case 0x46:
+		sel = 0;
+		break;
+	case 0x03:
+		sel = 1;
+		break;
+	default:
+		sel = 2;
+	}
+
+	buf_offset += sprintf(buf + buf_offset,
+			"power on keycode: %x, reason: %s, resume: %d, netflix_key_count = %d\n",
+			(unsigned int)keycode, reason[sel], pwrkey_handle.count,
+			pwrkey_handle.nfx_key_cnt);
+#endif
 	spin_unlock(&resume_reason_lock);
 	return buf_offset;
 }
 
 static ssize_t last_suspend_time_show(struct kobject *kobj,
-			struct kobj_attribute *attr, char *buf)
+		struct kobj_attribute *attr, char *buf)
 {
 	struct timespec sleep_time;
 	struct timespec total_time;
@@ -88,16 +181,22 @@ static ssize_t last_suspend_time_show(struct kobject *kobj,
 
 	/* Export suspend_resume_time and sleep_time in pair here. */
 	return sprintf(buf, "%lu.%09lu %lu.%09lu\n",
-				suspend_resume_time.tv_sec, suspend_resume_time.tv_nsec,
-				sleep_time.tv_sec, sleep_time.tv_nsec);
+			suspend_resume_time.tv_sec, suspend_resume_time.tv_nsec,
+			sleep_time.tv_sec, sleep_time.tv_nsec);
 }
 
 static struct kobj_attribute resume_reason = __ATTR_RO(last_resume_reason);
 static struct kobj_attribute suspend_time = __ATTR_RO(last_suspend_time);
+#if defined(CONFIG_MSTAR_PM)
+static struct kobj_attribute mstar_resume_reason = __ATTR_RO(mstar_resume_reason);
+#endif
 
 static struct attribute *attrs[] = {
 	&resume_reason.attr,
 	&suspend_time.attr,
+#if defined(CONFIG_MSTAR_PM)
+	&mstar_resume_reason.attr,
+#endif
 	NULL,
 };
 static struct attribute_group attr_group = {
@@ -140,7 +239,7 @@ int check_wakeup_reason(int irq)
 		if (irq_list[irq_no] == irq) {
 			ret = true;
 			break;
-	}
+		}
 	spin_unlock(&resume_reason_lock);
 	return ret;
 }
@@ -184,6 +283,14 @@ static int wakeup_reason_pm_event(struct notifier_block *notifier,
 		curr_monotime = ktime_get();
 		/* monotonic time since boot including the time spent in suspend */
 		curr_stime = ktime_get_boottime();
+#if defined(CONFIG_MSTAR_PM)
+		if (!suspend_abort) {
+			unsigned int key_code = MDrv_PM_GetPowerOnKey();
+
+			mstar_cust_pwrkey_handler(key_code);
+			pwrkey_handle.count ++;
+		}
+#endif
 		break;
 	default:
 		break;
@@ -202,6 +309,9 @@ int __init wakeup_reason_init(void)
 {
 	int retval;
 
+#if defined(CONFIG_MSTAR_PM)
+	pwrkey_handle.count = 0;
+#endif
 	retval = register_pm_notifier(&wakeup_reason_pm_notifier_block);
 	if (retval)
 		printk(KERN_WARNING "[%s] failed to register PM notifier %d\n",

@@ -45,6 +45,15 @@
 #define DRIVER_DESC "HID core driver"
 #define DRIVER_LICENSE "GPL"
 
+/*
+ * MONTPLUS-3568: hid_field->logical_maximum is incorrectly reported by Inigo
+ * remote controller as 255, it causes error in calculating of normalized
+ * battery level of the remote, since max value of the battery level is 100
+ * (in accordance with spec).
+ * This define enables patch to force setting hid_field->logical_maximum as 100
+ */
+#define APPLY_INIGO_BATTERY_PATCH
+
 int hid_debug = 0;
 module_param_named(debug, hid_debug, int, 0600);
 MODULE_PARM_DESC(debug, "toggle HID debugging messages");
@@ -94,17 +103,30 @@ EXPORT_SYMBOL_GPL(hid_register_report);
 static struct hid_field *hid_register_field(struct hid_report *report, unsigned usages)
 {
 	struct hid_field *field;
+	unsigned long field_size;
 
 	if (report->maxfield == HID_MAX_FIELDS) {
 		hid_err(report->device, "too many fields in report\n");
 		return NULL;
 	}
 
-	field = kzalloc((sizeof(struct hid_field) +
+	field_size = sizeof(struct hid_field) +
 			 usages * sizeof(struct hid_usage) +
-			 usages * sizeof(unsigned)), GFP_KERNEL);
-	if (!field)
-		return NULL;
+			 usages * sizeof(unsigned int);
+
+	field = kzalloc(field_size, GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN);
+	if (!field) {
+		hid_info(report->device,
+			"Failed to alloc %ld from kmalloc, fallback to vmalloc\n",
+			field_size);
+		field = vzalloc(field_size);
+
+		if (!field) {
+			hid_err(report->device,
+				"Failed to alloc %ld from vmalloc\n", field_size);
+			return NULL;
+		}
+	}
 
 	field->index = report->maxfield++;
 	report->field[field->index] = field;
@@ -582,7 +604,7 @@ static void hid_free_report(struct hid_report *report)
 	unsigned n;
 
 	for (n = 0; n < report->maxfield; n++)
-		kfree(report->field[n]);
+		kvfree(report->field[n]);
 	kfree(report);
 }
 
@@ -1275,6 +1297,7 @@ static void hid_input_field(struct hid_device *hid, struct hid_field *field,
 	__s32 min = field->logical_minimum;
 	__s32 max = field->logical_maximum;
 	__s32 *value;
+	__s32 max_patched;
 
 	value = kmalloc(sizeof(__s32) * count, GFP_ATOMIC);
 	if (!value)
@@ -1293,6 +1316,38 @@ static void hid_input_field(struct hid_device *hid, struct hid_field *field,
 		    value[n] - min < field->maxusage &&
 		    field->usage[value[n] - min].hid == HID_UP_KEYBOARD + 1)
 			goto exit;
+
+		if (field->usage->hid == HID_DC_BATTERYSTRENGTH &&
+			hid->ll_driver->battery_level_ind &&
+			(value[n] != hid->received_battery_level ||
+				value[n] == 0)) {
+			hid_info(hid, "old battery level is %d; new value[%d]=%d\n",
+				hid->received_battery_level, n, value[n]);
+
+			hid->received_battery_level = value[n];
+
+			/* Convert New Battery Level into Percentage (normalize) */
+#ifdef APPLY_INIGO_BATTERY_PATCH
+			max_patched =
+			 /* In case of Inigo (0x1949/0x0404) force to 100 */
+			 (hid->vendor == 0x1949 && hid->product == 0x0404 ?
+				100 : field->logical_maximum);
+
+			hid->battery_level = ((hid->received_battery_level -
+						field->logical_minimum) * 100) /
+						(max_patched -
+						field->logical_minimum);
+#else
+			hid->battery_level = ((hid->received_battery_level -
+						field->logical_minimum) * 100) /
+						(field->logical_maximum -
+						field->logical_minimum);
+#endif /* APPLY_INIGO_BATTERY_PATCH */
+
+			hid->ll_driver->battery_level_ind(hid,
+				hid->battery_level);
+			hid_info(hid, "new normalized battery level is %d\n", hid->battery_level);
+		}
 	}
 
 	for (n = 0; n < count; n++) {
@@ -2070,6 +2125,9 @@ static const struct hid_device_id hid_have_special_driver[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS3_CONTROLLER) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS4_CONTROLLER) },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS4_CONTROLLER) },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS4_CONTROLLER_2) },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS4_CONTROLLER_2) },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_PS4_CONTROLLER_DONGLE) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_VAIO_VGX_MOUSE) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SONY, USB_DEVICE_ID_SONY_VAIO_VGP_MOUSE) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_SINO_LITE, USB_DEVICE_ID_SINO_LITE_CONTROLLER) },
@@ -2128,6 +2186,12 @@ static const struct hid_device_id hid_have_special_driver[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_NINTENDO, USB_DEVICE_ID_NINTENDO_WIIMOTE2) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_RAZER, USB_DEVICE_ID_RAZER_BLADE_14) },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_CMEDIA, USB_DEVICE_ID_CM6533) },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LAB126, USB_DEVICE_ID_LAB126_US_KB) },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LAB126, USB_DEVICE_ID_LAB126_UK_KB) },
+	{ HID_BLUETOOTH_DEVICE(BT_VENDOR_ID_LAB126, USB_DEVICE_ID_LAB126_ASPEN_KB_US) },
+	{ HID_BLUETOOTH_DEVICE(BT_VENDOR_ID_LAB126, USB_DEVICE_ID_LAB126_ASPEN_KB_UK) },
+	{ HID_BLUETOOTH_DEVICE(BT_VENDOR_ID_LAB126, HID_ANY_ID) },
+	{ HID_USB_DEVICE(BT_VENDOR_ID_LAB126, HID_ANY_ID) },
 	{ }
 };
 

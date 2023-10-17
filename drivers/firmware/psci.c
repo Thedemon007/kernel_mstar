@@ -34,6 +34,35 @@
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 
+#ifdef CONFIG_MP_PLATFORM_ARM
+#include "mdrv_types.h"
+#endif
+
+#include "mdrv_tee_general.h"
+extern void Chip_Flush_Cache_All_Single(void);
+
+#ifdef CONFIG_MP_PLATFORM_ARM
+#define PSCI_POWER_STATE_TYPE_STANDBY		0
+#define PSCI_POWER_STATE_TYPE_POWER_DOWN	1
+
+#define PSCI_MSTAR_ARMv8_64BIT		0x0
+#define PSCI_MSTAR_ARMv8_32BIT		0x1
+#define PSCI_MSTAR_ARMv7_32BIT		0x3
+#define PSCI_MSTAR_ARM_MODE_MSAK	0xff
+
+#define PSCI_MSTAR_USER_DRIVER		0x0000
+#define PSCI_MSTAR_KERNEL_DRIVER	0x0100
+#define PSCI_MSTAR_DRIVER_MODE_MSAK	0xff00
+
+#define PSCI_MSTAR_PMU_NOT_SUPPORT	0x000000
+#define PSCI_MSTAR_PMU_SUPPORT		0x010000
+#define PSCI_MSTAR_PMU_MODE_MSAK	0xff0000
+
+#define PSCI_MSTAR_WFE		0
+#define PSCI_MSTAR_WFI		1
+
+extern uint32_t isPMU_SUPPORT;
+#endif
 /*
  * While a 64-bit OS can make calls with SMC32 calling conventions, for some
  * calls it is necessary to use SMC64 to pass or return 64-bit values.
@@ -44,6 +73,11 @@
 #define PSCI_FN_NATIVE(version, name)	PSCI_##version##_FN64_##name
 #else
 #define PSCI_FN_NATIVE(version, name)	PSCI_##version##_FN_##name
+#endif
+
+#ifdef CONFIG_MP_PLATFORM_ARM
+uint32_t isPSCI = PSCI_RET_NOT_SUPPORTED;
+uint32_t isPMU_SUPPORT = PSCI_RET_NOT_SUPPORTED;
 #endif
 
 /*
@@ -161,7 +195,27 @@ static int psci_cpu_suspend(u32 state, unsigned long entry_point)
 	u32 fn;
 
 	fn = psci_function_id[PSCI_FN_CPU_SUSPEND];
+#ifdef CONFIG_MP_PLATFORM_ARM
+	if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE) {
+	#if defined(CONFIG_MP_MSTAR_STR_BASE)
+		extern int is_mstar_str(void);
+		// is_mstar_str == 1 means user-mode STR
+		if(!is_mstar_str()) {
+			//Kernel mode Utopia
+			err = invoke_psci_fn(fn, state, entry_point, PSCI_MSTAR_ARMv8_64BIT | PSCI_MSTAR_KERNEL_DRIVER);
+		}
+		else {
+			//User mode Utopia
+			err = invoke_psci_fn(fn, state, entry_point, PSCI_MSTAR_ARMv8_64BIT | PSCI_MSTAR_USER_DRIVER);
+		}
+	#endif
+	}
+	else {
+		err = invoke_psci_fn(fn, state, entry_point, 0);
+	}
+#else //CONFIG_MP_PLATFORM_ARM
 	err = invoke_psci_fn(fn, state, entry_point, 0);
+#endif
 	return psci_to_linux_errno(err);
 }
 
@@ -171,7 +225,23 @@ static int psci_cpu_off(u32 state)
 	u32 fn;
 
 	fn = psci_function_id[PSCI_FN_CPU_OFF];
+#ifdef CONFIG_MP_PLATFORM_ARM
+	if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE) {
+	#ifdef CONFIG_MSTAR_CPU_HOTPLUG
+		if(isPMU_SUPPORT == PSCI_RET_SUCCESS)
+			err = invoke_psci_fn(fn, state, PSCI_MSTAR_PMU_SUPPORT, 0);
+		else
+			err = invoke_psci_fn(fn, state, PSCI_MSTAR_WFI, 0);
+	#else
+		err = invoke_psci_fn(fn, state, PSCI_MSTAR_WFE, 0);
+	#endif
+	}
+	else {
+		err = invoke_psci_fn(fn, state, 0, 0);
+	}
+#else //CONFIG_MP_PLATFORM_ARM
 	err = invoke_psci_fn(fn, state, 0, 0);
+#endif
 	return psci_to_linux_errno(err);
 }
 
@@ -181,7 +251,37 @@ static int psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
 	u32 fn;
 
 	fn = psci_function_id[PSCI_FN_CPU_ON];
+#ifdef CONFIG_MP_PLATFORM_ARM
+	if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE)
+	{
+#ifdef  CONFIG_ARM64
+#ifdef CONFIG_MSTAR_CPU_HOTPLUG
+
+		if(isPMU_SUPPORT == PSCI_RET_SUCCESS)
+			err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_64BIT | PSCI_MSTAR_USER_DRIVER|PSCI_MSTAR_PMU_SUPPORT);
+		else
+			err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_64BIT | PSCI_MSTAR_USER_DRIVER);
+#else
+		err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_64BIT | PSCI_MSTAR_USER_DRIVER);
+#endif
+#else
+#ifdef CONFIG_MSTAR_CPU_HOTPLUG
+
+		if(isPMU_SUPPORT == PSCI_RET_SUCCESS)
+			err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_32BIT | PSCI_MSTAR_USER_DRIVER|PSCI_MSTAR_PMU_SUPPORT);
+		else
+			err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_32BIT | PSCI_MSTAR_USER_DRIVER);
+#else
+		err = invoke_psci_fn(fn, cpuid, entry_point, PSCI_MSTAR_ARMv8_32BIT | PSCI_MSTAR_USER_DRIVER);
+#endif
+#endif
+
+	}
+	else
+		err = invoke_psci_fn(fn, cpuid, entry_point, 0);
+#else //CONFIG_MP_PLATFORM_ARM
 	err = invoke_psci_fn(fn, cpuid, entry_point, 0);
+#endif
 	return psci_to_linux_errno(err);
 }
 
@@ -198,8 +298,17 @@ static int psci_migrate(unsigned long cpuid)
 static int psci_affinity_info(unsigned long target_affinity,
 		unsigned long lowest_affinity_level)
 {
+#ifdef CONFIG_MP_PLATFORM_ARM
+	if(isPMU_SUPPORT == PSCI_RET_SUCCESS)
+		return invoke_psci_fn(PSCI_FN_NATIVE(0_2, AFFINITY_INFO),
+			      target_affinity, lowest_affinity_level, PSCI_MSTAR_PMU_SUPPORT);
+	else
+		return invoke_psci_fn(PSCI_FN_NATIVE(0_2, AFFINITY_INFO),
+			      target_affinity, lowest_affinity_level, 0);
+#else
 	return invoke_psci_fn(PSCI_FN_NATIVE(0_2, AFFINITY_INFO),
 			      target_affinity, lowest_affinity_level, 0);
+#endif
 }
 
 static int psci_migrate_info_type(void)
@@ -267,7 +376,7 @@ static int __init psci_features(u32 psci_func_id)
 			      psci_func_id, 0, 0);
 }
 
-#ifdef CONFIG_CPU_IDLE
+#if defined(CONFIG_CPU_IDLE) || defined(CONFIG_MP_PLATFORM_ARM)
 static DEFINE_PER_CPU_READ_MOSTLY(u32 *, psci_power_state);
 
 static int psci_dt_cpu_init_idle(struct device_node *cpu_node, int cpu)
@@ -416,11 +525,20 @@ int psci_cpu_suspend_enter(unsigned long index)
 	if (WARN_ON_ONCE(!index))
 		return -EINVAL;
 
+#ifdef CONFIG_MP_PLATFORM_ARM
+  	// [Note] 65536 is hardcode, it need to check state[] setting later.
+	if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE) {
+		return psci_ops.cpu_suspend(65536, 0x20280000);
+	}
+	else {
+		return psci_ops.cpu_suspend(65536, virt_to_phys(cpu_resume));
+	}
+#else
 	if (!psci_power_state_loses_context(state[index - 1]))
 		ret = psci_ops.cpu_suspend(state[index - 1], 0);
 	else
 		ret = cpu_suspend(index, psci_suspend_finisher);
-
+#endif
 	return ret;
 }
 
@@ -669,6 +787,48 @@ static const struct of_device_id psci_of_match[] __initconst = {
 	{},
 };
 
+
+void __init psci_arm32_init(void)
+{
+
+	if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE)
+	{
+		//not from dts , check smc to set the function ptr
+		uint64_t BA;
+
+		isPSCI = PSCI_RET_EOPNOTSUPP;
+		printk("\033[0;33;31m [CPU_OPS] %s %d \033[m\n",__func__,__LINE__);
+		BA = virt_to_phys((uint32_t*)&isPSCI);
+
+		Chip_Flush_Cache_All_Single();
+
+		struct arm_smccc_res_mstar input_param = {0};
+		input_param.a0 = 0xb200585b;
+		input_param.a1 = BA;
+		isPSCI = tee_fast_call_cmd(&input_param);
+
+		Chip_Flush_Cache_All_Single();
+		printk("\033[0;33;31m [CPU_OPS] %s %d %x\033[m\n",__func__,__LINE__,isPSCI);
+		if(PSCI_RET_SUCCESS == isPSCI)
+		{
+			_ms_psci_ops_set();
+
+			isPMU_SUPPORT = PSCI_RET_EOPNOTSUPP;
+			BA = virt_to_phys((uint32_t*)&isPMU_SUPPORT);
+			Chip_Flush_Cache_All_Single();
+
+			input_param.a0 = 0x8400ee20;
+			input_param.a1 = BA;
+			isPMU_SUPPORT = tee_fast_call_cmd(&input_param);
+
+			Chip_Flush_Cache_All_Single();
+			printk("\033[0;33;31m [CPU_OPS] %s %d isPMU_SUPPORT = %x\033[m\n",__func__,__LINE__,isPMU_SUPPORT);
+
+		}
+	}
+
+}
+
 int __init psci_dt_init(void)
 {
 	struct device_node *np;
@@ -704,5 +864,28 @@ int __init psci_acpi_init(void)
 		set_conduit(PSCI_CONDUIT_SMC);
 
 	return psci_probe();
+}
+#endif
+
+#ifdef CONFIG_MP_PLATFORM_ARM
+bool is_psci = false;
+
+int _ms_psci_ops_set(void)
+{
+	printk("\033[1;33;31m [CPU_PSCI] %s %d\033[m\n",__func__,__LINE__);
+	invoke_psci_fn = __invoke_psci_fn_smc;
+
+	psci_function_id[PSCI_FN_CPU_SUSPEND] = 0x84000001;
+	psci_ops.cpu_suspend = psci_cpu_suspend;
+
+	psci_function_id[PSCI_FN_CPU_OFF] = 0x84000002;
+	psci_ops.cpu_off = psci_cpu_off;
+
+	psci_function_id[PSCI_FN_CPU_ON] = 0x84000003;
+	psci_ops.cpu_on = psci_cpu_on;
+
+	is_psci = true;
+
+	return PSCI_RET_SUCCESS;
 }
 #endif

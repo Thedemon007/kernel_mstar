@@ -36,6 +36,9 @@ asmlinkage long sys_mmap(unsigned long addr, unsigned long len,
 
 	return sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 }
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+EXPORT_SYMBOL(sys_mmap);
+#endif
 
 SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 {

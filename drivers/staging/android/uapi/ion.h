@@ -22,6 +22,53 @@
 
 typedef int ion_user_handle_t;
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+/**
+ * These are the only ids that should be used for Ion heap ids.
+ * The ids listed are the order in which allocation will be attempted
+ * if specified. Don't swap the order of heap ids unless you know what
+ * you are doing!
+ * Id's are spaced by purpose to allow new Id's to be inserted in-between (for
+ * possible fallbacks)
+ */
+enum ion_heap_ids {
+    INVALID_HEAP_ID = -1,
+
+    //system heap
+    ION_SYSTEM_HEAP_ID = 0,
+
+    //system contig heap
+    ION_SYSTEM_CONTIG_HEAP_ID = 1,
+
+    //carveout heap
+    ION_CARVEOUT_HEAP_ID = 2,
+
+    //CHUNK heap
+    ION_CHUNK_HEAP_ID = 3,
+
+    //dma heap
+    ION_DMA_HEAP_ID = 4,
+
+    //CMA heap
+    //mstar id start with 15, and it is created with bootarg in module init dynamically
+    //don't add manually!!!!!!!
+    ION_CMA_HEAP_ID_START = 15,
+
+    //mstar cma heap: mali type
+    ION_MALI_MIU0_HEAP_ID = 16,
+    ION_MALI_MIU1_HEAP_ID = 17,
+    ION_MALI_MIU2_HEAP_ID = 18,
+
+    ION_CMA_MIU0_HEAP_ID = 25,
+    ION_CMA_MIU1_HEAP_ID = 26,
+    ION_CMA_MIU2_HEAP_ID = 27,
+    ION_ZRAM_MIU0_HEAP_ID = 28,
+    ION_ZRAM_MIU1_HEAP_ID = 29,
+    ION_ZRAM_MIU2_HEAP_ID = 30,
+    ION_HEAP_ID_RESERVED = 31 /** Bit reserved for ION_SECURE flag */
+};
+#endif
+
 /**
  * enum ion_heap_types - list of all possible types of heaps
  * @ION_HEAP_TYPE_SYSTEM:	 memory allocated via vmalloc
@@ -44,6 +91,10 @@ enum ion_heap_type {
 			       * must be last so device specific heaps always
 			       * are at the end of this enum
 			       */
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+	ION_HEAP_TYPE_MSTAR_CMA,
+#endif
+	ION_NUM_HEAPS = 16,
 };
 
 #define ION_NUM_HEAP_IDS		(sizeof(unsigned int) * 8)
@@ -64,6 +115,41 @@ enum ion_heap_type {
  * caches must be managed manually
  */
 #define ION_FLAG_CACHED_NEEDS_SYNC 2
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+/*alloc contiguous memory in cma heap*/
+#define ION_FLAG_CONTIGUOUS (1<<16)
+
+/*alloc contiguous memory with specified start address, only work with cma heap*/
+#define ION_FLAG_STARTADDR  (1<<17)
+
+/*alloc discrete pages in cma heap, especially for mali alloc page*/
+#define ION_FLAG_DISCRETE   (1<<18)
+
+/* alloc cleared memory */
+#define ION_FLAG_ZERO_MEMORY   (1<<19)
+#endif
+
+#ifdef CONFIG_MP_MMA_ENABLE
+#define ION_FLAG_SECURE   (1<<19)
+#define ION_FLAG_MIU_SHIFT 20
+#define ION_FLAG_MIUMASK  (3<<20)
+#define ION_FLAG_ANYMIU   (0)
+#define ION_FLAG_MIU0     (1<<20)
+#define ION_FLAG_MIU1     (2<<20)
+#define ION_FLAG_MIU2     (3<<20)
+#define ION_FLAG_WND_SHIFT ION_FLAG_MIU_SHIFT
+#define ION_FLAG_WNDMASK  ION_FLAG_MIUMASK
+#define ION_FLAG_ANYDRAM   ION_FLAG_ANYMIU
+#define ION_FLAG_WIDEDRAM  ION_FLAG_MIU0
+#define ION_FLAG_NARROWDRAM ION_FLAG_MIU1
+#define MAX_MIU_NR         (3)
+#define ION_FLAG_DMAZONE    (1<<23)  // 1 DMA ZONE,0 HIGH/NORMAL/DMA ZONE;
+/*ion flag for cma about alloc secure or un-secure*/
+#define ION_FLAG_CMA_ALLOC_SECURE  ION_FLAG_SECURE
+
+#define ION_FLAG_CMA_ALLOC_RESERVE (1<<22)
+#endif
 
 /**
  * DOC: Ion Userspace API
@@ -91,6 +177,20 @@ struct ion_allocation_data {
 	unsigned int flags;
 	ion_user_handle_t handle;
 };
+
+#ifdef CONFIG_MP_ION_PATCH_CACHE_FLUSH_MOD
+/**
+ * struct ion_cache_flush_data - metadata passed from userspace for cacheflush
+ * @start:       start address to flush
+ * @len:        size to flush
+ *
+ * Provided by userspace as an argument to the ioctl
+ */
+struct ion_cache_flush_data {
+	size_t start;
+	size_t len;
+};
+#endif
 
 /**
  * struct ion_fd_data - metadata passed to/from userspace for a handle/fd pair
@@ -158,6 +258,53 @@ struct ion_heap_query {
 	__u32 reserved2;
 };
 
+#if (MP_ION_PATCH_MSTAR==1)
+/**
+ * struct ion_cust_allocation_data - metadata passed from userspace for allocations
+ * @start:       start address when flags with ION_FLAG_STARTADDR bit setting, this para only work for cma heap
+ * @len:        size of the allocation
+ * @align:  required alignment of the allocation
+ * @heap_id_mask:   mask of heap ids to allocate from
+ * @flags:      flags passed to heap
+ * @handle:     pointer that will be populated with a cookie to use to
+ *          refer to this allocation
+ *
+ * Provided by userspace as an argument to the ioctl
+ */
+struct ion_cust_allocation_data {
+	size_t start;
+	size_t len;
+	size_t align;
+	unsigned int heap_id_mask;
+	unsigned int flags;
+	ion_user_handle_t handle;
+	unsigned long miu_offset;
+	unsigned char miu;
+};
+
+/**
+ * struct ion_user_data - for returning mapping infomation to user space
+ * @handle:         to get the buffer we want
+ * @bus_addr:       the start bus address of allocated buffer
+
+ * This is currently for heap_type is ION_HEAP_TYPE_DMA
+ */
+struct ion_user_data {
+	ion_user_handle_t handle;
+	unsigned long bus_addr;
+};
+
+/**
+ * struct ion_cust_import_data - for get newfd point to file of another process fd
+ * @pid:    point to another process
+ * @fd:     fd in another process
+ */
+struct ion_cust_import_data {
+	pid_t pid;  // of another process
+	int fd;     // fd in another process pid
+	int newfd; // in current process
+};
+#endif
 #define ION_IOC_MAGIC		'I'
 
 /**
@@ -233,4 +380,33 @@ struct ion_heap_query {
 #define ION_IOC_HEAP_QUERY     _IOWR(ION_IOC_MAGIC, 8, \
 					struct ion_heap_query)
 
+#if (MP_ION_PATCH_CACHE_FLUSH_MOD==1)
+/**
+ * DOC: ION_IOC_CACHE_FLUSH -  flush cache from start address
+ *
+ * Takes an ion_cache_flush_data struct
+ */
+#define ION_IOC_CACHE_FLUSH     _IOW(ION_IOC_MAGIC, 10, \
+                      struct ion_cache_flush_data)
+#endif
+
+#if (MP_ION_PATCH_MSTAR==1)
+/**
+ * DOC: ION_IOC_CUST_ALLOC -  allocate memory API with start address
+ *
+ * Takes an ion_cust_allocation_data struct and returns it with the handle field
+ * populated with the opaque handle for the allocation.
+ */
+#define ION_IOC_CUST_ALLOC      _IOWR(ION_IOC_MAGIC, 9, \
+					struct ion_cust_allocation_data)
+
+/**
+ * DOC: ION_IOC_GET_CMA_BUFFER_INFO - get buffer info
+ *
+ * Takes an ion_user_data struct and returns it with the bus_addr field
+ * populated with the opaque handle for the allocation.
+ */
+#define ION_IOC_GET_CMA_BUFFER_INFO     _IOWR(ION_IOC_MAGIC, 11, \
+					struct ion_user_data)
+#endif
 #endif /* _UAPI_LINUX_ION_H */

@@ -34,6 +34,7 @@
 
 #include "thermal_core.h"
 
+#include "mdrv_dvfs.h"
 /***   Private data structures to represent thermal device tree data ***/
 
 /**
@@ -997,8 +998,26 @@ int __init of_parse_thermal_zones(void)
 		/* No hwmon because there might be hwmon drivers registering */
 		tzp->no_hwmon = true;
 
-		if (!of_property_read_u32(child, "sustainable-power", &prop))
-			tzp->sustainable_power = prop;
+                #if defined CONFIG_MP_IPA_CORNER_SUSTAINABLE_POWER
+                u32 corner_power[3] = {0};
+                if (!of_property_read_u32_array(child, "sustainable-power", corner_power, ARRAY_SIZE(corner_power)))
+                {
+                     u32 corner_type = MDrvDvfsGetCPUPowerType(0);
+                     if (corner_type == 2)
+                         tzp->sustainable_power = corner_power[2]; //FF corner chip
+                     else if (corner_type == 1)
+                         tzp->sustainable_power = corner_power[1]; //TT corner chip
+                     else
+                         tzp->sustainable_power = corner_power[0]; //SS corner chip
+                }
+                else
+                #endif
+                {
+                     if (!of_property_read_u32(child, "sustainable-power", &prop))
+                     {
+                         tzp->sustainable_power = prop;
+                     }
+                }
 
 		for (i = 0; i < tz->ntrips; i++)
 			mask |= 1 << i;

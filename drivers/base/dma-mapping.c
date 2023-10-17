@@ -341,3 +341,5 @@ void dma_common_free_remap(void *cpu_addr, size_t size, unsigned long vm_flags)
 	vunmap(cpu_addr);
 }
 #endif
+
+EXPORT_SYMBOL(dma_common_contiguous_remap);

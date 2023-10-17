@@ -104,6 +104,10 @@ source "drivers/memstick/Kconfig"
 
 source "drivers/leds/Kconfig"
 
+source "drivers/switch/Kconfig"
+
+source "drivers/irblaster/Kconfig"
+
 source "drivers/accessibility/Kconfig"
 
 source "drivers/infiniband/Kconfig"
@@ -204,4 +208,11 @@ source "drivers/fpga/Kconfig"
 
 source "drivers/tee/Kconfig"
 
+source "drivers/gator/Kconfig"
+
+source "drivers/smaf/Kconfig"
+
+source "drivers/switch/Kconfig"
+
+source "drivers/mtk_misc/Kconfig"
 endmenu

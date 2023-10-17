@@ -12,6 +12,7 @@ subdir-$(CONFIG_SECURITY_LOADPIN)	+= loadpin
 
 # always enable default capabilities
 obj-y					+= commoncap.o
+obj-$(CONFIG_MP_AMAZON_NON_ROOT_SECURE)	+= white_list.o
 obj-$(CONFIG_MMU)			+= min_addr.o
 
 # Object file lists

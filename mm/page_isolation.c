@@ -13,6 +13,18 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/page_isolation.h>
 
+#ifdef CONFIG_MP_CMA_PATCH_KSM_MIGRATION_FAILURE
+#include <linux/ksm.h>
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_MIGRATION_FILTER
+#include <linux/pagemap.h>
+#endif
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+extern void show_page_trace(unsigned long pfn);
+#endif
+
 static int set_migratetype_isolate(struct page *page,
 				bool skip_hwpoisoned_pages)
 {
@@ -218,6 +230,10 @@ int undo_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
  *
  * Returns the last tested pfn.
  */
+extern void dump_page(struct page *page, const char *reason);
+#ifdef CONFIG_MP_DEBUG_TOOL_MSTAR_PAGE_OWNER
+extern void print_error_page_trace(unsigned long pfn);
+#endif
 static unsigned long
 __test_page_isolated_in_pageblock(unsigned long pfn, unsigned long end_pfn,
 				  bool skip_hwpoisoned_pages)
@@ -241,7 +257,14 @@ __test_page_isolated_in_pageblock(unsigned long pfn, unsigned long end_pfn,
 			/* A HWPoisoned page cannot be also PageBuddy */
 			pfn++;
 		else
+		{
+			printk(KERN_ERR "\033[35mFunction = %s, Line = %d, pfn 0x%lX is not PageBuddy\033[m\n", __PRETTY_FUNCTION__, __LINE__, pfn);
+#ifdef CONFIG_MP_DEBUG_TOOL_MSTAR_PAGE_OWNER
+			print_error_page_trace(pfn);
+#endif
+			dump_page(page, __PRETTY_FUNCTION__);
 			break;
+		}
 	}
 
 	return pfn;
@@ -264,10 +287,13 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 		page = __first_valid_page(pfn, pageblock_nr_pages);
 		if (page && get_pageblock_migratetype(page) != MIGRATE_ISOLATE)
 			break;
-	}
+	}	// check every first_valid_page of a page_block is MIGRATE_ISOLATE
 	page = __first_valid_page(start_pfn, end_pfn - start_pfn);
-	if ((pfn < end_pfn) || !page)
+	if ((pfn < end_pfn) || !page)	// some first_valid_page of a page_block is not MIGRATE_ISOLATE or first_valid_page of the alloc_range is not existing
+	{
+		printk("\033[35mFunction = %s, Line = %d, pfn is 0x%lX, end_pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pfn, end_pfn);
 		return -EBUSY;
+	}
 	/* Check all pages are free or marked as ISOLATED */
 	zone = page_zone(page);
 	spin_lock_irqsave(&zone->lock, flags);
@@ -277,6 +303,10 @@ int test_pages_isolated(unsigned long start_pfn, unsigned long end_pfn,
 
 	trace_test_pages_isolated(start_pfn, end_pfn, pfn);
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	if(pfn < end_pfn)
+		printk(KERN_ERR "\033[35mFunction = %s, Line = %d, pfn is 0x%lX, start_pfn is 0x%lX, end_pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pfn, start_pfn, end_pfn);
+#endif
 	return pfn < end_pfn ? -EBUSY : 0;
 }
 
@@ -298,5 +328,21 @@ struct page *alloc_migrate_target(struct page *page, unsigned long private,
 	if (PageHighMem(page))
 		gfp_mask |= __GFP_HIGHMEM;
 
+#if 0
+#ifdef CONFIG_MP_CMA_PATCH_KSM_MIGRATION_FAILURE
+	if (unlikely(page_mapping(page)&& PageKsm(page)))
+		gfp_mask &= ~__GFP_MOVABLE;
+#endif
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_MIGRATION_FILTER
+	if(page_mapping(page) && !(mapping_gfp_mask(page_mapping(page))&__GFP_MOVABLE))
+	{
+		pr_debug_ratelimited("WARNING, find unmovable file cache page in alloc_migrate_target, %ld\n", page_to_pfn(page));
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+		show_page_trace(page_to_pfn(page));
+#endif
+	}
+#endif
 	return alloc_page(gfp_mask);
 }

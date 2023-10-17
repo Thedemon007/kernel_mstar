@@ -804,6 +804,23 @@ void wait_on_page_bit(struct page *page, int bit_nr)
 }
 EXPORT_SYMBOL(wait_on_page_bit);
 
+#ifdef CONFIG_MP_CMA_PATCH_KSM_MIGRATION_FAILURE
+static int sleep_on_page_timeout(void *word)
+{
+	return io_schedule_timeout(2) ? 0 : -EAGAIN;
+}
+
+void wait_on_page_bit_timeout(struct page *page, int bit_nr)
+{
+	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
+
+	if (test_bit(bit_nr, &page->flags))
+		__wait_on_bit(page_waitqueue(page), &wait,
+			sleep_on_page_timeout, TASK_UNINTERRUPTIBLE);
+}
+EXPORT_SYMBOL(wait_on_page_bit_timeout);
+#endif
+
 int wait_on_page_bit_killable(struct page *page, int bit_nr)
 {
 	DEFINE_WAIT_BIT(wait, &page->flags, bit_nr);
@@ -1236,6 +1253,9 @@ no_page:
 		if (fgp_flags & FGP_NOFS)
 			gfp_mask &= ~__GFP_FS;
 
+#ifdef CONFIG_MP_CMA_PATCH_USE_UNMOVABLE_FILE_CACHE
+		gfp_mask &= ~__GFP_MOVABLE;
+#endif
 		page = __page_cache_alloc(gfp_mask);
 		if (!page)
 			return NULL;
@@ -2176,8 +2196,11 @@ no_cached_page:
 	 * We're only likely to ever get here if MADV_RANDOM is in
 	 * effect.
 	 */
+#ifdef CONFIG_MP_CMA_PATCH_USE_UNMOVABLE_FILE_CACHE
+	error = page_cache_read(file, offset, vmf->gfp_mask & ~__GFP_MOVABLE);
+#else
 	error = page_cache_read(file, offset, vmf->gfp_mask);
-
+#endif
 	/*
 	 * The page we want has now been added to the page cache.
 	 * In the unlikely event that someone removed it in the

@@ -40,6 +40,28 @@
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
 
+// This memory region will be reserved @ arch/arm64/mm/init.c
+struct ramoops_platform_data ramoops_data = {
+	.mem_size = 0x100000,
+	.mem_address = 0x23500000,
+	.record_size = SZ_128K,
+	.console_size = SZ_128K,
+	.pmsg_size = SZ_128K,
+	.ftrace_size = SZ_128K,
+	.tvmsg_size = SZ_16K,
+	.dump_oops = 1,
+	.ecc_info = {
+		.ecc_size	= 16,
+	},
+};
+
+static struct platform_device ramoops_dev = {
+	.name = "ramoops",
+	.dev = {
+		.platform_data = &ramoops_data,
+	},
+};
+
 static ulong record_size = MIN_MEM_SIZE;
 module_param(record_size, ulong, 0400);
 MODULE_PARM_DESC(record_size,
@@ -56,6 +78,12 @@ MODULE_PARM_DESC(ftrace_size, "size of ftrace log");
 static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
 module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
+
+#ifdef CONFIG_PSTORE_TVMSG
+static ulong ramoops_tvmsg_size = MIN_MEM_SIZE;
+module_param_named(tvmsg_size, ramoops_tvmsg_size, ulong, 0400);
+MODULE_PARM_DESC(tvmsg_size, "size of user space tv message log");
+#endif
 
 static unsigned long long mem_address;
 module_param(mem_address, ullong, 0400);
@@ -89,6 +117,9 @@ struct ramoops_context {
 	struct persistent_ram_zone *cprz;
 	struct persistent_ram_zone *fprz;
 	struct persistent_ram_zone *mprz;
+#ifdef CONFIG_PSTORE_TVMSG
+	struct persistent_ram_zone *tvprz;
+#endif
 	phys_addr_t phys_addr;
 	unsigned long size;
 	unsigned int memtype;
@@ -96,6 +127,9 @@ struct ramoops_context {
 	size_t console_size;
 	size_t ftrace_size;
 	size_t pmsg_size;
+#ifdef CONFIG_PSTORE_TVMSG
+	size_t tvmsg_size;
+#endif
 	int dump_oops;
 	struct persistent_ram_ecc_info ecc_info;
 	unsigned int max_dump_cnt;
@@ -105,6 +139,9 @@ struct ramoops_context {
 	unsigned int console_read_cnt;
 	unsigned int ftrace_read_cnt;
 	unsigned int pmsg_read_cnt;
+#ifdef CONFIG_PSTORE_TVMSG
+	unsigned int tvmsg_read_cnt;
+#endif
 	struct pstore_info pstore;
 };
 
@@ -119,14 +156,17 @@ static int ramoops_pstore_open(struct pstore_info *psi)
 	cxt->console_read_cnt = 0;
 	cxt->ftrace_read_cnt = 0;
 	cxt->pmsg_read_cnt = 0;
+#ifdef CONFIG_PSTORE_TVMSG
+	cxt->tvmsg_read_cnt = 0;
+#endif
 	return 0;
 }
 
 static struct persistent_ram_zone *
 ramoops_get_next_prz(struct persistent_ram_zone *przs[], uint *c, uint max,
-		     u64 *id,
-		     enum pstore_type_id *typep, enum pstore_type_id type,
-		     bool update)
+			 u64 *id,
+			 enum pstore_type_id *typep, enum pstore_type_id type,
+			 bool update)
 {
 	struct persistent_ram_zone *prz;
 	int i = (*c)++;
@@ -180,16 +220,67 @@ static bool prz_ok(struct persistent_ram_zone *prz)
 			   persistent_ram_ecc_string(prz, NULL, 0));
 }
 
+const char *uboot_log_mark = "========== UBOOT LOG (above log from last boot, this log from current boot) ==========";
+
+static ssize_t get_uboot_log_size(void)
+{
+	struct device_node *root = NULL;
+	struct property *pp_value = NULL;
+	ssize_t ret_value = 0;
+
+	root = of_find_node_by_path("/ubootlog");
+	if (root) {
+		pp_value = of_find_property(root, "value", NULL);
+		if (pp_value && pp_value->value && (pp_value->length > 0))
+			ret_value = pp_value->length + strlen(uboot_log_mark) + 5;
+		of_node_put(root);
+	}
+
+	return ret_value;
+}
+
+static void persistent_uboot_log(char *buf)
+{
+	if (!buf)
+		return;
+
+	struct device_node *root = NULL;
+	struct property *pp_value = NULL;
+
+	root = of_find_node_by_path("/ubootlog");
+	if (root) {
+		pp_value = of_find_property(root, "value", NULL);
+		if (pp_value && pp_value->value && (pp_value->length > 0)) {
+			snprintf(buf, strlen(uboot_log_mark)+5, "\n\n%s\n\n", uboot_log_mark);
+			snprintf(buf+strlen(uboot_log_mark)+4, pp_value->length,
+				 "%s", (char *)pp_value->value);
+		}
+		of_node_put(root);
+	}
+
+	return;
+}
+
+#ifdef CONFIG_PSTORE_TVMSG
+const char *tvmsg_log_mark = "===================================== TVMSG LOG ======================================";
+#endif
+
 static ssize_t ramoops_pstore_read(u64 *id, enum pstore_type_id *type,
 				   int *count, struct timespec *time,
 				   char **buf, bool *compressed,
 				   ssize_t *ecc_notice_size,
 				   struct pstore_info *psi)
 {
-	ssize_t size;
+	ssize_t size = 0, uboot_log_size = 0;
 	struct ramoops_context *cxt = psi->data;
 	struct persistent_ram_zone *prz = NULL;
 	int header_length = 0;
+	static int console_done;
+	int is_console = 0;
+#ifdef CONFIG_PSTORE_TVMSG
+	ssize_t  tvmsg_log_size = 0;
+	struct persistent_ram_zone *prz_tvmsg;
+#endif
 
 	/* Ramoops headers provide time stamps for PSTORE_TYPE_DMESG, but
 	 * PSTORE_TYPE_CONSOLE and PSTORE_TYPE_FTRACE don't currently have
@@ -207,7 +298,7 @@ static ssize_t ramoops_pstore_read(u64 *id, enum pstore_type_id *type,
 		if (!prz_ok(prz))
 			continue;
 		header_length = ramoops_read_kmsg_hdr(persistent_ram_old(prz),
-						      time, compressed);
+							  time, compressed);
 		/* Clear and skip this DMESG record if it has no valid header */
 		if (!header_length) {
 			persistent_ram_free_old(prz);
@@ -216,35 +307,88 @@ static ssize_t ramoops_pstore_read(u64 *id, enum pstore_type_id *type,
 		}
 	}
 
-	if (!prz_ok(prz))
+	if (!prz_ok(prz)) {
 		prz = ramoops_get_next_prz(&cxt->cprz, &cxt->console_read_cnt,
 					   1, id, type, PSTORE_TYPE_CONSOLE, 0);
+		is_console = 1;
+	}
 	if (!prz_ok(prz))
 		prz = ramoops_get_next_prz(&cxt->fprz, &cxt->ftrace_read_cnt,
 					   1, id, type, PSTORE_TYPE_FTRACE, 0);
 	if (!prz_ok(prz))
 		prz = ramoops_get_next_prz(&cxt->mprz, &cxt->pmsg_read_cnt,
 					   1, id, type, PSTORE_TYPE_PMSG, 0);
-	if (!prz_ok(prz))
+	if (!prz_ok(prz) && (!is_console || console_done))
 		return 0;
 
-	size = persistent_ram_old_size(prz) - header_length;
+	if (prz_ok(prz)) {
+		size = persistent_ram_old_size(prz) - header_length;
 
-	/* ECC correction notice */
-	*ecc_notice_size = persistent_ram_ecc_string(prz, NULL, 0);
+		/* ECC correction notice */
+		*ecc_notice_size = persistent_ram_ecc_string(prz, NULL, 0);
+	}
 
-	*buf = kmalloc(size + *ecc_notice_size + 1, GFP_KERNEL);
-	if (*buf == NULL)
-		return -ENOMEM;
+	if (is_console) {
+		console_done = 1;
+		uboot_log_size = get_uboot_log_size();
+		if (!prz_ok(prz)) {
+			*id = 0;
+			*type = PSTORE_TYPE_CONSOLE;
+		}
+#ifdef CONFIG_PSTORE_TVMSG
+		prz_tvmsg = ramoops_get_next_prz(&cxt->tvprz, &cxt->tvmsg_read_cnt,
+					   1, id, type, PSTORE_TYPE_TVMSG, 0);
 
-	memcpy(*buf, (char *)persistent_ram_old(prz) + header_length, size);
-	persistent_ram_ecc_string(prz, *buf + size, *ecc_notice_size + 1);
+		if (prz_ok(prz_tvmsg))
+			tvmsg_log_size = persistent_ram_old_size(prz_tvmsg);
+#endif
+	}
 
-	return size;
+#ifdef CONFIG_PSTORE_TVMSG
+	if (size + *ecc_notice_size + uboot_log_size + tvmsg_log_size >= 0) {
+		*buf = kmalloc(size + *ecc_notice_size + uboot_log_size + tvmsg_log_size + strlen(tvmsg_log_mark)
+				+ 5 + 1, GFP_KERNEL);
+		if (*buf == NULL)
+			return -ENOMEM;
+
+		if (prz_ok(prz)) {
+			memcpy(*buf, (char *)persistent_ram_old(prz) + header_length, size);
+			persistent_ram_ecc_string(prz, *buf + size, *ecc_notice_size + 1);
+		}
+
+		if (is_console) {
+			if (prz_ok(prz_tvmsg)) {
+				snprintf(*buf + size + *ecc_notice_size, strlen(tvmsg_log_mark) + 5, "\n\n%s\n\n",
+						tvmsg_log_mark);
+				memcpy(*buf + size + *ecc_notice_size + strlen(tvmsg_log_mark) + 5,
+						persistent_ram_old(prz_tvmsg), tvmsg_log_size);
+			}
+			persistent_uboot_log(*buf + size + tvmsg_log_size + strlen(tvmsg_log_mark) + 5 + *ecc_notice_size + 1);
+			*id = 0;
+			*type = PSTORE_TYPE_CONSOLE;
+		}
+	}
+	return size + uboot_log_size + tvmsg_log_size + strlen(tvmsg_log_mark) + 5;
+#else
+	if (size + *ecc_notice_size + uboot_log_size >= 0) {
+		*buf = kmalloc(size + *ecc_notice_size + uboot_log_size + 1, GFP_KERNEL);
+		if (*buf == NULL)
+			return -ENOMEM;
+
+		if (prz_ok(prz)) {
+			memcpy(*buf, (char *)persistent_ram_old(prz) + header_length, size);
+			persistent_ram_ecc_string(prz, *buf + size, *ecc_notice_size + 1);
+		}
+
+		if (is_console)
+			persistent_uboot_log(*buf + size + *ecc_notice_size + 1);
+	}
+	return size + uboot_log_size;
+#endif
 }
 
 static size_t ramoops_write_kmsg_hdr(struct persistent_ram_zone *prz,
-				     bool compressed)
+					 bool compressed)
 {
 	char *hdr;
 	struct timespec timestamp;
@@ -267,11 +411,11 @@ static size_t ramoops_write_kmsg_hdr(struct persistent_ram_zone *prz,
 }
 
 static int notrace ramoops_pstore_write_buf(enum pstore_type_id type,
-					    enum kmsg_dump_reason reason,
-					    u64 *id, unsigned int part,
-					    const char *buf,
-					    bool compressed, size_t size,
-					    struct pstore_info *psi)
+						enum kmsg_dump_reason reason,
+						u64 *id, unsigned int part,
+						const char *buf,
+						bool compressed, size_t size,
+						struct pstore_info *psi)
 {
 	struct ramoops_context *cxt = psi->data;
 	struct persistent_ram_zone *prz;
@@ -293,6 +437,14 @@ static int notrace ramoops_pstore_write_buf(enum pstore_type_id type,
 		persistent_ram_write(cxt->mprz, buf, size);
 		return 0;
 	}
+#ifdef CONFIG_PSTORE_TVMSG
+	else if (type == PSTORE_TYPE_TVMSG) {
+		if (!cxt->tvprz)
+			return -ENOMEM;
+		persistent_ram_write(cxt->tvprz, buf, size);
+		return 0;
+	}
+#endif
 
 	if (type != PSTORE_TYPE_DMESG)
 		return -EINVAL;
@@ -301,7 +453,7 @@ static int notrace ramoops_pstore_write_buf(enum pstore_type_id type,
 	 * to only store crash logs, rather than storing general kernel logs.
 	 */
 	if (reason != KMSG_DUMP_OOPS &&
-	    reason != KMSG_DUMP_PANIC)
+		reason != KMSG_DUMP_PANIC)
 		return -EINVAL;
 
 	/* Skip Oopes when configured to do so. */
@@ -370,6 +522,11 @@ static int ramoops_pstore_erase(enum pstore_type_id type, u64 id, int count,
 	case PSTORE_TYPE_PMSG:
 		prz = cxt->mprz;
 		break;
+#ifdef CONFIG_PSTORE_TVMSG
+	case PSTORE_TYPE_TVMSG:
+		prz = cxt->tvprz;
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -407,7 +564,7 @@ static void ramoops_free_przs(struct ramoops_context *cxt)
 }
 
 static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
-			     phys_addr_t *paddr, size_t dump_mem_sz)
+				 phys_addr_t *paddr, size_t dump_mem_sz)
 {
 	int err = -ENOMEM;
 	int i;
@@ -425,7 +582,7 @@ static int ramoops_init_przs(struct device *dev, struct ramoops_context *cxt,
 		return -ENOMEM;
 
 	cxt->przs = kzalloc(sizeof(*cxt->przs) * cxt->max_dump_cnt,
-			     GFP_KERNEL);
+				 GFP_KERNEL);
 	if (!cxt->przs) {
 		dev_err(dev, "failed to initialize a prz array for dumps\n");
 		goto fail_mem;
@@ -458,8 +615,8 @@ fail_mem:
 }
 
 static int ramoops_init_prz(struct device *dev, struct ramoops_context *cxt,
-			    struct persistent_ram_zone **prz,
-			    phys_addr_t *paddr, size_t sz, u32 sig)
+				struct persistent_ram_zone **prz,
+				phys_addr_t *paddr, size_t sz, u32 sig)
 {
 	if (!sz)
 		return 0;
@@ -511,7 +668,7 @@ static int ramoops_parse_dt_size(struct platform_device *pdev,
 }
 
 static int ramoops_parse_dt(struct platform_device *pdev,
-			    struct ramoops_platform_data *pdata)
+				struct ramoops_platform_data *pdata)
 {
 	struct device_node *of_node = pdev->dev.of_node;
 	struct resource *res;
@@ -543,6 +700,7 @@ static int ramoops_parse_dt(struct platform_device *pdev,
 	parse_size("console-size", pdata->console_size);
 	parse_size("ftrace-size", pdata->ftrace_size);
 	parse_size("pmsg-size", pdata->pmsg_size);
+	parse_size("tvmsg-size", pdata->tvmsg_size);
 	parse_size("ecc-size", pdata->ecc_info.ecc_size);
 
 #undef parse_size
@@ -590,6 +748,13 @@ static int ramoops_probe(struct platform_device *pdev)
 		goto fail_out;
 	}
 
+#ifdef CONFIG_PSTORE_TVMSG
+	if (!pdata->tvmsg_size) {
+		pr_err("the tvmsg size must be non-zero\n");
+		goto fail_out;
+	}
+#endif
+
 	if (pdata->record_size && !is_power_of_2(pdata->record_size))
 		pdata->record_size = rounddown_pow_of_two(pdata->record_size);
 	if (pdata->console_size && !is_power_of_2(pdata->console_size))
@@ -598,6 +763,10 @@ static int ramoops_probe(struct platform_device *pdev)
 		pdata->ftrace_size = rounddown_pow_of_two(pdata->ftrace_size);
 	if (pdata->pmsg_size && !is_power_of_2(pdata->pmsg_size))
 		pdata->pmsg_size = rounddown_pow_of_two(pdata->pmsg_size);
+#ifdef CONFIG_PSTORE_TVMSG
+	if (pdata->tvmsg_size && !is_power_of_2(pdata->tvmsg_size))
+		pdata->tvmsg_size = rounddown_pow_of_two(pdata->tvmsg_size);
+#endif
 
 	cxt->size = pdata->mem_size;
 	cxt->phys_addr = pdata->mem_address;
@@ -606,6 +775,9 @@ static int ramoops_probe(struct platform_device *pdev)
 	cxt->console_size = pdata->console_size;
 	cxt->ftrace_size = pdata->ftrace_size;
 	cxt->pmsg_size = pdata->pmsg_size;
+#ifdef CONFIG_PSTORE_TVMSG
+	cxt->tvmsg_size = pdata->tvmsg_size;
+#endif
 	cxt->dump_oops = pdata->dump_oops;
 	cxt->ecc_info = pdata->ecc_info;
 
@@ -613,23 +785,34 @@ static int ramoops_probe(struct platform_device *pdev)
 
 	dump_mem_sz = cxt->size - cxt->console_size - cxt->ftrace_size
 			- cxt->pmsg_size;
+
+#ifdef CONFIG_PSTORE_TVMSG
+	dump_mem_sz -= cxt->tvmsg_size;
+#endif
+
 	err = ramoops_init_przs(dev, cxt, &paddr, dump_mem_sz);
 	if (err)
 		goto fail_out;
 
 	err = ramoops_init_prz(dev, cxt, &cxt->cprz, &paddr,
-			       cxt->console_size, 0);
+				   cxt->console_size, 0);
 	if (err)
 		goto fail_init_cprz;
 
 	err = ramoops_init_prz(dev, cxt, &cxt->fprz, &paddr, cxt->ftrace_size,
-			       LINUX_VERSION_CODE);
+				   LINUX_VERSION_CODE);
 	if (err)
 		goto fail_init_fprz;
 
 	err = ramoops_init_prz(dev, cxt, &cxt->mprz, &paddr, cxt->pmsg_size, 0);
 	if (err)
 		goto fail_init_mprz;
+
+#ifdef CONFIG_PSTORE_TVMSG
+	err = ramoops_init_prz(dev, cxt, &cxt->tvprz, &paddr, cxt->tvmsg_size, 0);
+	if (err)
+		goto fail_init_tvprz;
+#endif
 
 	cxt->pstore.data = cxt;
 	/*
@@ -656,6 +839,10 @@ static int ramoops_probe(struct platform_device *pdev)
 		cxt->pstore.flags |= PSTORE_FLAGS_FTRACE;
 	if (cxt->pmsg_size)
 		cxt->pstore.flags |= PSTORE_FLAGS_PMSG;
+#ifdef CONFIG_PSTORE_TVMSG
+	if (cxt->tvmsg_size)
+		cxt->pstore.flags |= PSTORE_FLAGS_TVMSG;
+#endif
 
 	err = pstore_register(&cxt->pstore);
 	if (err) {
@@ -674,6 +861,7 @@ static int ramoops_probe(struct platform_device *pdev)
 	ramoops_console_size = pdata->console_size;
 	ramoops_pmsg_size = pdata->pmsg_size;
 	ramoops_ftrace_size = pdata->ftrace_size;
+	ramoops_tvmsg_size = pdata->tvmsg_size;
 
 	pr_info("attached 0x%lx@0x%llx, ecc: %d/%d\n",
 		cxt->size, (unsigned long long)cxt->phys_addr,
@@ -685,6 +873,10 @@ fail_buf:
 	kfree(cxt->pstore.buf);
 fail_clear:
 	cxt->pstore.bufsize = 0;
+#ifdef CONFIG_PSTORE_TVMSG
+	persistent_ram_free(cxt->tvprz);
+fail_init_tvprz:
+#endif
 	persistent_ram_free(cxt->mprz);
 fail_init_mprz:
 	persistent_ram_free(cxt->fprz);
@@ -705,6 +897,9 @@ static int ramoops_remove(struct platform_device *pdev)
 	kfree(cxt->pstore.buf);
 	cxt->pstore.bufsize = 0;
 
+#ifdef CONFIG_PSTORE_TVMSG
+	persistent_ram_free(cxt->tvprz);
+#endif
 	persistent_ram_free(cxt->mprz);
 	persistent_ram_free(cxt->fprz);
 	persistent_ram_free(cxt->cprz);
@@ -747,6 +942,9 @@ static void ramoops_register_dummy(void)
 	dummy_data->console_size = ramoops_console_size;
 	dummy_data->ftrace_size = ramoops_ftrace_size;
 	dummy_data->pmsg_size = ramoops_pmsg_size;
+#ifdef CONFIG_PSTORE_TVMSG
+	dummy_data->tvmsg_size = ramoops_tvmsg_size;
+#endif
 	dummy_data->dump_oops = dump_oops;
 	/*
 	 * For backwards compatibility ramoops.ecc=1 means 16 bytes ECC
@@ -762,18 +960,42 @@ static void ramoops_register_dummy(void)
 	}
 }
 
+static int ramoops_console_notify(struct notifier_block *this,
+		unsigned long event, void *ptr)
+{
+	pr_emerg("ramoops unlock console ...\n");
+	emergency_unlock_console();
+
+	return 0;
+}
+
+static struct notifier_block ramoop_nb = {
+	.notifier_call = ramoops_console_notify,
+	.priority = INT_MAX,
+};
+
 static int __init ramoops_init(void)
 {
+	atomic_notifier_chain_register(&panic_notifier_list, &ramoop_nb);
 	ramoops_register_dummy();
-	return platform_driver_register(&ramoops_driver);
+	int ret;
+	int result = platform_driver_register(&ramoops_driver);
+	ret = platform_device_register(&ramoops_dev);
+	if (ret) {
+		printk(KERN_ERR "unable to register platform device\n");
+		return ret;
+	}
+
+	return result;
 }
-postcore_initcall(ramoops_init);
+late_initcall(ramoops_init);
 
 static void __exit ramoops_exit(void)
 {
 	platform_driver_unregister(&ramoops_driver);
 	platform_device_unregister(dummy);
 	kfree(dummy_data);
+	atomic_notifier_chain_unregister(&panic_notifier_list, &ramoop_nb);
 }
 module_exit(ramoops_exit);
 

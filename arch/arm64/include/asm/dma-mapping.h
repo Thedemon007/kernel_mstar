@@ -27,6 +27,10 @@
 #define DMA_ERROR_CODE	(~(dma_addr_t)0)
 extern struct dma_map_ops dummy_dma_ops;
 
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+extern struct dma_map_ops *dma_ops;
+#endif
+
 static inline struct dma_map_ops *__generic_dma_ops(struct device *dev)
 {
 	if (dev && dev->archdata.dma_ops)
@@ -36,7 +40,11 @@ static inline struct dma_map_ops *__generic_dma_ops(struct device *dev)
 	 * We expect no ISA devices, and all other DMA masters are expected to
 	 * have someone call arch_setup_dma_ops at device creation time.
 	 */
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+	return dma_ops;
+#else
 	return &dummy_dma_ops;
+#endif
 }
 
 static inline struct dma_map_ops *get_dma_ops(struct device *dev)
@@ -68,12 +76,22 @@ static inline dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
 {
 	dma_addr_t dev_addr = (dma_addr_t)paddr;
 
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+	if(!dev)
+		return dev_addr;
+#endif
+
 	return dev_addr - ((dma_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
 }
 
 static inline phys_addr_t dma_to_phys(struct device *dev, dma_addr_t dev_addr)
 {
 	phys_addr_t paddr = (phys_addr_t)dev_addr;
+
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+	if(!dev)
+		return dev_addr;
+#endif
 
 	return paddr + ((phys_addr_t)dev->dma_pfn_offset << PAGE_SHIFT);
 }

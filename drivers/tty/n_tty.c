@@ -51,7 +51,18 @@
 #include <linux/module.h>
 #include <linux/ratelimit.h>
 #include <linux/vmalloc.h>
+#include <mstar/mpatch_macro.h>
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD
+#include <kdebugd/kdebugd.h>
+
+#ifdef CONFIG_KDEBUGD_LIFE_TEST
+#include <kdbg_key_test_player.h>
+#endif /*CONFIG_KDEBUGD_LIFE_TEST*/
+#endif /*CONFIG_KDEBUGD*/
+
+#endif/*MP_DEBUG_TOOL_KDEBUG*/
 
 /* number of characters left in xmit buffer before select has we have room */
 #define WAKEUP_CHARS 256
@@ -153,6 +164,42 @@ static inline unsigned char *echo_buf_addr(struct n_tty_data *ldata, size_t i)
 {
 	return &ldata->echo_buf[i & (N_TTY_BUF_SIZE - 1)];
 }
+/* VDLinux, based SELP.Mstar default patch No.15,
+   n_tty serial input disable, SP Team 2010-01-29 */
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+
+#define MAX_STRING_SIZE 10
+static unsigned char enable_serial[MAX_STRING_SIZE];
+static unsigned char disable_serial[MAX_STRING_SIZE];
+
+static int enable_string_size=0;
+static int disable_string_size=0;
+
+static int enable_index = 0;
+static int disable_index = 0;
+
+#define SERIAL_INPUT_DISABLE 0
+#define SERIAL_INPUT_ENABLE 1
+
+#ifdef CONFIG_SERIAL_INPUT_DEFAULT_SETUP_ENABLE
+static int serial_enable = SERIAL_INPUT_ENABLE;
+#else
+static int serial_enable = SERIAL_INPUT_DISABLE;
+#endif
+
+struct tty_struct *INPUT_tty;
+#endif
+
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_ONLY_NUMBER
+#define MAX_ARRAY 19
+int allow_char[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 /* 0~9 */,
+                                                65, 66, 67, 68, 69, 70 /* A~F */,
+                                                32 /*space*/,
+                                                13 /*enter*/,
+                                                8  /*backspace*/ };
+#endif
+#endif/*MP_DEBUG_TOOL_KDEBUG*/
 
 static int tty_copy_to_user(struct tty_struct *tty, void __user *to,
 			    size_t tail, size_t n)
@@ -1224,6 +1271,180 @@ static void n_tty_receive_parity_error(struct tty_struct *tty, unsigned char c)
 		put_tty_queue(c, ldata);
 }
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD
+/* kdebugd handling code */
+
+char kdbg_buf[DEBUG_MAX_RAW_CHARS] = "";
+char input_buf[2] = {'\0',};
+
+char sched_serial[10] = "77887788";
+int  sched_serial_idx;
+
+static inline int check_debug_mode(struct tty_struct *tty, unsigned char c)
+{
+	debugd_event_t event;
+	int ret = 0;
+	static unsigned char prev_ch;
+	static unsigned int history_idx;
+	char *ptr = NULL;
+
+#ifdef CONFIG_KDEBUGD_LIFE_TEST
+	int event_val;
+#endif
+
+	if (tty != INPUT_tty)
+		return ret;
+
+#ifdef CONFIG_KDEBUGD_BG
+	if (!kdebugd_running || kdbg_mode) {
+#else
+	if (!kdebugd_running) {
+#endif
+		if (c == sched_serial[sched_serial_idx]) {
+
+			sched_serial_idx++;
+			/* printk(KERN_EMERG "[SP Kernel Debugger] "); */
+			/* printk("%d-th ENABLE Magic serial input match!\n" */
+			/*         ,sched_serial_idx); */
+			if (sched_serial_idx == strlen(sched_serial)) {
+#ifdef CONFIG_KDEBUGD_BG
+				if (!kdbg_mode) {
+#endif
+				printk(KERN_EMERG "[SP Kernel Debugger] ");
+				printk("Enable Debug Mode!\n");
+				kdebugd_start();
+				kdebugd_running = 1;
+#ifdef CONFIG_KDEBUGD_BG
+				} else {
+					printk("Kdebugd already running in Background !!!\n");
+					ret = 1;
+				}
+#endif
+			}
+
+		} else
+			sched_serial_idx = 0;
+
+		return ret;
+	}
+
+	/* Now, kdebugd is running */
+
+	ret = 1;
+#ifdef CONFIG_KDEBUGD_BG
+	if (kdbg_mode == 1)
+		return 0;
+#endif
+
+	switch (c) {
+	case 0xd: /* \n */
+
+		/* remove leading and trailing whitespaces */
+		ptr = strstrip(kdbg_buf);
+
+		/* KdebugD life Test */
+#ifdef CONFIG_KDEBUGD_LIFE_TEST
+		event_val = simple_strtoul(ptr, NULL, 0);
+		if (unlikely(g_player.capture &&
+				event_val == KDBG_MENU_KEY_TEST_PLAYER)) {
+			PRINT_KD("\n");
+			PRINT_KD("########Capturing Key Test Player Log File Stopped temporarily########\n");
+			g_player.capture = 0;
+		}
+#endif
+
+		/* copy kdbg_buf to event */
+		strncpy(event.input_string, ptr, sizeof(event.input_string) - 1);
+		event.input_string[sizeof(event.input_string) - 1] = '\0';
+
+#ifdef CONFIG_KDEBUGD_LIFE_TEST
+		if (unlikely(g_player.capture))
+			kdbg_capture_history(event.input_string,
+						sizeof(event.input_string));
+#endif
+
+		queue_add_event(&kdebugd_queue, &event);
+
+		/* Fix Me:
+		   Actually, history_idx need to be set at everyevent_tail modifying code.
+		   Now, We just set history_idx as event_tail plus 2..
+		 */
+		history_idx = kdebugd_queue.event_tail + 2;
+
+		kdbg_buf[0] = '\0';
+
+		break;
+
+		/* When arrow key is pressed, the serial driver sends below character sequently. */
+		/* e.g.
+		   0x1b  => 0x5b => 0x41(up arrow)
+		   0x1b  => 0x5b => 0x42(down arrow)
+		 */
+	case 0x1b: /* Special Key */
+	case 0x5b: /* Special Key */
+		prev_ch = c;
+		break;
+
+	case 0x41: /* Up arrow */
+		if (prev_ch == 0x5b && history_idx > 0) { /* Special Key */
+			history_idx--;
+			printk("\n%s #%d> %s", sched_serial, history_idx, kdebugd_queue.events[history_idx].input_string);
+			snprintf(kdbg_buf, DEBUG_MAX_RAW_CHARS, "%s", kdebugd_queue.events[history_idx].input_string);
+			prev_ch = c;
+		}
+		break;
+
+	case 0x42: /* Down arrow */
+		if (prev_ch == 0x5b && history_idx <= kdebugd_queue.event_tail) { /* Special Key */
+			printk("\n%s #%d> %s", sched_serial, history_idx, kdebugd_queue.events[history_idx].input_string);
+			snprintf(kdbg_buf, DEBUG_MAX_RAW_CHARS, "%s", kdebugd_queue.events[history_idx].input_string);
+			history_idx++;
+			prev_ch = c;
+		}
+		break;
+
+	case 0x8: /* Backspace */
+	case 0x7F: /* Backspace */
+		if (strlen(kdbg_buf) > 0) {
+			kdbg_buf[strlen(kdbg_buf) - 1] = '\0';
+			/* print backspace, space, backspace to remove current character */
+			printk("%c %c", c, c);
+		}
+		break;
+
+#ifdef CONFIG_KDEBUGD_FTRACE
+	case 0x9: /* Tabspace */
+		/* add tabspace to event */
+		input_buf[0] = c;
+		if (strlen(kdbg_buf) + 1 < DEBUG_MAX_RAW_CHARS)
+			strncat(kdbg_buf, input_buf, 1);
+
+		/* copy kdbg_buf to event */
+		strncpy(event.input_string, kdbg_buf, sizeof(event.input_string) - 1);
+		event.input_string[sizeof(event.input_string) - 1] = '\0';
+		queue_add_event(&kdebugd_queue, &event);
+
+		kdbg_buf[0] = '\0';
+
+		break;
+#endif /* CONFIG_KDEBUGD_FTRACE */
+
+	default:
+		input_buf[0] = c;
+		if (strlen(kdbg_buf) + 1 < DEBUG_MAX_RAW_CHARS) {
+			strncat(kdbg_buf, input_buf, 1);
+		} else {
+			printk("\n[ALERT]Can't enter more input than %d size..", DEBUG_MAX_RAW_CHARS - 1);
+		}
+		tty_put_char(tty, c);
+		break;
+
+	}
+	return ret;
+}
+#endif
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 static void
 n_tty_receive_signal_char(struct tty_struct *tty, int signal, unsigned char c)
 {
@@ -1592,6 +1813,10 @@ n_tty_receive_buf_fast(struct tty_struct *tty, const unsigned char *cp,
 		if (likely(flag == TTY_NORMAL)) {
 			unsigned char c = *cp++;
 
+#ifdef CONFIG_KDEBUGD
+			if(check_debug_mode(tty, c))
+				break;
+#endif
 			if (!test_bit(c, ldata->char_map))
 				n_tty_receive_char_fast(tty, c);
 			else if (n_tty_receive_char_special(tty, c) && count) {
@@ -1690,6 +1915,12 @@ n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
 	int room, n, rcvd = 0, overflow;
 
 	down_read(&tty->termios_rwsem);
+
+	if(ldata == NULL || tty->driver_data == NULL)
+	{
+		up_read(&tty->termios_rwsem);
+		return 0;
+	}
 
 	while (1) {
 		/*

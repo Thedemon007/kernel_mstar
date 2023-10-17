@@ -17,6 +17,9 @@
 #include <linux/uaccess.h>
 
 #include <asm/page.h>
+#ifdef CONFIG_MP_MMA_ENABLE
+//#include <asm-generic/bitops/find_from_high_to_low.h> //FIXME by josh.chang
+#endif
 
 /*
  * bitmaps provide an array of bits, implemented using an an
@@ -331,6 +334,37 @@ again:
 	return index;
 }
 EXPORT_SYMBOL(bitmap_find_next_zero_area_off);
+
+
+#ifdef CONFIG_MP_MMA_ENABLE
+//modify this into find area from high addr to low addr
+unsigned long bitmap_find_next_zero_area_from_high_to_low(unsigned long *map,
+					 unsigned long size,
+					 unsigned long start,
+					 unsigned int nr,
+					 unsigned long align_mask)
+{
+	unsigned long index, end, i;
+again:
+	index = find_next_zero_bit_from_high_to_low(map, size, start);
+	//index = find_next_zero_bit(map, size, start);
+
+	/* Align allocation */
+	//index = __ALIGN_MASK(index, align_mask);
+	index = index & (~align_mask);
+	end = index - nr;
+	if (end < start)
+		return end;
+	i = find_next_bit_from_high_to_low(map, end, index);
+	if (i > end) {
+		start = i - 1;
+		goto again;
+	}
+	//printk(KERN_ERR "nr: %u,index: %lu i: %lu\n",nr,index,i);
+	return i;
+}
+EXPORT_SYMBOL(bitmap_find_next_zero_area_from_high_to_low);
+#endif
 
 /*
  * Bitmap printing & parsing functions: first version by Nadia Yvette Chambers,

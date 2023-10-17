@@ -105,7 +105,6 @@ obj-$(CONFIG_USB_GADGET)	+= usb/
 obj-$(CONFIG_OF)		+= usb/
 obj-$(CONFIG_SERIO)		+= input/serio/
 obj-$(CONFIG_GAMEPORT)		+= input/gameport/
-obj-$(CONFIG_INPUT)		+= input/
 obj-$(CONFIG_RTC_LIB)		+= rtc/
 obj-y				+= i2c/ media/
 obj-$(CONFIG_PPS)		+= pps/
@@ -127,6 +126,8 @@ obj-$(CONFIG_CPU_IDLE)		+= cpuidle/
 obj-y				+= mmc/
 obj-$(CONFIG_MEMSTICK)		+= memstick/
 obj-$(CONFIG_NEW_LEDS)		+= leds/
+obj-$(CONFIG_SWITCH)		+= switch/
+obj-$(CONFIG_IRBLASTER_DETECTION)		+= irblaster/
 obj-$(CONFIG_INFINIBAND)	+= infiniband/
 obj-$(CONFIG_SGI_SN)		+= sn/
 obj-y				+= firmware/
@@ -158,6 +159,7 @@ obj-$(CONFIG_HYPERV)		+= hv/
 
 obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
 obj-$(CONFIG_EXTCON)		+= extcon/
+obj-$(CONFIG_SWITCH)		+= switch/
 obj-$(CONFIG_MEMORY)		+= memory/
 obj-$(CONFIG_IIO)		+= iio/
 obj-$(CONFIG_VME_BUS)		+= vme/
@@ -175,4 +177,16 @@ obj-$(CONFIG_STM)		+= hwtracing/stm/
 obj-$(CONFIG_ANDROID)		+= android/
 obj-$(CONFIG_NVMEM)		+= nvmem/
 obj-$(CONFIG_FPGA)		+= fpga/
-obj-$(CONFIG_TEE)		+= tee/
+
+obj-$(CONFIG_MSTAR_CHIP)        += mstar2/
+obj-$(CONFIG_INPUT)     += input/
+ifeq ($(CONFIG_MSTAR_3RD_PARTY), y)
+obj-$(CONFIG_MSTAR_CHIP)        += mstar3party/
+endif
+
+obj-$(CONFIG_CORESIGHT)     += coresight/
+obj-$(CONFIG_GATOR)     += gator/
+#obj-$(CONFIG_ANDROID)      += android/
+obj-$(CONFIG_SMAF)              += smaf/
+obj-$(CONFIG_TEE_2_4)		+= tee/
+obj-y					+= mtk_misc/

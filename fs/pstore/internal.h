@@ -55,6 +55,14 @@ static inline void pstore_register_pmsg(void) {}
 static inline void pstore_unregister_pmsg(void) {}
 #endif
 
+#ifdef CONFIG_PSTORE_TVMSG
+extern void pstore_register_tvmsg(void);
+extern void pstore_unregister_tvmsg(void);
+#else
+static inline void pstore_register_tvmsg(void) {}
+static inline void pstore_unregister_tvmsg(void) {}
+#endif
+
 extern struct pstore_info *psinfo;
 
 extern void	pstore_set_kmsg_bytes(int);

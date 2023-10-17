@@ -26,12 +26,23 @@
 #include <asm/irq.h>
 #include <asm/ptrace.h>
 #include <asm/irq_regs.h>
+#include <mstar/mpatch_macro.h>
 
 struct seq_file;
 struct module;
 struct msi_msg;
 enum irqchip_irq_state;
 
+#if (MP_PLATFORM_ARCH_GENERAL == 1)
+typedef enum
+{
+    E_IRQ_DISABLE = 0 << 0, // reserve for MsOS_DisableInterrupt
+    E_IRQ_ENABLE = 1 << 0, // reserve for MsOS_EnableInterrupt
+    E_IRQ_ACK = 1 << 1,
+    E_IRQ_DEBUG_STATUS_FLOW = 1 << 2,
+    E_IRQ_DEBUG_DISABLE = 1 << 31,
+} IrqDebugOpt;
+#endif/*MP_PLATFORM_ARCH_GENERAL*/
 /*
  * IRQ line status.
  *
@@ -451,6 +462,16 @@ enum {
 
 #include <linux/irqdesc.h>
 
+#if (MP_PLATFORM_ARCH_GENERAL == 1)
+/*
+ * Migration helpers for obsolete names, they will go away:
+ */
+#define hw_interrupt_type       irq_chip
+#define no_irq_type             no_irq_chip
+typedef struct irq_desc         irq_desc_t;
+
+extern struct irq_desc *irq_to_desc_alloc_node(unsigned int irq, int node);
+#endif/*MP_PLATFORM_ARCH_GENERAL*/
 /*
  * Pick up the arch-dependent methods:
  */
@@ -773,6 +794,15 @@ void arch_teardown_hwirq(unsigned int irq);
 void irq_init_desc(unsigned int irq);
 #endif
 
+#ifndef irq_reg_writel
+# define irq_reg_writel(val, addr)      writel(val, addr)
+#endif
+#ifndef irq_reg_readl
+# define irq_reg_readl(addr)            readl(addr)
+#endif
+
+
+
 /**
  * struct irq_chip_regs - register offsets for struct irq_gci
  * @enable:	Enable register offset to reg_base
@@ -980,6 +1010,7 @@ static inline void irq_gc_unlock(struct irq_chip_generic *gc) { }
 #define irq_gc_unlock_irqrestore(gc, flags)	\
 	raw_spin_unlock_irqrestore(&(gc)->lock, flags)
 
+#if 0
 static inline void irq_reg_writel(struct irq_chip_generic *gc,
 				  u32 val, int reg_offset)
 {
@@ -997,6 +1028,7 @@ static inline u32 irq_reg_readl(struct irq_chip_generic *gc,
 	else
 		return readl(gc->reg_base + reg_offset);
 }
+#endif
 
 /* Contrary to Linux irqs, for hardware irqs the irq number 0 is valid */
 #define INVALID_HWIRQ	(~0UL)

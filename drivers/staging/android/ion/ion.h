@@ -105,6 +105,9 @@ void ion_client_destroy(struct ion_client *client);
  * Allocate memory in one of the heaps provided in heap mask and return
  * an opaque handle to it.
  */
+struct ion_handle *__ion_alloc(struct ion_client *client, size_t len,
+                             size_t align, unsigned int heap_id_mask,
+                             unsigned int flags, bool grab_handle);
 struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
 			     size_t align, unsigned int heap_id_mask,
 			     unsigned int flags);
@@ -172,5 +175,29 @@ struct ion_handle *ion_import_dma_buf(struct ion_client *client,
  * another exporter is passed in this function will return ERR_PTR(-EINVAL)
  */
 struct ion_handle *ion_import_dma_buf_fd(struct ion_client *client, int fd);
+
+struct ion_handle *ion_cust_alloc(struct ion_client *client, size_t start,
+                 size_t len, size_t align, unsigned int heap_id_mask, unsigned int flags,
+		unsigned char *miu, unsigned long *miu_offset, bool grab_handle);
+
+
+#ifdef CONFIG_MSTAR_CMAPOOL
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+/**
+ * ion_get_heap_dev() - get the cma device of the specified cma heap id
+ * @client:>            the client
+ * @heap_id_mask:     cma heap id
+ *
+ * get cma device of the specified cma heap id
+ */
+struct device * ion_get_heap_dev(struct ion_client *client, unsigned int heap_id_mask);
+#endif
+#endif
+
+#ifdef CONFIG_MP_MMA_ENABLE
+
+void ion_set_buffer_cached(struct dma_buf* dmabuf, bool cached);
+
+#endif
 
 #endif /* _LINUX_ION_H */

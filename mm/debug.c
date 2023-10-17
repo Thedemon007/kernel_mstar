@@ -49,9 +49,9 @@ void __dump_page(struct page *page, const char *reason)
 	 */
 	int mapcount = PageSlab(page) ? 0 : page_mapcount(page);
 
-	pr_emerg("page:%p count:%d mapcount:%d mapping:%p index:%#lx",
-		  page, page_ref_count(page), mapcount,
-		  page->mapping, page_to_pgoff(page));
+	pr_emerg("page:%p (phy is 0x%lX), count:%d mapcount:%d mapping:%p index:%#lx PageBuddy: %d",
+		  page, page_to_phys(page), page_ref_count(page), mapcount,
+		  page->mapping, page_to_pgoff(page), atomic_read(&page->_mapcount));
 	if (PageCompound(page))
 		pr_cont(" compound_mapcount: %d", compound_mapcount(page));
 	pr_cont("\n");
@@ -95,7 +95,7 @@ EXPORT_SYMBOL(dump_vma);
 
 void dump_mm(const struct mm_struct *mm)
 {
-	pr_emerg("mm %p mmap %p seqnum %llu task_size %lu\n"
+       pr_emerg("mm %px mmap %px seqnum %llu task_size %lu\n"
 #ifdef CONFIG_MMU
 		"get_unmapped_area %p\n"
 #endif

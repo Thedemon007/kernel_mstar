@@ -52,6 +52,19 @@
 	.endm
 
 /*
+ * Save/disable and restore interrupts.
+ */
+    .macro  save_and_disable_irqs_2, olddaif
+    mrs \olddaif, daif
+    disable_irq
+    .endm
+
+    .macro  restore_irqs_2, olddaif
+    msr daif, \olddaif
+    .endm
+
+
+/*
  * Enable and disable debug exceptions.
  */
 	.macro	disable_dbg
@@ -247,35 +260,26 @@ lr	.req	x30		// link register
 #endif
 	.endm
 
-	/*
-	 * @dst: Result of per_cpu(sym, smp_processor_id())
-	 * @sym: The name of the per-cpu variable
-	 * @tmp: scratch register
-	 */
-	.macro adr_this_cpu, dst, sym, tmp
-	adr_l	\dst, \sym
-alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
-	mrs	\tmp, tpidr_el1
-alternative_else
-	mrs	\tmp, tpidr_el2
-alternative_endif
-	add	\dst, \dst, \tmp
-	.endm
-
-	/*
-	 * @dst: Result of READ_ONCE(per_cpu(sym, smp_processor_id()))
-	 * @sym: The name of the per-cpu variable
-	 * @tmp: scratch register
-	 */
-	.macro ldr_this_cpu dst, sym, tmp
-	adr_l	\dst, \sym
-alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
-	mrs	\tmp, tpidr_el1
-alternative_else
-	mrs	\tmp, tpidr_el2
-alternative_endif
-	ldr	\dst, [\dst, \tmp]
-	.endm
+       /*
+        * @dst: Result of per_cpu(sym, smp_processor_id())
+        * @sym: The name of the per-cpu variable
+        * @tmp: scratch register
+        */
+       .macro adr_this_cpu, dst, sym, tmp
+       adr_l   \dst, \sym
+       mrs     \tmp, tpidr_el1
+       add     \dst, \dst, \tmp
+       .endm
+       /*
+        * @dst: Result of READ_ONCE(per_cpu(sym, smp_processor_id()))
+        * @sym: The name of the per-cpu variable
+        * @tmp: scratch register
+        */
+       .macro ldr_this_cpu dst, sym, tmp
+       adr_l   \dst, \sym
+       mrs     \tmp, tpidr_el1
+       ldr     \dst, [\dst, \tmp]
+       .endm
 
 /*
  * vma_vm_mm - get mm pointer from vma pointer (vma->vm_mm)
@@ -469,6 +473,19 @@ alternative_endif
 
 	.macro	pte_to_phys, phys, pte
 	and	\phys, \pte, #(((1 << (48 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+	.endm
+
+/*
+ * Errata workaround post TTBRx_EL1 update.
+ */
+	.macro	post_ttbr_update_workaround
+#ifdef CONFIG_CAVIUM_ERRATUM_27456
+alternative_if ARM64_WORKAROUND_CAVIUM_27456
+	ic	iallu
+	dsb	nsh
+	isb
+alternative_else_nop_endif
+#endif
 	.endm
 
 /*

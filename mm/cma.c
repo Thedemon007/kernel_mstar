@@ -16,7 +16,12 @@
  * License or (at your optional) any later version of the license.
  */
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+/* for using pr_info */
+#define pr_fmt(fmt) "\033[31mFunction = %s, Line = %d, cma: \033[m" fmt , __PRETTY_FUNCTION__, __LINE__
+#else
 #define pr_fmt(fmt) "cma: " fmt
+#endif
 
 #ifdef CONFIG_CMA_DEBUG
 #ifndef DEBUG
@@ -38,6 +43,15 @@
 #include <trace/events/cma.h>
 
 #include "cma.h"
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+#include <linux/dma-contiguous.h>
+#include <linux/buffer_head.h>
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+extern signed long long Show_Diff_Time(char *caller, ktime_t start_time, bool print);
+#endif
 
 struct cma cma_areas[MAX_CMA_AREAS];
 unsigned cma_area_count;
@@ -105,6 +119,7 @@ static int __init cma_activate_area(struct cma *cma)
 
 	WARN_ON_ONCE(!pfn_valid(pfn));
 	zone = page_zone(pfn_to_page(pfn));
+	printk("\033[35mFunction = %s, cma_start pfn: 0x%X, length: 0x%X, is in zone %s\033[m\n", __PRETTY_FUNCTION__, (unsigned int)pfn, (unsigned int)cma->count, zone->name);
 
 	do {
 		unsigned j;
@@ -129,6 +144,10 @@ static int __init cma_activate_area(struct cma *cma)
 #ifdef CONFIG_CMA_DEBUGFS
 	INIT_HLIST_HEAD(&cma->mem_head);
 	spin_lock_init(&cma->mem_head_lock);
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	adjust_managed_cma_page_count(zone, cma->count);
 #endif
 
 	return 0;
@@ -350,6 +369,529 @@ err:
 	return ret;
 }
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_MSTAR_DRIVER_BUFFER
+static int count_cma_area_free_page_num(struct cma *counted_cma)
+{
+	int count_cma_free_page_count       = 0;
+	int count_cma_free_start			= 0;
+	int count_cma_bitmap_start_zero		= 0;
+	int count_cma_bitmap_end_zero		= 0;
+
+	printk(CMA_DEBUG "\033[32mcma_area having \033[m");
+	for(;;)
+	{
+		count_cma_bitmap_start_zero = find_next_zero_bit(counted_cma->bitmap, counted_cma->count, count_cma_free_start);
+		if(count_cma_bitmap_start_zero >= counted_cma->count)
+			break;
+
+		count_cma_free_start = count_cma_bitmap_start_zero + 1;
+
+		count_cma_bitmap_end_zero = find_next_bit(counted_cma->bitmap, counted_cma->count, count_cma_free_start);
+		if(count_cma_bitmap_end_zero >= counted_cma->count)
+		{
+			count_cma_free_page_count += (counted_cma->count - count_cma_bitmap_start_zero);
+			break;
+		}
+
+		count_cma_free_page_count += (count_cma_bitmap_end_zero - count_cma_bitmap_start_zero);
+
+		count_cma_free_start = count_cma_bitmap_end_zero + 1;
+
+		if(count_cma_free_start >= counted_cma->count)
+			break;
+	}
+	printk(CMA_DEBUG "\033[32m%d free pages\033[m\n", count_cma_free_page_count);
+
+	return count_cma_free_page_count;
+}
+
+/*
+ * bitmap_find_first_zero_area - find the first contiguous aligned zero area
+ * @map: The address to base the search on
+ * @size: The bitmap size in bits
+ * @start: The bitnumber to start searching at
+ * @nr:The max length we want, if nr < 0, the max length is not limited
+ * @len: The length of the first zero area
+ * @align_mask: Alignment mask for zero area
+ */
+static unsigned long bitmap_find_first_zero_area(unsigned long *map,
+                     unsigned long size,
+                     unsigned long start,
+                     unsigned long nr,
+                     unsigned long *len,
+                     unsigned long align_mask)
+{
+    unsigned long index, end;
+
+    index = find_next_zero_bit(map, size, start);
+
+    /* Align allocation */
+    index = __ALIGN_MASK(index, align_mask);
+
+    if(nr < 0)
+        end = size;
+    else{
+        end = index + nr;
+        if(end > size)
+            end = size;
+    }
+    end = find_next_bit(map, end, index);
+
+    *len = end - index;
+
+    return index;
+}
+
+struct page *dma_alloc_from_contiguous_direct(struct device *dev, int count,
+                       unsigned int align, long *retlen)
+{
+    unsigned long mask, pfn, pageno, start = 0, len = 0;
+    struct cma *cma = dev_get_cma_area(dev);
+    struct page *page = NULL;
+    int ret;
+
+    if (!cma || !cma->count)
+        return NULL;
+
+    if (align > CONFIG_CMA_ALIGNMENT){
+        // if size > 2^8 pages ==> align will be > 8
+        align = CONFIG_CMA_ALIGNMENT;
+    }
+
+    //printk("\033[31m%s(alloc %d pages, align %d)\033[m\n", __func__, count, align);
+
+    if (!count)
+        return NULL;
+
+    mask = (1 << align) - 1;
+
+    if(count >= 30)
+    {
+        printk(CMA_DEBUG "\033[32m[%s] Before %s \033[m", current->comm, __PRETTY_FUNCTION__);
+        count_cma_area_free_page_num(cma);
+    }
+
+    for (;;) {
+        mutex_lock(&cma->lock);
+        // bitmap_find_next_zero_area will return an index which points a zero-bit in bitmap, whose following "count" bits are all zero-bit(from pageno to pageno+count are all free pages)
+        pageno = bitmap_find_first_zero_area(cma->bitmap, cma->count,
+                            start, count, &len, mask);
+        if (pageno >= cma->count){
+            mutex_unlock(&cma->lock);
+            break;
+        }
+        bitmap_set(cma->bitmap, pageno, len);
+        mutex_unlock(&cma->lock);
+        /*
+        * It's safe to drop the lock here. We've marked this region for
+        * our exclusive use. If the migration fails we will take the
+        * lock again and unmark it.
+        */
+
+        pfn = cma->base_pfn + pageno;
+        mutex_lock(&cma_mutex);
+        ret = alloc_contig_range(pfn, pfn + len, MIGRATE_CMA);
+        mutex_unlock(&cma_mutex);
+        if (ret == 0) {
+            page = pfn_to_page(pfn);
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+			adjust_managed_cma_page_count(page_zone(page), -len);
+#endif
+            break;
+        } else if (ret != -EBUSY) {
+            printk(CMA_ERR "%s: alloc_contig_range fail\n", __func__);
+			cma_clear_bitmap(cma, pfn, len);
+            break;
+        }
+		cma_clear_bitmap(cma, pfn, len);
+        pr_info("%s(): memory range at %p is busy, retrying,%d, %d, %s\n",
+             __func__, pfn_to_page(pfn),current->pid, current->tgid, current->comm);
+        /* try again with a bit different memory target */
+        start = pageno + mask + 1;
+    }
+
+    if(count >= 30)
+    {
+        printk(CMA_DEBUG "\033[32m[%s] After %s \033[m", current->comm, __PRETTY_FUNCTION__);
+        count_cma_area_free_page_num(cma);
+    }
+
+    *retlen = len;
+    return page;
+}
+
+struct page *dma_alloc_at_from_contiguous(struct device *dev, int count,
+					unsigned int align, phys_addr_t at_addr)
+{
+	unsigned long mask, pfn, pageno, start = 0;
+	struct cma *cma = dev_get_cma_area(dev);
+	struct page *page = NULL;
+	int ret;
+	unsigned long start_pfn = __phys_to_pfn(at_addr);
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+	s64 cma_alloc_time_cost_ms = 0;
+	struct cma_measurement *cma_measurement_data = NULL;
+#endif
+
+	if (!cma || !cma->count)
+		return NULL;
+
+	if (align > CONFIG_CMA_ALIGNMENT)
+	{
+		// if size > 2^8 pages ==> align will be > 8
+		align = CONFIG_CMA_ALIGNMENT;
+	}
+
+	pr_debug("%s(cma %p, count %d, align %d)\n", __func__, (void *)cma,
+		 count, align);
+
+	if (!count)
+		return NULL;
+
+	mask = (1 << align) - 1;
+
+	if (start_pfn && start_pfn < cma->base_pfn)
+		return NULL;
+	start = start_pfn ? start_pfn - cma->base_pfn : start;		// if having start_pfn, start = start_pfn - cma->base_pfn
+
+	if(count >= 10)
+	{
+		printk(CMA_DEBUG "\033[31m%s(alloc %d pages, at_addr 0x%lX, start pfn 0x%lX)\033[m\n", __func__, count, at_addr, start_pfn);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, find bit_map from 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start);
+		printk(CMA_DEBUG "\033[32m[%s] Before %s \033[m", current->comm, __PRETTY_FUNCTION__);
+		count_cma_area_free_page_num(cma);
+	}
+	for (;;) {
+		unsigned long timeout;
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		ktime_t start_time;
+		cma_alloc_time_cost_ms = 0;
+#endif
+		mutex_lock(&cma->lock);
+		timeout = jiffies + msecs_to_jiffies(8000);
+
+		// bitmap_find_next_zero_area will return an index which points a zero-bit in bitmap, whose following "count" bits are all zero-bit(from pageno to pageno+count are all free pages)
+		pageno = bitmap_find_next_zero_area(cma->bitmap, cma->count,
+						    start, count, mask);
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		if (pageno >= cma->count || (start_pfn && start != pageno))
+#else
+		if (pageno >= cma->count || (start && start != pageno))
+#endif
+		{	// no such continuous area
+			mutex_unlock(&cma->lock);
+			break;
+		}
+
+		bitmap_set(cma->bitmap, pageno, count);
+        /*
+		 * It's safe to drop the lock here. We've marked this region for
+		 * our exclusive use. If the migration fails we will take the
+		 * lock again and unmark it.
+		 */
+		mutex_unlock(&cma->lock);
+
+		pfn = cma->base_pfn + pageno;
+retry:
+        mutex_lock(&cma_mutex);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		start_time = ktime_get_real();
+#endif
+		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		if(cma != dma_contiguous_default_area)
+		{
+			cma_measurement_data = cma->cma_measurement_ptr;
+			cma_alloc_time_cost_ms = Show_Diff_Time("alloc_contig_range", start_time, 0);
+
+			mutex_lock(&cma_measurement_data->cma_measurement_lock);
+			cma_measurement_data->total_migration_time_cost_ms += cma_alloc_time_cost_ms;
+			mutex_unlock(&cma_measurement_data->cma_measurement_lock);
+		}
+#endif
+		mutex_unlock(&cma_mutex);
+		if (ret == 0) {
+			page = pfn_to_page(pfn);
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+			adjust_managed_cma_page_count(page_zone(page), -count);
+#endif
+			break;
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		} else if (start_pfn && time_before(jiffies, timeout)) {
+#else
+		} else if (start && time_before(jiffies, timeout)) {
+#endif
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, retry, start_pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start_pfn);
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, retry, start_pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start_pfn);
+			cond_resched();
+			invalidate_bh_lrus();
+			goto retry;
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		} else if (ret != -EBUSY || start_pfn) {
+#else
+		} else if (ret != -EBUSY || start) {
+#endif
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, ret is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret);
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, ret is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret);
+			cma_clear_bitmap(cma, pfn, count);
+			break;
+		}
+		cma_clear_bitmap(cma, pfn, count);
+
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, start is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, pageno is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pageno);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pfn);
+
+		pr_info("%s(): memory range at 0x%lX is busy, retrying\n",
+			__func__, pfn << PAGE_SHIFT);
+		/* try again with a bit different memory target */
+
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		if(start_pfn)
+		{
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, do not change start from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, (pageno + mask + 1));
+		}
+		else
+		{
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, change start from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, (pageno + mask + 1));
+			start = pageno + mask + 1;
+		}
+#else
+		start = pageno + mask + 1;
+#endif
+	}
+	pr_debug("%s(): returned %p\n", __func__, page);
+
+	if(count >= 10)
+	{
+		printk(CMA_DEBUG "\033[32m[%s] After %s \033[m", current->comm, __PRETTY_FUNCTION__);
+		count_cma_area_free_page_num(cma);
+	}
+
+	return page;
+}
+#endif
+#ifdef CONFIG_MP_MMA_CMA_ENABLE
+struct page *dma_alloc_at_from_contiguous_from_high_to_low(struct device *dev, int count,
+					unsigned int align, phys_addr_t at_addr)
+{
+	unsigned long mask, pfn, pageno, start = 0, cma_bitmap_end =0;
+	struct cma *cma = dev_get_cma_area(dev);
+	struct page *page = NULL;
+	int ret;
+	unsigned long start_pfn = __phys_to_pfn(at_addr);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+	struct cma_measurement *cma_measurement_data = NULL;
+#endif
+
+#ifdef CONFIG_MP_ZRAM_ZRAM_USING_CMA_PAGES
+	int get_start = 0;
+	int should_refind = 1;
+	int remain_free_page_cnt = 0;
+#endif
+
+	if (!cma || !cma->count)
+		return NULL;
+	if (align > CONFIG_CMA_ALIGNMENT)
+	{
+		// if size > 2^8 pages ==> align will be > 8
+		align = CONFIG_CMA_ALIGNMENT;
+	}
+
+	printk(KERN_ERR "%s(cma %p, alloc %d pages, align %d)\n", __func__, (void *)cma, count, align);
+
+	if (!count)
+		return NULL;
+
+	mask = (1 << align) - 1;
+
+	if (start_pfn && start_pfn < cma->base_pfn)
+		return NULL;
+	start = start_pfn ? start_pfn - cma->base_pfn : start;		// if having start_pfn, start = start_pfn - cma->base_pfn
+
+#ifdef CONFIG_MP_ZRAM_ZRAM_USING_CMA_PAGES
+	/* for zram's frequent allocation, we dont always want to find free_cma_area from the cma_start page(the begin page of cma)
+	 * we now change the cma_start page, however, the start_pfn is still 0, so all check condition will be same
+	 */
+	for(get_start = 0; get_start < zram_device_cnt; get_start++)
+	{
+		if(dev && (dev == zram_cma_device[get_start]))
+		{
+			start = zram_cma_start[get_start];
+			break;
+		}
+	}
+#endif
+
+	if(count >= 10)
+	{
+		printk(CMA_DEBUG "\033[31m%s(alloc %d pages, at_addr 0x%X, start pfn 0x%X)\033[m\n", __func__, count, (unsigned int)at_addr, (unsigned int)start_pfn);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, find bit_map from 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start);
+		printk(CMA_DEBUG "\033[32m[%s] Before %s \033[m", current->comm, __PRETTY_FUNCTION__);
+		count_cma_area_free_page_num(cma);
+	}
+
+	for (;;) {
+		unsigned long timeout;
+#ifdef CONFIG_MP_ZRAM_ZRAM_USING_CMA_PAGES
+		unsigned long start_print = 0;
+		unsigned long bitmap_size = BITS_TO_LONGS(cma->count) * sizeof(long);
+#endif
+		mutex_lock(&cma->lock);
+		timeout = jiffies + msecs_to_jiffies(8000);
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		ktime_t start_time;
+		s64 cma_alloc_time_cost_ms = 0;
+#endif
+
+refind:
+		// bitmap_find_next_zero_area will return an index which points a zero-bit in bitmap, whose following "count" bits are all zero-bit(from pageno to pageno+count are all free pages)
+		if(!cma_bitmap_end)
+                    cma_bitmap_end = cma->count;
+		pageno = bitmap_find_next_zero_area_from_high_to_low(cma->bitmap, cma_bitmap_end,
+							start, count, mask);
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		if (pageno >= cma->count || (start_pfn && start != pageno)){	// no such continuous area
+#else
+		if (pageno >= cma->count || (start && start != pageno)){	// no such continuous area
+#endif
+
+#ifdef CONFIG_MP_ZRAM_ZRAM_USING_CMA_PAGES
+			/* this means we are using zram_cma_alloc */
+			if(get_start < zram_device_cnt)
+			{
+				remain_free_page_cnt = count_cma_area_free_page_num(cma);
+				if(should_refind && remain_free_page_cnt > 0)
+				{
+					printk(KERN_ERR "\033[31mFunction = %s, Line = %d, we need to goto the start of buffer to refind, should_refind is %d, remain_free_page_cnt is %d\033[m\n",
+						__PRETTY_FUNCTION__, __LINE__, should_refind, remain_free_page_cnt);
+					printk(KERN_ERR "\033[35mFunction = %s, Line = %d, start is 0x%lX, count is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, count);
+					should_refind = 0;
+					start = 0;
+					zram_cma_start[get_start] = 0;
+
+					goto refind;
+				}
+
+				printk(KERN_ERR "\033[35mFunction = %s, Line = %d, start is %lu, count is %d, pageno is %lu, cma->count is %lu\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, count, pageno, cma->count);
+				printk(KERN_ERR "\033[35mFunction = %s, Line = %d, bitmap from 0x%lX to 0x%lX, bitmap_size is 0x%lX\033[m\n",
+					__PRETTY_FUNCTION__, __LINE__, cma->bitmap, cma->bitmap + bitmap_size/4, bitmap_size);
+				printk(KERN_ERR "\033[35mFunction = %s, Line = %d, zram_cma_start is %lu\033[m\n", __PRETTY_FUNCTION__, __LINE__, zram_cma_start[get_start]);
+
+				for(start_print = cma->bitmap; start_print < cma->bitmap + bitmap_size/4; start_print += BITS_PER_LONG/8)
+					printk(KERN_ERR "\033[35mLine = %d, [0x%lX] bitmap = 0x%lX\033[m\n", __LINE__, start_print, *(unsigned long *)start_print);
+			}
+#endif
+
+			mutex_unlock(&cma->lock);
+			break;
+		}
+
+		bitmap_set(cma->bitmap, pageno, count);
+		/*
+		 * It's safe to drop the lock here. We've marked this region for
+		 * our exclusive use. If the migration fails we will take the
+		 * lock again and unmark it.
+		 */
+
+		mutex_unlock(&cma->lock);
+
+		pfn = cma->base_pfn + pageno;
+retry:
+		mutex_lock(&cma_mutex);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		start_time = ktime_get_real();
+#endif
+		ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		if(cma != dma_contiguous_default_area)
+		{
+			cma_measurement_data = cma->cma_measurement_ptr;
+			cma_alloc_time_cost_ms = Show_Diff_Time("alloc_contig_range", start_time, 0);
+
+			mutex_lock(&cma_measurement_data->cma_measurement_lock);
+			cma_measurement_data->total_migration_time_cost_ms += cma_alloc_time_cost_ms;
+			mutex_unlock(&cma_measurement_data->cma_measurement_lock);
+		}
+#endif
+		mutex_unlock(&cma_mutex);
+		if (ret == 0) {
+			page = pfn_to_page(pfn);
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+			adjust_managed_cma_page_count(page_zone(page), -count);
+#endif
+
+#ifdef CONFIG_MP_ZRAM_ZRAM_USING_CMA_PAGES
+			if(get_start < zram_device_cnt)
+				zram_cma_start[get_start] = pageno + count;
+#endif
+			break;
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		} else if (start_pfn && time_before(jiffies, timeout)) {
+#else
+		} else if (start && time_before(jiffies, timeout)) {
+#endif
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, retry\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, retry\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+			cond_resched();
+			invalidate_bh_lrus();
+			goto retry;
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		} else if (ret != -EBUSY || start_pfn) {
+#else
+		} else if (ret != -EBUSY || start) {
+#endif
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, ret is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret);
+			printk(CMA_ERR "\033[35mFunction = %s, Line = %d, cannot get cma_memory, ret is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret);
+			cma_clear_bitmap(cma, pfn, count);
+			break;
+		}
+		cma_clear_bitmap(cma, pfn, count);
+
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, start is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, pageno is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pageno);
+		printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, pfn is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, pfn);
+
+		pr_info("%s(): memory range at 0x%lX is busy, retrying\n",
+			 __func__, pfn << PAGE_SHIFT);
+		/* try again with a bit different memory target */
+
+#ifdef CONFIG_MP_CMA_PATCH_FORCE_ALLOC_START_ADDR
+		if(start_pfn)
+		{
+			printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, do not change start from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, (pageno + mask + 1));
+		}
+		else
+		{
+			printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, change start from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, start, (pageno + mask + 1));
+			//start = pageno + mask + 1;
+                        cma_bitmap_end = cma_bitmap_end -mask -1;
+		}
+#else
+		//start = pageno + mask + 1;
+                cma_bitmap_end = cma_bitmap_end -mask -1;
+#endif
+	}
+
+	pr_debug("%s(): returned %p\n", __func__, page);
+
+
+	if(count >= 10)
+	{
+		if(page)
+			printk(CMA_DEBUG "\033[32mAlloc Bus_Addr at 0x%X\033[m\n", (unsigned int)(pfn << PAGE_SHIFT));
+
+		printk(CMA_DEBUG "\033[32m[%s] After %s \033[m", current->comm, __PRETTY_FUNCTION__);
+		count_cma_area_free_page_num(cma);
+	}
+
+	return page;
+}
+#endif
+
+
 /**
  * cma_alloc() - allocate pages from contiguous area
  * @cma:   Contiguous memory region for which the allocation is performed.
@@ -408,6 +950,9 @@ struct page *cma_alloc(struct cma *cma, size_t count, unsigned int align)
 		mutex_unlock(&cma_mutex);
 		if (ret == 0) {
 			page = pfn_to_page(pfn);
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+			adjust_managed_cma_page_count(page_zone(page), -count);
+#endif
 			break;
 		}
 
@@ -450,12 +995,14 @@ bool cma_release(struct cma *cma, const struct page *pages, unsigned int count)
 
 	if (pfn < cma->base_pfn || pfn >= cma->base_pfn + cma->count)
 		return false;
-
 	VM_BUG_ON(pfn + count > cma->base_pfn + cma->count);
-
 	free_contig_range(pfn, count);
 	cma_clear_bitmap(cma, pfn, count);
 	trace_cma_release(pfn, pages, count);
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	adjust_managed_cma_page_count(page_zone(pages), count);
+#endif
 
 	return true;
 }

@@ -35,9 +35,28 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/cpufreq_interactive.h>
 
+#if defined(CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING)
+#include "mdrv_CPU_cluster_calibrating.h"
+#endif
+
+#if defined(CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE)
+#if defined(CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING)
+extern atomic_t disable_dvfs_reboot;
+#endif
+#endif
+
+#if defined(CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING)
+unsigned int mstar_interactive_load_freq[CONFIG_NR_CPUS];
+extern struct mstar_cpufreq_policy ondemand_timer[CONFIG_NR_CPUS];
+#endif
+
 #define gov_attr_ro(_name)						\
 static struct governor_attr _name =					\
 __ATTR(_name, 0444, show_##_name, NULL)
+
+#ifdef CONFIG_MP_DVFS_FORCE_SET_TARGET_FREQ
+extern bool forcibly_set_target_flag[CONFIG_NR_CPUS];
+#endif
 
 #define gov_attr_wo(_name)						\
 static struct governor_attr _name =					\
@@ -368,14 +387,26 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 	int cpu_load;
 	int cpu = smp_processor_id();
 
+#if defined(CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING)
+        int i = 0;
+#endif
+
 	spin_lock_irqsave(&icpu->load_lock, flags);
 	now = update_load(icpu, smp_processor_id());
 	delta_time = (unsigned int)(now - icpu->cputime_speedadj_timestamp);
 	cputime_speedadj = icpu->cputime_speedadj;
 	spin_unlock_irqrestore(&icpu->load_lock, flags);
 
+#if defined(CONFIG_MP_DVFS_INTERACTIVE_PATCH)
+        if (!delta_time)
+        {
+                pr_notice_once("[%s][%d] warning: delta_time = 0 cpu=%d\n",__FUNCTION__,__LINE__, cpu);
+                return;
+        }
+#else
 	if (WARN_ON_ONCE(!delta_time))
 		return;
+#endif
 
 	spin_lock_irqsave(&icpu->target_freq_lock, flags);
 	do_div(cputime_speedadj, delta_time);
@@ -414,6 +445,18 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 					       CPUFREQ_RELATION_L);
 	new_freq = freq_table[index].frequency;
 
+#if defined(CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING)
+        mstar_interactive_load_freq[policy->cpu] = new_freq;
+
+        for_each_online_cpu(i)
+        {
+                if(ondemand_timer[i].cluster == ondemand_timer[policy->cpu].cluster)
+                {
+                        if(mstar_interactive_load_freq[policy->cpu] < mstar_interactive_load_freq[i])
+                                new_freq = mstar_interactive_load_freq[i];
+                }
+        }
+#endif
 	/*
 	 * Do not scale below floor_freq unless we have been at or above the
 	 * floor frequency for the minimum sample time since last validated.
@@ -441,8 +484,14 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 			icpu->loc_floor_val_time = now;
 	}
 
+#if defined(CONFIG_MP_DVFS_INTERACTIVE_PATCH)
+	// however, for boost mode, we will change pcpu->policy->cur directly. So, if cur_freq != new_freq, we need to do set_target
+	if (icpu->target_freq == new_freq &&
+	    icpu->target_freq == policy->cur) {
+#else
 	if (icpu->target_freq == new_freq &&
 	    icpu->target_freq <= policy->cur) {
+#endif
 		trace_cpufreq_interactive_already(cpu, cpu_load,
 			icpu->target_freq, policy->cur, new_freq);
 		goto exit;
@@ -454,6 +503,9 @@ static void eval_target_freq(struct interactive_cpu *icpu)
 	icpu->target_freq = new_freq;
 	spin_unlock_irqrestore(&icpu->target_freq_lock, flags);
 
+#if defined(CONFIG_MP_DVFS_INTERACTIVE_PATCH)
+    // target_freq is last set freq, and new_freq is wanted freq
+#endif
 	spin_lock_irqsave(&speedchange_cpumask_lock, flags);
 	cpumask_set_cpu(cpu, &speedchange_cpumask);
 	spin_unlock_irqrestore(&speedchange_cpumask_lock, flags);
@@ -1174,6 +1226,10 @@ int cpufreq_interactive_init(struct cpufreq_policy *policy)
 		}
 
 		policy->governor_data = ipolicy;
+
+#ifdef CONFIG_MSTAR_CPU_CLUSTER_CALIBRATING
+                global_tunables->hispeed_freq = policy->max;
+#endif
 		ipolicy->tunables = global_tunables;
 
 		gov_attr_set_get(&global_tunables->attr_set,
@@ -1279,9 +1335,8 @@ int cpufreq_interactive_start(struct cpufreq_policy *policy)
 
 		down_write(&icpu->enable_sem);
 		icpu->ipolicy = ipolicy;
-		up_write(&icpu->enable_sem);
-
 		slack_timer_resched(icpu, cpu, false);
+                up_write(&icpu->enable_sem);
 	}
 
 	gov_set_update_util(ipolicy);
@@ -1296,15 +1351,18 @@ void cpufreq_interactive_stop(struct cpufreq_policy *policy)
 
 	gov_clear_update_util(ipolicy->policy);
 
-	for_each_cpu(cpu, policy->cpus) {
-		icpu = &per_cpu(interactive_cpu, cpu);
+        if(atomic_read(&disable_dvfs_reboot) != 1)
+        {
+                for_each_cpu(cpu, policy->cpus) {
+                        icpu = &per_cpu(interactive_cpu, cpu);
 
-		icpu_cancel_work(icpu);
+                        icpu_cancel_work(icpu);
 
-		down_write(&icpu->enable_sem);
-		icpu->ipolicy = NULL;
-		up_write(&icpu->enable_sem);
-	}
+                        down_write(&icpu->enable_sem);
+                        icpu->ipolicy = NULL;
+                        up_write(&icpu->enable_sem);
+                }
+        }
 }
 
 void cpufreq_interactive_limits(struct cpufreq_policy *policy)
@@ -1377,6 +1435,10 @@ static int __init cpufreq_interactive_gov_init(void)
 					  NULL, "cfinteractive");
 	if (IS_ERR(speedchange_task))
 		return PTR_ERR(speedchange_task);
+
+#if defined(CONFIG_MP_DVFS_INTERACTIVE_PATCH)
+	kthread_bind(speedchange_task, 0);  // to bind the task to cpu0
+#endif
 
 	sched_setscheduler_nocheck(speedchange_task, SCHED_FIFO, &param);
 	get_task_struct(speedchange_task);

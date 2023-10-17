@@ -51,6 +51,7 @@ extern void update_idle_core(struct rq *rq);
 static inline void update_idle_core(struct rq *rq) { }
 #endif
 
+
 /*
  * Helpers for converting nanosecond timing to jiffy resolution
  */
@@ -1411,6 +1412,9 @@ static inline int idle_get_state_idx(struct rq *rq)
 }
 #endif
 
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+extern void sched_init_eas_adaptive(void);
+#endif
 extern void sysrq_sched_debug_show(void);
 extern void sched_init_granularity(void);
 extern void update_max_interval(void);

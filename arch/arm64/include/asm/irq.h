@@ -42,6 +42,12 @@ DECLARE_PER_CPU(unsigned long [IRQ_STACK_SIZE/sizeof(long)], irq_stack);
 
 extern void set_handle_irq(void (*handle_irq)(struct pt_regs *));
 
+#if defined(CONFIG_SMP) && defined(CONFIG_MP_DEBUG_TOOL_SYSRQ)
+extern void arch_trigger_cpumask_backtrace(const cpumask_t *mask,
+													bool exclude_self);
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
+#endif
+
 static inline int nr_legacy_irqs(void)
 {
 	return 0;

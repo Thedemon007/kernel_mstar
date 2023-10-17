@@ -27,7 +27,9 @@
 #include <linux/device.h>
 #include <linux/cdev.h>
 #include "input-compat.h"
-
+#if defined(CONFIG_EVDEV_MISC) || defined(CONFIG_EVDEV_MISC_MODULE)
+extern unsigned long input_dev_event_enable;
+#endif
 enum evdev_clock_type {
 	EV_CLK_REAL = 0,
 	EV_CLK_MONO,
@@ -314,12 +316,14 @@ static void evdev_events(struct input_handle *handle,
 	rcu_read_lock();
 
 	client = rcu_dereference(evdev->grab);
-
-	if (client)
-		evdev_pass_values(client, vals, count, ev_time);
-	else
-		list_for_each_entry_rcu(client, &evdev->client_list, node)
+#if defined(CONFIG_EVDEV_MISC) || defined(CONFIG_EVDEV_MISC_MODULE)
+	if(input_dev_event_enable)
+#endif
+		if (client)
 			evdev_pass_values(client, vals, count, ev_time);
+		else
+			list_for_each_entry_rcu(client, &evdev->client_list, node)
+				evdev_pass_values(client, vals, count, ev_time);
 
 	rcu_read_unlock();
 }
@@ -501,13 +505,19 @@ static int evdev_open(struct inode *inode, struct file *file)
 					bufsize * sizeof(struct input_event);
 	struct evdev_client *client;
 	int error;
+	struct input_dev *dev = evdev->handle.dev;
 
 	client = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
 	if (!client)
 		client = vzalloc(size);
 	if (!client)
 		return -ENOMEM;
-
+	if (dev->name) {
+		if (strcmp(dev->name, "Amazon Fire TV Remote") == 0) {
+			pr_info("firetv remote, set the clock to EV_CLK_MONO directly\n");
+			client->clk_type = EV_CLK_MONO;
+		}
+	}
 	client->bufsize = bufsize;
 	spin_lock_init(&client->buffer_lock);
 	client->evdev = evdev;

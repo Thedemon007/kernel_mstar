@@ -68,6 +68,9 @@ extern void usb_hub_cleanup(void);
 extern int usb_major_init(void);
 extern void usb_major_cleanup(void);
 extern int usb_device_supports_lpm(struct usb_device *udev);
+#if defined(CONFIG_SUSPEND) && defined(CONFIG_MP_USB_STR_PATCH)
+extern bool is_suspending(void);
+#endif /* CONFIG_SUSPEND && CONFIG_MP_USB_STR_PATCH */
 
 #ifdef	CONFIG_PM
 

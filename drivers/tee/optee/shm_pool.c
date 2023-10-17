@@ -21,6 +21,7 @@
 #include "optee_smc.h"
 #include "shm_pool.h"
 
+#ifdef CONFIG_TEE_3_2
 static int pool_op_alloc(struct tee_shm_pool_mgr *poolm,
 			 struct tee_shm *shm, size_t size)
 {
@@ -73,3 +74,4 @@ struct tee_shm_pool_mgr *optee_shm_pool_alloc_pages(void)
 
 	return mgr;
 }
+#endif

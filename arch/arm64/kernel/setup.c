@@ -44,6 +44,10 @@
 #include <linux/psci.h>
 #include <linux/mm.h>
 
+#ifdef CONFIG_MP_MMA_ENABLE
+#include <linux/dma-contiguous.h>
+
+#endif
 #include <asm/acpi.h>
 #include <asm/fixmap.h>
 #include <asm/cpu.h>
@@ -63,7 +67,9 @@
 #include <asm/efi.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/mmu_context.h>
+#include <mstar/mpatch_macro.h>
 
+const char *machine_name;
 phys_addr_t __fdt_pointer __initdata;
 
 /*
@@ -179,6 +185,7 @@ static void __init smp_build_mpidr_hash(void)
 
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
+	unsigned long dt_root;
 	void *dt_virt = fixmap_remap_fdt(dt_phys);
 
 	if (!dt_virt || !early_init_dt_scan(dt_virt)) {
@@ -191,7 +198,13 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 		while (true)
 			cpu_relax();
 	}
-
+	dt_root = of_get_flat_dt_root();
+	machine_name = of_get_flat_dt_prop(dt_root, "model", NULL);
+	if (!machine_name)
+		machine_name = of_get_flat_dt_prop(dt_root, "compatible", NULL);
+	if (!machine_name)
+		machine_name = "<unknown>";
+	pr_info("Machine: %s\n", machine_name);
 	dump_stack_set_arch_desc("%s (DT)", of_flat_dt_get_machine_name());
 }
 
@@ -230,9 +243,23 @@ static void __init request_standard_resources(void)
 
 u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
 
+extern void early_putstr(const char *fmt, ...);
+extern void __init prom_meminit(void);
+volatile unsigned int lx_num = 0;
+extern volatile void __iomem *UART_BASE;
+#ifdef CONFIG_BLK_DEV_INITRD
+extern char* cmd_ptr;
+#else
+char *cmd_ptr;
+#endif
 void __init setup_arch(char **cmdline_p)
 {
+#if (MP_PLATFORM_ARM_64bit_BOOTARGS_NODTB == 1)
+	extern unsigned long __cmdline;
+#endif
+
 	pr_info("Boot CPU: AArch64 Processor [%08x]\n", read_cpuid_id());
+	pr_info("PAGE_OFFSET is 0x%lX\n", PAGE_OFFSET);
 
 	sprintf(init_utsname()->machine, UTS_MACHINE);
 	init_mm.start_code = (unsigned long) _text;
@@ -245,9 +272,27 @@ void __init setup_arch(char **cmdline_p)
 	early_fixmap_init();
 	early_ioremap_init();
 
+	/* This will parse dts bootargs and save to boot_command_line,
+	 * so "cmd_ptr copy to boot_command_line" should be done after setup_machine_fdt(),
+	 * and before parse_early_param().
+	 *
+	 * However, currently, we have only a mapping for kimg from 0xFFFFFF8008000000.
+	 * So, use __phys_to_kimg(cmd_ptr)
+	 */
 	setup_machine_fdt(__fdt_pointer);
 
+#if (MP_PLATFORM_ARM_64bit_BOOTARGS_NODTB == 1)
+	cmd_ptr = (char *)__cmdline;
+	strlcpy(boot_command_line, (char*)__phys_to_kimg(cmd_ptr), COMMAND_LINE_SIZE);
+#endif
 	parse_early_param();
+#ifdef CONFIG_MP_MMA_CMA_ENABLE
+        deal_with_ion_cma();
+#endif
+
+#if (MP_PLATFORM_ARM == 1)
+	prom_meminit();
+#endif
 
 	/*
 	 *  Unmask asynchronous aborts after bringing up possible earlycon.
@@ -281,6 +326,9 @@ void __init setup_arch(char **cmdline_p)
 
 	request_standard_resources();
 
+#if (MP_PLATFORM_ARM_64bit_PORTING == 1)
+	early_iounmap(UART_BASE, PAGE_SIZE);
+#endif
 	early_ioremap_reset();
 
 	if (acpi_disabled)
@@ -332,6 +380,17 @@ static int __init topology_init(void)
 	return 0;
 }
 subsys_initcall(topology_init);
+
+#ifdef CONFIG_PLAT_MSTAR
+unsigned int get_cpu_midr(int cpu)
+{
+        struct cpuinfo_arm64 *cpuinfo = &per_cpu(cpu_data, cpu);
+        u32 midr = cpuinfo->reg_midr;
+
+    return midr;
+}
+EXPORT_SYMBOL(get_cpu_midr);
+#endif
 
 /*
  * Dump out kernel offset information on panic.

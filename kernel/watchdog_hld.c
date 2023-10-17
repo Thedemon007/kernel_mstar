@@ -132,6 +132,7 @@ static void watchdog_overflow_callback(struct perf_event *event,
 	return;
 }
 
+#ifdef CONFIG_HARDLOCKUP_DETECTOR_NMI
 /*
  * People like the simple clean cpu node info on boot.
  * Reduce the watchdog noise by only printing messages
@@ -228,3 +229,4 @@ void watchdog_nmi_disable(unsigned int cpu)
 		cpu0_err = 0;
 	}
 }
+#endif

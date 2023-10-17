@@ -28,6 +28,7 @@
 
 #include <linux/kasan.h>
 #include <linux/mm.h>
+#include <linux/cpufreq_times.h>
 #include <linux/module.h>
 #include <linux/nmi.h>
 #include <linux/init.h>
@@ -76,6 +77,15 @@
 #include <linux/frame.h>
 #include <linux/prefetch.h>
 #include <linux/cpufreq_times.h>
+#ifdef CONFIG_DEBUG_LAST_SCHED_TASK
+#include <linux/sched.h>
+#endif
+
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD_FTRACE
+#include <linux/irqflags.h>
+#endif /* CONFIG_KDEBUGD_FTRACE */
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 
 #include <asm/switch_to.h>
 #include <asm/tlb.h>
@@ -89,12 +99,24 @@
 #include "../workqueue_internal.h"
 #include "../smpboot.h"
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD
+#include <kdebugd/kdebugd.h>
+#include <kdebugd/sec_topthread.h>
+#include <linux/sort.h>     /* For sort() */
+#endif
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 #include "walt.h"
 
 DEFINE_MUTEX(sched_domains_mutex);
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+
+#ifdef CONFIG_DEBUG_LAST_SCHED_TASK
+DEFINE_PER_CPU_SHARED_ALIGNED(struct task_struct *, next_task);
+#endif
 
 static void update_rq_clock_task(struct rq *rq, s64 delta);
 
@@ -2261,6 +2283,10 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	memset(&p->se.statistics, 0, sizeof(p->se.statistics));
 #endif
 
+#ifdef CONFIG_CPU_FREQ_TIMES
+	cpufreq_task_times_init(p);
+#endif
+
 	RB_CLEAR_NODE(&p->dl.rb_node);
 	init_dl_task_timer(&p->dl);
 	__dl_clear_params(p);
@@ -3494,6 +3520,10 @@ static void __sched notrace __schedule(bool preempt)
 		rq->curr = next;
 		++*switch_count;
 
+#ifdef CONFIG_DEBUG_LAST_SCHED_TASK
+		per_cpu(next_task, cpu) = next;
+#endif
+
 		trace_sched_switch(preempt, prev, next);
 		rq = context_switch(rq, prev, next, cookie); /* unlocks the rq */
 	} else {
@@ -3503,6 +3533,29 @@ static void __sched notrace __schedule(bool preempt)
 
 	balance_callback(rq);
 }
+
+#ifdef CONFIG_DEBUG_LAST_SCHED_TASK
+void print_last_sched_task(void)
+{
+	struct task_struct *next;
+	struct rq *rq;
+	int i;
+
+	pr_emerg("sched: dump last scheduled task info\n");
+	for (i = 0; i < CONFIG_NR_CPUS; i++) {
+		rq = cpu_rq(i);
+		smp_mb__before_spinlock();
+		raw_spin_lock_irq(&rq->lock);
+		next = per_cpu(next_task, i);
+		pr_emerg("sched: cpu[%d]: last scheduled task is [%d:%s]\n",
+			i, next->pid, next->comm);
+		show_stack(next, NULL);
+		raw_spin_unlock_irq(&rq->lock);
+	}
+	pr_emerg("sched: dump last scheduled task info done\n");
+}
+EXPORT_SYMBOL(print_last_sched_task);
+#endif
 
 void __noreturn do_task_dead(void)
 {
@@ -5287,6 +5340,156 @@ out_unlock:
 
 static const char stat_nam[] = TASK_STATE_TO_CHAR_STR;
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD_MISC
+#define SPRINT_BUF_LEN 512
+static void show_task_prio(struct task_struct *p)
+{
+	unsigned state;
+	struct pt_regs *regs;
+	struct vm_area_struct *vma;
+	unsigned long stack_usage = 0;
+	unsigned long stack_size = 0;
+	int offset;
+	char buf[SPRINT_BUF_LEN];
+
+	if (p == NULL)
+		return;
+
+	state = (p->state & TASK_REPORT) | p->exit_state;
+	state =  state ? __ffs(state) + 1 : 0;
+	offset = sprintf(buf, "%-16.16s", p->comm);
+#ifdef CONFIG_SMP
+	offset += sprintf(buf + offset, "[%d] ", task_cpu(p));
+#endif
+	offset += sprintf(buf + offset, " %c", state < sizeof(stat_nam) ? stat_nam[state] : '?');
+
+#if (BITS_PER_LONG == 32)
+	offset += sprintf(buf + offset, " %08lX ", KSTK_EIP(p));
+#else
+	offset += sprintf(buf + offset, " %016lx ", KSTK_EIP(p));
+#endif
+	if (p != NULL && p->mm) {
+		regs = task_pt_regs(p);
+		vma = find_vma(p->mm, p->user_ssp);
+		if (vma != NULL) {
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+			stack_usage =  vma->vm_end - regs->ARM_sp; /* MF?? */
+#elif defined(CONFIG_MIPS)
+			stack_usage =  vma->vm_end - regs->regs[29];
+#else
+#error "Architecture Not Supported!!!"
+#endif
+			stack_size  =  vma->vm_end - vma->vm_start;
+			offset += sprintf(buf + offset, "%4lu/%04lu  ",
+					stack_usage >> 10,
+					stack_size  >> 10);
+		} else {
+			offset += sprintf(buf + offset, " --------  ");
+		}
+	} else {
+
+		if (p->state == TASK_DEAD || p->state == EXIT_DEAD ||
+				p->state ==	EXIT_ZOMBIE) {
+			offset += sprintf(buf + offset, KERN_CONT " [dead] ");
+		} else {
+			offset += sprintf(buf + offset, "  [kernel] ");
+		}
+	}
+	offset += sprintf(buf + offset, "%4d %4d  %4d    %u       %u",
+			p->pid,
+			p->prio,
+			p->static_prio,
+			p->policy,
+			p->rt.time_slice);
+	if (offset >= SPRINT_BUF_LEN)
+		pr_crit("%s, need to increase SPRINT_BUF_LEN\n", __func__);
+
+	printk("%s\n", buf);
+
+}
+
+int show_state_prio(void)
+{
+	struct task_struct *g, *p;
+	int do_unlock = 1;
+	int offset;
+	char buf[SPRINT_BUF_LEN];
+
+	printk("\n");
+#if (BITS_PER_LONG == 32)
+	offset = sprintf(buf, "                             user(kb/kb)                       \n");
+	offset += sprintf(buf + offset, "  task         ");
+
+#ifdef CONFIG_SMP
+	offset += sprintf(buf + offset, "[CPU]      ");
+#endif
+	offset += sprintf(buf + offset, "PC    stack_usage  pid prio sprio policy time_slice[x%dms]\n", 1000/HZ);
+
+#else
+	offset += sprintf(buf + offset, "                            kb/kb                         ");
+	printk("%s\n", buf);
+	offset = sprintf(buf, "  task         ");
+#ifdef CONFIG_SMP
+	offset += sprintf(buf + offset, "[CPU]      ");
+#endif
+	offset += sprintf(buf + offset, "PC    stack_usage  pid prio sprio policy time_slice[x%dms]", 1000/HZ);
+#endif
+	printk("%s\n", buf);
+#ifdef CONFIG_PREEMPT_RT
+	if (!read_trylock(&tasklist_lock)) {
+		printk("hm, tasklist_lock write-locked.\n");
+		printk("ignoring ...\n");
+		do_unlock = 0;
+	}
+#else
+	read_lock(&tasklist_lock);
+#endif
+
+	do_each_thread(g, p) {
+		/*
+		 * reset the NMI-timeout, listing all files on a slow
+		 * console might take alot of time:
+		 */
+		touch_nmi_watchdog();
+		show_task_prio(p);
+	} while_each_thread(g, p);
+
+	if (do_unlock)
+		read_unlock(&tasklist_lock);
+	debug_show_all_locks();
+	printk("----------------------------------------------------------------------\n");
+	/* in kdbg-base.c */
+	task_state_help();
+
+	return 1;
+}
+#endif
+
+#if defined(CONFIG_KDEBUGD_MISC)
+static inline struct task_struct *eldest_child(struct task_struct *p)
+{
+    if (list_empty(&p->children))
+	return NULL;
+    return list_entry(p->children.next, struct task_struct, sibling);
+}
+
+static inline struct task_struct *older_sibling(struct task_struct *p)
+{
+    if (p->sibling.prev == &p->parent->children)
+	return NULL;
+    return list_entry(p->sibling.prev, struct task_struct, sibling);
+}
+
+static inline struct task_struct *younger_sibling(struct task_struct *p)
+{
+    if (p->sibling.next == &p->parent->children)
+	return NULL;
+    return list_entry(p->sibling.next, struct task_struct, sibling);
+}
+#endif
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
+
 void sched_show_task(struct task_struct *p)
 {
 	unsigned long free = 0;
@@ -5317,6 +5520,19 @@ void sched_show_task(struct task_struct *p)
 	show_stack(p, NULL);
 	put_task_stack(p);
 }
+
+EXPORT_SYMBOL(sched_show_task);
+
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_TASK_STATE_BACKTRACE
+void wrap_show_task(struct task_struct *tsk)
+{
+	sched_show_task(tsk);
+        //move show backtrace function here
+        show_stack(tsk, NULL);
+}
+#endif
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 
 void show_state_filter(unsigned long state_filter)
 {
@@ -5355,6 +5571,7 @@ void show_state_filter(unsigned long state_filter)
 	if (!state_filter)
 		debug_show_all_locks();
 }
+EXPORT_SYMBOL(show_state_filter);
 
 void init_idle_bootup_task(struct task_struct *idle)
 {
@@ -7675,6 +7892,9 @@ void __init sched_init_smp(void)
 	/* Move init over to a non-isolated CPU */
 	if (set_cpus_allowed_ptr(current, non_isolated_cpus) < 0)
 		BUG();
+#if defined(CONFIG_DEFAULT_USE_ENERGY_AWARE) && defined(CONFIG_MP_EAS_ADAPTIVE)
+    sched_init_eas_adaptive();
+#endif
 	sched_init_granularity();
 	free_cpumask_var(non_isolated_cpus);
 
@@ -7689,7 +7909,6 @@ static int __init migration_init(void)
 	return 0;
 }
 early_initcall(migration_init);
-
 #else
 void __init sched_init_smp(void)
 {

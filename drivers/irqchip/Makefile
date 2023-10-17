@@ -1,3 +1,6 @@
+ifeq ($(CONFIG_MP_PLATFORM_ARM),y)
+EXTRA_CFLAGS      +=  -Idrivers/mstar2/include
+endif
 obj-$(CONFIG_IRQCHIP)			+= irqchip.o
 
 obj-$(CONFIG_ALPINE_MSI)		+= irq-alpine-msi.o

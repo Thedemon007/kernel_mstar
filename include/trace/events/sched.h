@@ -974,7 +974,7 @@ TRACE_EVENT(walt_update_task_ravg,
 		__field(	 int,	cpu			)
 		__field(	u64,	cs			)
 		__field(	u64,	ps			)
-		__field(	u64,	util			)
+		__field(unsigned long,	util			)
 		__field(	u32,	curr_window		)
 		__field(	u32,	prev_window		)
 		__field(	u64,	nt_cs			)
@@ -1008,7 +1008,7 @@ TRACE_EVENT(walt_update_task_ravg,
 	),
 
 	TP_printk("wc %llu ws %llu delta %llu event %d cpu %d cur_pid %d task %d (%s) ms %llu delta %llu demand %u sum %u irqtime %llu"
-		" cs %llu ps %llu util %llu cur_window %u prev_window %u active_wins %u"
+		" cs %llu ps %llu util %lu cur_window %u prev_window %u active_wins %u"
 		, __entry->wallclock, __entry->win_start, __entry->delta,
 		__entry->evt, __entry->cpu, __entry->cur_pid,
 		__entry->pid, __entry->comm, __entry->mark_start,
@@ -1100,6 +1100,33 @@ TRACE_EVENT(walt_migration_update_sum,
 
 #endif /* CONFIG_SMP */
 
+/*below event is mstar customized*/
+/*
+ * Tracepoint for showing cpu freq change
+ */
+TRACE_EVENT(cpufreq_change,
+
+       TP_PROTO(int cpu, unsigned int old, unsigned int new),
+
+       TP_ARGS(cpu, old, new),
+
+       TP_STRUCT__entry(
+               __field(int, cpu)
+               __field(unsigned int, cpufreq_old)
+               __field(unsigned int, cpufreq_new)
+       ),
+
+       TP_fast_assign(
+               __entry->cpu   = cpu;
+               __entry->cpufreq_old = old;
+               __entry->cpufreq_new = new;
+       ),
+
+       TP_printk("dvfs cpu %d freq change from %u MHZ to %u MHZ",
+                       __entry->cpu,
+                       __entry->cpufreq_old,
+                       __entry->cpufreq_new)
+);
 #endif /* _TRACE_SCHED_H */
 
 /* This part must be outside protection */

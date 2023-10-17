@@ -30,6 +30,14 @@
 #include <linux/swiotlb.h>
 
 #include <asm/cacheflush.h>
+#include <mstar/mpatch_macro.h>
+
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+struct dma_map_ops *dma_ops;		// this is for mstar flush bufferable memory
+#include "chip_setup.h"
+
+EXPORT_SYMBOL(dma_ops);
+#endif
 
 static int swiotlb __ro_after_init;
 
@@ -203,6 +211,7 @@ static void __dma_free(struct device *dev, size_t size,
 	__dma_free_coherent(dev, size, swiotlb_addr, dma_handle, attrs);
 }
 
+
 static dma_addr_t __swiotlb_map_page(struct device *dev, struct page *page,
 				     unsigned long offset, size_t size,
 				     enum dma_data_direction dir,
@@ -214,6 +223,9 @@ static dma_addr_t __swiotlb_map_page(struct device *dev, struct page *page,
 	if (!is_device_dma_coherent(dev))
 		__dma_map_area(phys_to_virt(dma_to_phys(dev, dev_addr)), size, dir);
 
+	#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+        _chip_flush_miu_pipe();
+	#endif
 	return dev_addr;
 }
 
@@ -239,6 +251,10 @@ static int __swiotlb_map_sg_attrs(struct device *dev, struct scatterlist *sgl,
 		for_each_sg(sgl, sg, ret, i)
 			__dma_map_area(phys_to_virt(dma_to_phys(dev, sg->dma_address)),
 				       sg->length, dir);
+
+	#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+        _chip_flush_miu_pipe();
+	#endif
 
 	return ret;
 }
@@ -274,6 +290,10 @@ static void __swiotlb_sync_single_for_device(struct device *dev,
 	swiotlb_sync_single_for_device(dev, dev_addr, size, dir);
 	if (!is_device_dma_coherent(dev))
 		__dma_map_area(phys_to_virt(dma_to_phys(dev, dev_addr)), size, dir);
+
+	#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+        _chip_flush_miu_pipe();
+	#endif
 }
 
 static void __swiotlb_sync_sg_for_cpu(struct device *dev,
@@ -302,6 +322,10 @@ static void __swiotlb_sync_sg_for_device(struct device *dev,
 		for_each_sg(sgl, sg, nelems, i)
 			__dma_map_area(phys_to_virt(dma_to_phys(dev, sg->dma_address)),
 				       sg->length, dir);
+
+	#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
+        _chip_flush_miu_pipe();
+	#endif
 }
 
 static int __swiotlb_mmap(struct device *dev,
@@ -529,12 +553,24 @@ struct dma_map_ops dummy_dma_ops = {
 };
 EXPORT_SYMBOL(dummy_dma_ops);
 
+#ifdef CONFIG_MP_MMA_UMA_WITH_NARROW
+extern phys_addr_t max_zone_dma_phys(void);
+#endif
+
 static int __init arm64_dma_init(void)
 {
+#ifndef CONFIG_MP_MMA_UMA_WITH_NARROW
 	if (swiotlb_force == SWIOTLB_FORCE ||
 	    max_pfn > (arm64_dma_phys_limit >> PAGE_SHIFT))
 		swiotlb = 1;
-
+#else
+	if (swiotlb_force == SWIOTLB_FORCE ||
+		max_pfn > (max_zone_dma_phys() >> PAGE_SHIFT))
+		swiotlb = 1;
+#endif
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+	dma_ops = &swiotlb_dma_ops;
+#endif
 	return atomic_pool_init();
 }
 arch_initcall(arm64_dma_init);

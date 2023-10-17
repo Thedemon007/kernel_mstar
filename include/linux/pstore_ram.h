@@ -71,7 +71,7 @@ void persistent_ram_zap(struct persistent_ram_zone *prz);
 int persistent_ram_write(struct persistent_ram_zone *prz, const void *s,
 			 unsigned int count);
 int persistent_ram_write_user(struct persistent_ram_zone *prz,
-			      const void __user *s, unsigned int count);
+				  const void __user *s, unsigned int count);
 
 void persistent_ram_save_old(struct persistent_ram_zone *prz);
 size_t persistent_ram_old_size(struct persistent_ram_zone *prz);
@@ -96,6 +96,9 @@ struct ramoops_platform_data {
 	unsigned long	console_size;
 	unsigned long	ftrace_size;
 	unsigned long	pmsg_size;
+#ifdef CONFIG_PSTORE_TVMSG
+	unsigned long	tvmsg_size;
+#endif
 	int		dump_oops;
 	struct persistent_ram_ecc_info ecc_info;
 };

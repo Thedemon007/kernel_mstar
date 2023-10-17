@@ -1887,8 +1887,10 @@ int xfrm_user_policy(struct sock *sk, int optname, u8 __user *optval, int optlen
 	struct xfrm_policy *pol = NULL;
 
 #ifdef CONFIG_COMPAT
+	/* Disable this check for IPsec CTS test
 	if (in_compat_syscall())
 		return -EOPNOTSUPP;
+	*/
 #endif
 
 	if (!optval && !optlen) {

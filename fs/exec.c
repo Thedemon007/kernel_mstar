@@ -1902,12 +1902,30 @@ void set_dumpable(struct mm_struct *mm, int value)
 	} while (cmpxchg(&mm->flags, old, new) != old);
 }
 
+#include <linux/white_list.h>
+
 SYSCALL_DEFINE3(execve,
 		const char __user *, filename,
 		const char __user *const __user *, argv,
 		const char __user *const __user *, envp)
 {
-	return do_execve(getname(filename), argv, envp);
+
+	struct filename *path = getname(filename);
+	struct kstat stat;
+
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (path->name)
+		strncpy(current_thread_info()->lfn, path->name, strlen(path->name)>127? 127: strlen(path->name)+1);
+	current_thread_info()->sc_mode_flag = 0;
+#endif
+
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE
+	vfs_stat(filename, &stat);
+	bypass_chk ( current_gid() , current_uid() , path->name , stat.size );
+#endif
+	return do_execve(path, argv, envp);
+
 }
 
 SYSCALL_DEFINE5(execveat,
@@ -1928,7 +1946,14 @@ COMPAT_SYSCALL_DEFINE3(execve, const char __user *, filename,
 	const compat_uptr_t __user *, argv,
 	const compat_uptr_t __user *, envp)
 {
-	return compat_do_execve(getname(filename), argv, envp);
+	struct filename *path = getname(filename);
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	memset(current_thread_info()->lfn, 0, 128);
+	if (path->name)
+		strncpy(current_thread_info()->lfn, path->name, strlen(path->name)>127? 127: strlen(path->name)+1);
+	current_thread_info()->sc_mode_flag = 0;
+#endif
+	return compat_do_execve(path, argv, envp);
 }
 
 COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
@@ -1938,6 +1963,16 @@ COMPAT_SYSCALL_DEFINE5(execveat, int, fd,
 		       int,  flags)
 {
 	int lookup_flags = (flags & AT_EMPTY_PATH) ? LOOKUP_EMPTY : 0;
+
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	struct filename *path = getname(filename);
+	memset(current_thread_info()->lfn, 0, 128);
+	if (path->name) {
+		strncpy(current_thread_info()->lfn, path->name, strlen(path->name)>127? 127: strlen(path->name)+1);
+		putname (path);
+	}
+	current_thread_info()->sc_mode_flag = lookup_flags;
+#endif
 
 	return compat_do_execveat(fd,
 				  getname_flags(filename, lookup_flags, NULL),

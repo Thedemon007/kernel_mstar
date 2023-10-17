@@ -1255,7 +1255,7 @@ retry:
 			}
 			if (ret) {
 				sock = NULL;
-				nc = NULL;
+				//nc = NULL;
 				goto out;
 			}
 		}

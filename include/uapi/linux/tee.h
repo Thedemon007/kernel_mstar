@@ -50,7 +50,9 @@
 
 #define TEE_GEN_CAP_GP		(1 << 0)/* GlobalPlatform compliant TEE */
 #define TEE_GEN_CAP_PRIVILEGED	(1 << 1)/* Privileged device (for supplicant) */
-#define TEE_GEN_CAP_REG_MEM	(1 << 2)/* Supports registering shared memory */
+#if defined(CONFIG_TEE_3_2)
+#define TEE_GEN_CAP_REG_MEM (1 << 2)/* Supports registering shared memory */
+#endif
 
 /*
  * TEE Implementation ID
@@ -85,7 +87,7 @@ struct tee_ioctl_version_data {
  * data filled in.
  */
 #define TEE_IOC_VERSION		_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 0, \
-				     struct tee_ioctl_version_data)
+					 struct tee_ioctl_version_data)
 
 /**
  * struct tee_ioctl_shm_alloc_data - Shared memory allocate argument
@@ -115,7 +117,36 @@ struct tee_ioctl_shm_alloc_data {
  * memory is unmapped.
  */
 #define TEE_IOC_SHM_ALLOC	_IOWR(TEE_IOC_MAGIC, TEE_IOC_BASE + 1, \
-				     struct tee_ioctl_shm_alloc_data)
+					 struct tee_ioctl_shm_alloc_data)
+
+/**
+ * struct tee_ioctl_shm_register_fd_data - Shared memory registering argument
+ * @fd:		[in] file descriptor identifying the shared memory
+ * @size:	[out] Size of shared memory to allocate
+ * @flags:	[in] Flags to/from allocation.
+ * @id:		[out] Identifier of the shared memory
+ *
+ * The flags field should currently be zero as input. Updated by the call
+ * with actual flags as defined by TEE_IOCTL_SHM_* above.
+ * This structure is used as argument for TEE_IOC_SHM_ALLOC below.
+ */
+struct tee_ioctl_shm_register_fd_data {
+	__s64 fd;
+	__u64 size;
+	__u32 flags;
+	__s32 id;
+} __aligned(8);
+
+/**
+ * TEE_IOC_SHM_REGISTER_FD - register a shared memory from a file descriptor
+ *
+ * Returns a file descriptor on success or < 0 on failure
+ *
+ * The returned file descriptor refers to the shared memory object in kernel
+ * land. The shared memory is freed when the descriptor is closed.
+ */
+#define TEE_IOC_SHM_REGISTER_FD	_IOWR(TEE_IOC_MAGIC, TEE_IOC_BASE + 8, \
+					 struct tee_ioctl_shm_register_fd_data)
 
 /**
  * struct tee_ioctl_buf_data - Variable sized buffer
@@ -232,7 +263,7 @@ struct tee_ioctl_open_session_arg {
  * tee_ioctl_param
  */
 #define TEE_IOC_OPEN_SESSION	_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 2, \
-				     struct tee_ioctl_buf_data)
+					 struct tee_ioctl_buf_data)
 
 /**
  * struct tee_ioctl_invoke_func_arg - Invokes a function in a Trusted
@@ -262,7 +293,7 @@ struct tee_ioctl_invoke_arg {
  * tee_invoke_func_arg followed by any array of struct tee_param
  */
 #define TEE_IOC_INVOKE		_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 3, \
-				     struct tee_ioctl_buf_data)
+					 struct tee_ioctl_buf_data)
 
 /**
  * struct tee_ioctl_cancel_arg - Cancels an open session or invoke ioctl
@@ -278,7 +309,7 @@ struct tee_ioctl_cancel_arg {
  * TEE_IOC_CANCEL - Cancels an open session or invoke
  */
 #define TEE_IOC_CANCEL		_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 4, \
-				     struct tee_ioctl_cancel_arg)
+					 struct tee_ioctl_cancel_arg)
 
 /**
  * struct tee_ioctl_close_session_arg - Closes an open session
@@ -292,7 +323,7 @@ struct tee_ioctl_close_session_arg {
  * TEE_IOC_CLOSE_SESSION - Closes a session
  */
 #define TEE_IOC_CLOSE_SESSION	_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 5, \
-				     struct tee_ioctl_close_session_arg)
+					 struct tee_ioctl_close_session_arg)
 
 /**
  * struct tee_iocl_supp_recv_arg - Receive a request for a supplicant function
@@ -317,7 +348,7 @@ struct tee_iocl_supp_recv_arg {
  * tee_iocl_supp_recv_arg followed by any array of struct tee_param
  */
 #define TEE_IOC_SUPPL_RECV	_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 6, \
-				     struct tee_ioctl_buf_data)
+					 struct tee_ioctl_buf_data)
 
 /**
  * struct tee_iocl_supp_send_arg - Send a response to a received request
@@ -338,27 +369,28 @@ struct tee_iocl_supp_send_arg {
  * tee_iocl_supp_send_arg followed by any array of struct tee_param
  */
 #define TEE_IOC_SUPPL_SEND	_IOR(TEE_IOC_MAGIC, TEE_IOC_BASE + 7, \
-				     struct tee_ioctl_buf_data)
+					 struct tee_ioctl_buf_data)
 
+#if defined(CONFIG_TEE_3_2)
 /**
  * struct tee_ioctl_shm_register_data - Shared memory register argument
- * @addr:      [in] Start address of shared memory to register
- * @length:    [in/out] Length of shared memory to register
- * @flags:     [in/out] Flags to/from registration.
- * @id:                [out] Identifier of the shared memory
+ * @addr:	  [in] Start address of shared memory to register
+ * @length:	[in/out] Length of shared memory to register
+ * @flags:	 [in/out] Flags to/from registration.
+ * @id:				[out] Identifier of the shared memory
  *
  * The flags field should currently be zero as input. Updated by the call
  * with actual flags as defined by TEE_IOCTL_SHM_* above.
  * This structure is used as argument for TEE_IOC_SHM_REGISTER below.
  */
 struct tee_ioctl_shm_register_data {
-	__u64 addr;
-	__u64 length;
-	__u32 flags;
-	__s32 id;
+		__u64 addr;
+		__u64 length;
+		__u32 flags;
+		__s32 id;
 };
 
-/**
+ /**
  * TEE_IOC_SHM_REGISTER - Register shared memory argument
  *
  * Registers shared memory between the user space process and secure OS.
@@ -368,7 +400,9 @@ struct tee_ioctl_shm_register_data {
  * The shared memory is unregisterred when the descriptor is closed.
  */
 #define TEE_IOC_SHM_REGISTER   _IOWR(TEE_IOC_MAGIC, TEE_IOC_BASE + 9, \
-				     struct tee_ioctl_shm_register_data)
+									 struct tee_ioctl_shm_register_data)
+#endif
+
 /*
  * Five syscalls are used when communicating with the TEE driver.
  * open(): opens the device associated with the driver

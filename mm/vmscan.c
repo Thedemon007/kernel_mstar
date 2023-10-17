@@ -59,6 +59,74 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/vmscan.h>
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+extern db_time_table time_cnt_table[DB_MAX_CNT];
+
+#define K(x) ((x) << (PAGE_SHIFT-10))
+static const char migrate_types[MIGRATE_TYPES] = {
+	[MIGRATE_UNMOVABLE] = 'U',
+	[MIGRATE_MOVABLE]   = 'M',
+	[MIGRATE_RECLAIMABLE]   = 'E',
+	[MIGRATE_HIGHATOMIC]   = 'H',
+#ifdef CONFIG_CMA
+	[MIGRATE_CMA]       = 'C',
+#endif
+#ifdef CONFIG_MEMORY_ISOLATION
+	[MIGRATE_ISOLATE]   = 'I',
+#endif
+};
+
+void show_freemem_info(void)
+{
+	struct zone *zone;
+	int show_cnt = 0;
+
+	for_each_populated_zone(zone) {
+		unsigned long nr[MAX_ORDER][MIGRATE_TYPES], flags, order, total = 0;
+		int type;
+		printk(CMA_ERR "ZONE %s: \n", zone->name);
+
+		memset(nr, 0, sizeof(nr));
+
+		spin_lock_irqsave(&zone->lock, flags);
+		for (order = 0; order < MAX_ORDER; order++) {
+			struct free_area *area = &zone->free_area[order];
+
+			for (type = 0; type < MIGRATE_TYPES; type++) {
+				struct list_head *head = area->free_list[type].next;
+				while(head != &area->free_list[type])
+				{
+					head = head->next;
+					nr[order][type]++;
+				}
+				total += (nr[order][type] << order);
+			}
+			//nr[order] = area->nr_free;
+		}
+		spin_unlock_irqrestore(&zone->lock, flags);
+
+		for (order = 0; order < MAX_ORDER; order++) {
+			show_cnt = 0;
+
+			for (type = 0; type < MIGRATE_TYPES; type++) {
+				if(nr[order][type])
+				{
+					printk(CMA_ERR "[%c]%lu*%lukB ", migrate_types[type],
+						nr[order][type], K(1UL) << order);
+					show_cnt = 1;
+				}
+			}
+
+			if(show_cnt)
+				printk(CMA_ERR "\n");
+		}
+
+		printk(CMA_ERR "\ntotal= %lukB free\n", K(total));
+		printk(CMA_ERR "%ld total pagecache pages\n\n", global_node_page_state(NR_FILE_PAGES));
+	}
+}
+#endif
+
 struct scan_control {
 	/* How many pages shrink_list() should reclaim */
 	unsigned long nr_to_reclaim;
@@ -312,6 +380,9 @@ static unsigned long do_shrink_slab(struct shrink_control *shrinkctl,
 				    unsigned long nr_scanned,
 				    unsigned long nr_eligible)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
 	unsigned long freed = 0;
 	unsigned long long delta;
 	long total_scan;
@@ -325,7 +396,13 @@ static unsigned long do_shrink_slab(struct shrink_control *shrinkctl,
 
 	freeable = shrinker->count_objects(shrinker, shrinkctl);
 	if (freeable == 0)
+	{
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+		atomic_add((jiffies-time_start), &time_cnt_table[shrink_slab_node_count].lone_time);
+		atomic_inc(&time_cnt_table[shrink_slab_node_count].do_cnt);
+#endif
 		return 0;
+	}
 
 	/*
 	 * copy the current shrinker scan count into a local variable
@@ -423,6 +500,10 @@ static unsigned long do_shrink_slab(struct shrink_control *shrinkctl,
 		new_nr = atomic_long_read(&shrinker->nr_deferred[nid]);
 
 	trace_mm_shrink_slab_end(shrinker, nid, freed, nr, new_nr, total_scan);
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[shrink_slab_node_count].lone_time);
+	atomic_inc(&time_cnt_table[shrink_slab_node_count].do_cnt);
+#endif
 	return freed;
 }
 
@@ -459,6 +540,10 @@ static unsigned long shrink_slab(gfp_t gfp_mask, int nid,
 				 unsigned long nr_scanned,
 				 unsigned long nr_eligible)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
+
 	struct shrinker *shrinker;
 	unsigned long freed = 0;
 
@@ -504,6 +589,11 @@ static unsigned long shrink_slab(gfp_t gfp_mask, int nid,
 	up_read(&shrinker_rwsem);
 out:
 	cond_resched();
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[shrink_slab_count].lone_time);
+	atomic_inc(&time_cnt_table[shrink_slab_count].do_cnt);
+#endif
 	return freed;
 }
 
@@ -2673,6 +2763,9 @@ static inline bool compaction_ready(struct zone *zone, struct scan_control *sc)
  */
 static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
 	struct zoneref *z;
 	struct zone *zone;
 	unsigned long nr_soft_reclaimed;
@@ -2754,6 +2847,11 @@ static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 	 * promoted it to __GFP_HIGHMEM.
 	 */
 	sc->gfp_mask = orig_mask;
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[shrink_zones_count].lone_time);
+	atomic_inc(&time_cnt_table[shrink_zones_count].do_cnt);
+#endif
 }
 
 /*
@@ -2775,6 +2873,9 @@ static void shrink_zones(struct zonelist *zonelist, struct scan_control *sc)
 static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
 					  struct scan_control *sc)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
 	int initial_priority = sc->priority;
 	unsigned long total_scanned = 0;
 	unsigned long writeback_threshold;
@@ -2820,6 +2921,11 @@ retry:
 	} while (--sc->priority >= 0);
 
 	delayacct_freepages_end();
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[do_try_to_free_pages_count].lone_time);
+	atomic_inc(&time_cnt_table[do_try_to_free_pages_count].do_cnt);
+#endif
 
 	if (sc->nr_reclaimed)
 		return sc->nr_reclaimed;
@@ -2973,6 +3079,10 @@ out:
 unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 				gfp_t gfp_mask, nodemask_t *nodemask)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
+
 	unsigned long nr_reclaimed;
 	struct scan_control sc = {
 		.nr_to_reclaim = SWAP_CLUSTER_MAX,
@@ -2992,7 +3102,14 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 	 * point.
 	 */
 	if (throttle_direct_reclaim(sc.gfp_mask, zonelist, nodemask))
+	{
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+		atomic_add((jiffies-time_start), &time_cnt_table[try_to_free_pages_count].lone_time);
+		atomic_inc(&time_cnt_table[try_to_free_pages_count].do_cnt);
+#endif
+
 		return 1;
+	}
 
 	trace_mm_vmscan_direct_reclaim_begin(order,
 				sc.may_writepage,
@@ -3003,6 +3120,10 @@ unsigned long try_to_free_pages(struct zonelist *zonelist, int order,
 
 	trace_mm_vmscan_direct_reclaim_end(nr_reclaimed);
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[try_to_free_pages_count].lone_time);
+	atomic_inc(&time_cnt_table[try_to_free_pages_count].do_cnt);
+#endif
 	return nr_reclaimed;
 }
 

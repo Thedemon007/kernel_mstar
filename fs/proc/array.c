@@ -125,7 +125,7 @@ static const char * const task_state_array[] = {
 	"Z (zombie)",		/*  32 */
 };
 
-static inline const char *get_task_state(struct task_struct *tsk)
+inline const char *get_task_state(struct task_struct *tsk)
 {
 	unsigned int state = (tsk->state | tsk->exit_state) & TASK_REPORT;
 
@@ -141,6 +141,7 @@ static inline const char *get_task_state(struct task_struct *tsk)
 
 	return task_state_array[fls(state)];
 }
+EXPORT_SYMBOL(get_task_state);
 
 static inline int get_task_umask(struct task_struct *tsk)
 {

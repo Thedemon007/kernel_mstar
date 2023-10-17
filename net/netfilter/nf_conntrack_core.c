@@ -56,6 +56,10 @@
 #include <net/netfilter/nf_nat_helper.h>
 #include <net/netns/hash.h>
 
+#if  defined(CONFIG_NOE_NAT_HW)
+#include "../../drivers/mstar2/drv/noe/nat/hw_nat/mdrv_hwnat.h"
+#endif
+
 #define NF_CONNTRACK_VERSION	"0.5.0"
 
 int (*nfnetlink_parse_nat_setup_hook)(struct nf_conn *ct,
@@ -1293,6 +1297,9 @@ nf_conntrack_in(struct net *net, u_int8_t pf, unsigned int hooknum,
 		struct sk_buff *skb)
 {
 	struct nf_conn *ct, *tmpl = NULL;
+#if defined(CONFIG_NOE_NAT_HW)
+	struct nf_conn_help *help;
+#endif
 	enum ip_conntrack_info ctinfo;
 	struct nf_conntrack_l3proto *l3proto;
 	struct nf_conntrack_l4proto *l4proto;
@@ -1377,6 +1384,24 @@ nf_conntrack_in(struct net *net, u_int8_t pf, unsigned int hooknum,
 		ret = -ret;
 		goto out;
 	}
+
+#if  defined(CONFIG_NOE_NAT_HW)
+        help = nfct_help(ct);
+        if (help && help->helper) {
+                if((FOE_MAGIC_TAG_HEAD(skb) == FOE_MAGIC_PCI) ||
+                   (FOE_MAGIC_TAG_HEAD(skb) == FOE_MAGIC_WLAN) ||
+                   (FOE_MAGIC_TAG_HEAD(skb) == FOE_MAGIC_GE)){
+                   if(IS_SPACE_AVAILABLED_HEAD(skb))
+                        FOE_MAGIC_TAG_HEAD(skb) = 0;
+                }
+                if((FOE_MAGIC_TAG_TAIL(skb) == FOE_MAGIC_PCI) ||
+                   (FOE_MAGIC_TAG_TAIL(skb) == FOE_MAGIC_WLAN) ||
+                   (FOE_MAGIC_TAG_TAIL(skb) == FOE_MAGIC_GE)){
+                   if(IS_SPACE_AVAILABLED_TAIL(skb))
+                        FOE_MAGIC_TAG_TAIL(skb) = 0;
+                }
+        }
+#endif
 
 	if (set_reply && !test_and_set_bit(IPS_SEEN_REPLY_BIT, &ct->status))
 		nf_conntrack_event_cache(IPCT_REPLY, ct);

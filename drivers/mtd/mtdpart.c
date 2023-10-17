@@ -425,6 +425,10 @@ static struct mtd_part *allocate_partition(struct mtd_info *master,
 				&master->dev :
 				master->dev.parent;
 
+#if (MP_NAND_MTD == 1)
+	slave->mtd.priv = master->priv;
+#endif
+
 	slave->mtd._read = part_read;
 	slave->mtd._write = part_write;
 

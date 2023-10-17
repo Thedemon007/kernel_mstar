@@ -533,10 +533,11 @@ static int cpufreq_set_cur_state(struct thermal_cooling_device *cdev,
 	if (WARN_ON(state > cpufreq_device->max_level))
 		return -EINVAL;
 
+#if !defined CONFIG_MP_IPA_WITH_MSTAR_THERMAL_PROTECT
 	/* Check if the old cooling action is same as new cooling action */
 	if (cpufreq_device->cpufreq_state == state)
 		return 0;
-
+#endif
 	clip_freq = cpufreq_device->freq_table[state];
 	cpufreq_device->cpufreq_state = state;
 	cpufreq_device->clipped_freq = clip_freq;

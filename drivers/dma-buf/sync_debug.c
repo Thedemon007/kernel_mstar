@@ -199,7 +199,7 @@ static __init int sync_debugfs_init(void)
 	 */
 	debugfs_create_file_unsafe("info", 0444, dbgfs, NULL,
 				   &sync_info_debugfs_fops);
-	debugfs_create_file_unsafe("sw_sync", 0644, dbgfs, NULL,
+	debugfs_create_file_unsafe("sw_sync", 0666, dbgfs, NULL,
 				   &sw_sync_debugfs_fops);
 
 	return 0;

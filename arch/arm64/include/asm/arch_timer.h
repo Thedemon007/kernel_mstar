@@ -26,6 +26,7 @@
 #include <linux/init.h>
 #include <linux/jump_label.h>
 #include <linux/types.h>
+#include <mstar/mpatch_macro.h>
 
 #include <clocksource/arm_arch_timer.h>
 
@@ -137,14 +138,20 @@ static inline void arch_timer_set_cntkctl(u32 cntkctl)
 	write_sysreg(cntkctl, cntkctl_el1);
 }
 
+#if defined(CONFIG_MP_PLATFORM_ARM_64bit_PORTING)
 static inline u64 arch_counter_get_cntpct(void)
 {
 	/*
 	 * AArch64 kernel and user space mandate the use of CNTVCT.
 	 */
-	BUG();
-	return 0;
+
+	u64 cval;
+	isb();
+
+	asm volatile("mrs %0, cntpct_el0" : "=r" (cval));
+	return cval;
 }
+#endif
 
 static inline u64 arch_counter_get_cntvct(void)
 {

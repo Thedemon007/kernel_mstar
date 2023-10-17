@@ -1072,12 +1072,25 @@ COMPAT_SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 }
 #endif /* __ARCH_WANT_COMPAT_SYS_GETDENTS64 */
 
+#define	DEFFN	"NA"
 /*
  * Exactly like fs/open.c:sys_open(), except that it doesn't set the
  * O_LARGEFILE flag.
  */
 COMPAT_SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	int len = strlen_user(filename);
+
+	memset(current_thread_info()->lfn, 0, 128);
+	strncpy(current_thread_info()->lfn, DEFFN, 2);
+	if(!len)
+		printk("\033[0;37;44m(CAP_DEBUG) %s, %d, filename len = %d\033[m\n",__func__,__LINE__,len);
+	if (filename && len)
+		strncpy_from_user (current_thread_info()->lfn, filename, len>127? 127: len);
+
+	current_thread_info()->sc_mode_flag = flags;
+#endif
 	return do_sys_open(AT_FDCWD, filename, flags, mode);
 }
 
@@ -1087,6 +1100,18 @@ COMPAT_SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t,
  */
 COMPAT_SYSCALL_DEFINE4(openat, int, dfd, const char __user *, filename, int, flags, umode_t, mode)
 {
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	int len = strlen_user(filename);
+
+	memset(current_thread_info()->lfn, 0, 128);
+	strncpy(current_thread_info()->lfn, DEFFN, 2);
+	if(!len)
+		printk("\033[0;37;44m(CAP_DEBUG) %s, %d, filename len = %d\033[m\n",__func__,__LINE__,len);
+	if (filename && len)
+		strncpy_from_user(current_thread_info()->lfn, filename, len>127? 127: len);
+
+	current_thread_info()->sc_mode_flag = flags;
+#endif
 	return do_sys_open(dfd, filename, flags, mode);
 }
 

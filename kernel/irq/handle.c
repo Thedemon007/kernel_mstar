@@ -177,6 +177,102 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags
 	return retval;
 }
 
+#ifdef CONFIG_MP_INTR_ERROR_CHECK_NON_STOP
+#include <chip_int.h>
+
+#define MAX_IRQNUM NR_IRQS
+#define QUERY_CNT 50000
+#define QUERY_SECOND 1
+#define WARN_MILLISECOND 2000
+unsigned int mst_dbg_irq_cnt = QUERY_CNT;
+unsigned int mst_dbg_irq_interval = WARN_MILLISECOND;
+
+static DEFINE_PER_CPU(unsigned long, intr_cnt_init);
+static DEFINE_PER_CPU(unsigned long, intr_abnormal_flag);
+static DEFINE_PER_CPU(unsigned long, intr_cnt);
+static DEFINE_PER_CPU(ktime_t, ktime);
+
+static DEFINE_SPINLOCK(intr_rec_lock);
+static unsigned intr_rec[MAX_IRQNUM] = {0};
+
+/*
+ *   irq_abnormal_check is to detect abnormal interrupt activity,
+ *   use reference count to keep track of every incoming signal.
+ *   We record a specific number(QUERY_CNT) of interrupt and check
+ *   whether the period(QUERY_SECOND) is reasonable or not.
+ *
+ *   Input@desc: the descriptor of incoming interrupt
+ *   Input@type: 0 for noraml interrupt source (timer/hw interrupt)
+ *               1 for IPI message
+ *   Input@val:  the number for IPI messag if type is IPI message(1)
+ *
+ */
+void irq_abnormal_check(struct irq_desc *desc, unsigned int type, unsigned int val)
+{
+	unsigned int cpu_id = smp_processor_id();
+	ktime_t ktime_enter;
+	s64 query_period;
+
+	if (per_cpu(intr_abnormal_flag, cpu_id)) {
+		raw_spin_lock(&intr_rec_lock);
+		if (type)
+			intr_rec[val]++;
+		else
+			intr_rec[desc->irq_data.irq]++;
+		raw_spin_unlock(&intr_rec_lock);
+	}
+
+	if (per_cpu(intr_cnt, cpu_id)++ >= mst_dbg_irq_cnt) {
+		ktime_enter = ktime_get();
+		query_period = ktime_to_us(ktime_sub(ktime_enter, per_cpu(ktime, cpu_id)));
+
+		if (per_cpu(intr_cnt_init, cpu_id)) {
+			ktime_enter = ktime_get();
+			query_period = ktime_to_us(ktime_sub(ktime_enter, per_cpu(ktime, cpu_id)));
+			if (query_period < QUERY_SECOND*1000000) {
+				if (per_cpu(intr_abnormal_flag, cpu_id) == 0) {
+					per_cpu(intr_abnormal_flag, cpu_id) = 1;
+				} else {
+					unsigned int i, irq_the_most = 0;
+					raw_spin_lock(&intr_rec_lock);
+					for (i = 1; i < MAX_IRQNUM; i++)
+						if (intr_rec[i] > intr_rec[irq_the_most])
+							irq_the_most = i;
+					raw_spin_unlock(&intr_rec_lock);
+
+					printk("==================================================================\n");
+					printk("==================================================================\n");
+					printk("Abnormal interrupt behavior detected!!! over %d interrupts within %u us. cpu = %d. irq[%d] = %u\n",
+						mst_dbg_irq_cnt, query_period, cpu_id, irq_the_most, intr_rec[irq_the_most]);
+
+#ifdef CONFIG_MP_PLATFORM_INT_1_to_1_SPI
+					if (irq_the_most >= MSTAR_IRQ_BASE) {
+#else
+					if (irq_the_most >= MSTAR_FIQ_BASE) {
+#endif
+						printk("Try to disable irq %d to ease the system\n", irq_the_most);
+						irq_disable(irq_to_desc(irq_the_most));
+						BUG();
+					}
+
+					printk("==================================================================\n");
+					printk("==================================================================\n");
+
+					per_cpu(intr_abnormal_flag, cpu_id) = 0;
+				}
+			}
+		} else {
+			per_cpu(intr_cnt_init, cpu_id) = 1;
+			per_cpu(intr_abnormal_flag, cpu_id) = 0;
+		}
+
+		memset(intr_rec, 0, MAX_IRQNUM);
+		per_cpu(intr_cnt, cpu_id) = 0;
+		per_cpu(ktime, cpu_id) = ktime_enter;
+	}
+}
+#endif
+
 irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 {
 	irqreturn_t retval;
@@ -188,6 +284,11 @@ irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 
 	if (!noirqdebug)
 		note_interrupt(desc, retval);
+
+#ifdef CONFIG_MP_INTR_ERROR_CHECK_NON_STOP
+	irq_abnormal_check(desc, 0, 0);
+#endif
+
 	return retval;
 }
 

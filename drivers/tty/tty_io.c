@@ -103,6 +103,12 @@
 #include <linux/selection.h>
 
 #include <linux/kmod.h>
+#include <mstar/mpatch_macro.h>
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_KDEBUGD
+#include <kdebugd/kdebugd.h>
+#endif
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 #include <linux/nsproxy.h>
 
 #undef TTY_DEBUG_HANGUP
@@ -155,6 +161,14 @@ static int __tty_fasync(int fd, struct file *filp, int on);
 static int tty_fasync(int fd, struct file *filp, int on);
 static void release_tty(struct tty_struct *tty, int idx);
 
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+/* VDLinux, based SELP.Mstar default patch No.15,
+ * n_tty serial input disable, SP Team 2010-01-29 */
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+extern struct tty_struct *INPUT_tty;
+#endif/*CONFIG_SERIAL_INPUT_MANIPULATION*/
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
+
 /**
  *	free_tty_struct		-	free a disused tty
  *	@tty: tty struct to free
@@ -168,6 +182,17 @@ static void free_tty_struct(struct tty_struct *tty)
 {
 	tty_ldisc_deinit(tty);
 	put_device(tty->dev);
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_SERIAL_INPUT_MANIPULATION
+	if(tty == INPUT_tty) {
+#ifdef CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG
+		printk(KERN_ALERT "[SERIAL INPUT MANAGE] Managed tty_struct(.name:%s) is freed !!!\n",
+			tty->name);
+#endif/*CONFIG_SERIAL_INPUT_ENABLE_HELP_MSG*/
+		INPUT_tty = NULL;
+	}
+#endif/*CONFIG_SERIAL_INPUT_MANIPULATION*/
+#endif/*MP_DEBUG_TOOL_KDEBUG*/
 	kfree(tty->write_buf);
 	tty->magic = 0xDEADDEAD;
 	kfree(tty);
@@ -542,8 +567,8 @@ static void __proc_set_tty(struct tty_struct *tty)
 	put_pid(tty->session);
 	put_pid(tty->pgrp);
 	tty->pgrp = get_pid(task_pgrp(current));
-	tty->session = get_pid(task_session(current));
 	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+	tty->session = get_pid(task_session(current));
 	if (current->signal->tty) {
 		tty_debug(tty, "current tty %s not NULL!!\n",
 			  current->signal->tty->name);
@@ -933,24 +958,21 @@ void disassociate_ctty(int on_exit)
 	spin_lock_irq(&current->sighand->siglock);
 	put_pid(current->signal->tty_old_pgrp);
 	current->signal->tty_old_pgrp = NULL;
-	tty = tty_kref_get(current->signal->tty);
-	spin_unlock_irq(&current->sighand->siglock);
 
+	tty = tty_kref_get(current->signal->tty);
 	if (tty) {
 		unsigned long flags;
-
-		tty_lock(tty);
 		spin_lock_irqsave(&tty->ctrl_lock, flags);
 		put_pid(tty->session);
 		put_pid(tty->pgrp);
 		tty->session = NULL;
 		tty->pgrp = NULL;
 		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
-		tty_unlock(tty);
 		tty_kref_put(tty);
 	} else
 		tty_debug_hangup(tty, "no current tty\n");
 
+	spin_unlock_irq(&current->sighand->siglock);
 	/* Now clear signal->tty under the lock */
 	read_lock(&tasklist_lock);
 	session_clear_tty(task_session(current));
@@ -991,6 +1013,12 @@ void no_tty(void)
 
 void __stop_tty(struct tty_struct *tty)
 {
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_BLOCK_STOP_TTY
+	printk (KERN_ALERT "[SELP:%s:%d] stop_tty() is blocked!!\n", __FILE__, __LINE__);
+	return;
+#endif/* CONFIG_BLOCK_STOP_TTY*/
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 	if (tty->stopped)
 		return;
 	tty->stopped = 1;
@@ -1178,10 +1206,30 @@ static inline ssize_t do_tty_write(
 		size_t size = count;
 		if (size > chunk)
 			size = chunk;
+#if (MP_DEBUG_TOOL_KDEBUG == 1) && defined(CONFIG_KDEBUGD)
+#ifdef CONFIG_KDEBUGD_BG
+		if (kdebugd_running && tty->index == CONFIG_SERIAL_INPUT_MANIPULATION_PORTNUM && kdbg_print_off() && !kdbg_mode)
+#else
+		if (kdebugd_running && tty->index == CONFIG_SERIAL_INPUT_MANIPULATION_PORTNUM && kdbg_print_off())
+#endif
+			/* CHANGES: Namit 07-Jul-2010, changed ret = -EFAULT to ret= size.
+			 * pretending written in the console. do not sent error.*/
+			ret = size;
+		else {
+			/* CHANGES: Namit 07-Jul-2010, dont write the user buffer to tty buffer ,
+			 * until it's not suppose to write in the console*/
+
+			ret = -EFAULT;
+			if (copy_from_user(tty->write_buf, buf, size))
+				break;
+			ret = write(tty, file, tty->write_buf, size);
+		}
+#else
 		ret = -EFAULT;
 		if (copy_from_user(tty->write_buf, buf, size))
 			break;
 		ret = write(tty, file, tty->write_buf, size);
+#endif /*MP_DEBUG_TOOL_KDEBUG && CONFIG_KDEBUGD*/
 		if (ret <= 0)
 			break;
 		written += ret;
@@ -1264,8 +1312,15 @@ static ssize_t tty_write(struct file *file, const char __user *buf,
 		return hung_up_tty_write(file, buf, count, ppos);
 	if (!ld->ops->write)
 		ret = -EIO;
-	else
+	else{
+#if (MP_DEBUG_TOOL_KDEBUG == 1)
+#ifdef CONFIG_DTVLOGD
+		/* Write printf messages to dlog buffer */
+		do_dtvlog(11, buf, count);
+#endif/*CONFIG_DTVLOGD*/
+#endif /*MP_DEBUG_TOOL_KDEBUG*/
 		ret = do_tty_write(ld->ops->write, tty, file, buf, count);
+	}
 	tty_ldisc_deref(ld);
 	return ret;
 }
@@ -2615,19 +2670,14 @@ static int tiocspgrp(struct tty_struct *tty, struct tty_struct *real_tty, pid_t 
 		return -ENOTTY;
 	if (retval)
 		return retval;
-
+	if (!current->signal->tty ||
+	    (current->signal->tty != real_tty) ||
+	    (real_tty->session != task_session(current)))
+		return -ENOTTY;
 	if (get_user(pgrp_nr, p))
 		return -EFAULT;
 	if (pgrp_nr < 0)
 		return -EINVAL;
-
-	spin_lock_irq(&real_tty->ctrl_lock);
-	if (!current->signal->tty ||
-	    (current->signal->tty != real_tty) ||
-	    (real_tty->session != task_session(current))) {
-		retval = -ENOTTY;
-		goto out_unlock_ctrl;
-	}
 	rcu_read_lock();
 	pgrp = find_vpid(pgrp_nr);
 	retval = -ESRCH;
@@ -2637,12 +2687,12 @@ static int tiocspgrp(struct tty_struct *tty, struct tty_struct *real_tty, pid_t 
 	if (session_of_pgrp(pgrp) != task_session(current))
 		goto out_unlock;
 	retval = 0;
+	spin_lock_irq(&tty->ctrl_lock);
 	put_pid(real_tty->pgrp);
 	real_tty->pgrp = get_pid(pgrp);
+	spin_unlock_irq(&tty->ctrl_lock);
 out_unlock:
 	rcu_read_unlock();
-out_unlock_ctrl:
-	spin_unlock_irq(&real_tty->ctrl_lock);
 	return retval;
 }
 
@@ -2654,31 +2704,21 @@ out_unlock_ctrl:
  *
  *	Obtain the session id of the tty. If there is no session
  *	return an error.
+ *
+ *	Locking: none. Reference to current->signal->tty is safe.
  */
 
 static int tiocgsid(struct tty_struct *tty, struct tty_struct *real_tty, pid_t __user *p)
 {
-	unsigned long flags;
-	pid_t sid;
-
 	/*
 	 * (tty == real_tty) is a cheap way of
 	 * testing if the tty is NOT a master pty.
 	*/
 	if (tty == real_tty && current->signal->tty != real_tty)
 		return -ENOTTY;
-
-	spin_lock_irqsave(&real_tty->ctrl_lock, flags);
 	if (!real_tty->session)
-		goto err;
-	sid = pid_vnr(real_tty->session);
-	spin_unlock_irqrestore(&real_tty->ctrl_lock, flags);
-
-	return put_user(sid, p);
-
-err:
-	spin_unlock_irqrestore(&real_tty->ctrl_lock, flags);
-	return -ENOTTY;
+		return -ENOTTY;
+	return put_user(pid_vnr(real_tty->session), p);
 }
 
 /**
@@ -3096,14 +3136,10 @@ void __do_SAK(struct tty_struct *tty)
 	struct task_struct *g, *p;
 	struct pid *session;
 	int		i;
-	unsigned long flags;
 
 	if (!tty)
 		return;
-
-	spin_lock_irqsave(&tty->ctrl_lock, flags);
-	session = get_pid(tty->session);
-	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+	session = tty->session;
 
 	tty_ldisc_flush(tty);
 
@@ -3135,7 +3171,6 @@ void __do_SAK(struct tty_struct *tty)
 		task_unlock(p);
 	} while_each_thread(g, p);
 	read_unlock(&tasklist_lock);
-	put_pid(session);
 #endif
 }
 

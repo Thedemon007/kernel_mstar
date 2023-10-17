@@ -548,6 +548,9 @@ void __weak smp_announce(void)
 	printk(KERN_INFO "Brought up %d CPUs\n", num_online_cpus());
 }
 
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+extern void smp_clear_magic(void);
+#endif
 /* Called by boot processor to activate the rest. */
 void __init smp_init(void)
 {
@@ -563,6 +566,10 @@ void __init smp_init(void)
 		if (!cpu_online(cpu))
 			cpu_up(cpu);
 	}
+
+#ifdef CONFIG_MP_PLATFORM_ARM_64bit_PORTING
+	smp_clear_magic();
+#endif
 
 	/* Any cleanup work */
 	smp_announce();

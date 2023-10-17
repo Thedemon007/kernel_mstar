@@ -70,6 +70,240 @@
 #include <asm/div64.h>
 #include "internal.h"
 
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+#include <linux/cma.h>
+#include "cma.h"
+#endif
+
+#if defined(CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE)
+#include <linux/ksm.h>
+#include <linux/crc32.h>
+#include <linux/mm_inline.h>
+#include <linux/kallsyms.h>
+#endif
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+void show_page_trace2(unsigned long pfn);
+#define PAGE_ALLOC_STACK_HASH_BITS	14
+#define MAX_STACK_COUNT  ((1<<PAGE_ALLOC_STACK_HASH_BITS)/2)
+#endif
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+#include <asm/uaccess.h>
+#include <linux/cdev.h>
+#include <linux/proc_fs.h>
+/* CMA strategy
+ * LX_FREE > CMA_threshold_high : all allocate from normal page
+ * CMA_threshold_low < LX_FREE < CMA_threshold_high : allocate based on a ratio
+ * LX_FREE < CMA_threshold_low :  perfer to use CMA. If no CMA, use normal page, instead
+ */
+static unsigned int CMA_set_threshold_done = 0;
+extern unsigned int total_CMA_size;
+#ifdef CONFIG_ANDROID_LOW_MEMORY_KILLER
+extern int lowmem_minfree[6];
+#else
+int lowmem_minfree[6] = {
+		3 * 512,        /* 6MB */
+		2 * 1024,       /* 8MB */
+		4 * 1024,       /* 16MB */
+		16 * 1024,      /* 64MB */
+};
+int lowmem_minfree_size = 4;
+#endif
+extern unsigned int lowmem_minfree_index;
+
+extern bool should_dcma_work(struct zone *zone);
+extern void update_zone_total_cma_size(void);
+extern void show_dcma_info(void);
+extern unsigned int dcma_debug;
+#endif
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+#include <linux/timer.h>
+#include <linux/reboot.h>
+unsigned int dump_cnt = 0;
+static int init_timer = 0;
+static int monitor_period = 30;
+
+struct timer_list Show_MM_Timer;
+volatile unsigned long last_show_mm_time = 0;	// specify the show_mm_time's time diff
+volatile int show_debug_info = 0;				// specify if we are in hang case (__alloc_pages_nodemask() costs over 900000)
+volatile int durations = 0;						// test times in second
+
+extern void show_all_zram_read_write_cnt(void);
+
+extern void show_freemem_info(void);
+extern atomic_t thread_info_cache_cnt;
+void show_page_alloc_statics(void);
+
+atomic_t zram_read_lock_cnt = ATOMIC_INIT(0);
+atomic_t zram_read_unlock_cnt = ATOMIC_INIT(0);
+atomic_t zram_write_lock_cnt = ATOMIC_INIT(0);
+atomic_t zram_write_unlock_cnt = ATOMIC_INIT(0);
+
+db_time_table time_cnt_table[DB_MAX_CNT] = {
+	{"__alloc_pages_nodemask", {0}},
+	{"__perform_reclaim", {0}},
+	{"try_to_free_pages", {0}},
+	{"do_try_to_free_pages" ,{0}},
+	{"shrink_zones", {0}},
+	{"shrink_slab", {0}},
+	{"shrink_slab_node", {0}},
+	{"lowmem_shrink", {0}},
+	{"__alloc_pages_direct_compact", {0}},
+};
+
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+extern uint32_t last_prt_jiffies;
+extern spinlock_t thread_info_cache_lock;
+void show_thread_trace_info(void);
+#endif
+
+void show_mm_time(unsigned long time)
+{
+	int i, j;
+	if(!init_timer)
+	{
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, init a timer\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		init_timer = 1;
+		init_timer(&Show_MM_Timer);
+		Show_MM_Timer.data = 1;
+		Show_MM_Timer.function = show_mm_time;
+		Show_MM_Timer.expires = jiffies + (10 * HZ);
+		add_timer(&Show_MM_Timer);
+
+		last_show_mm_time = jiffies;
+		return;
+	}
+	durations++;
+
+	printk(CMA_ERR "\033[35mFunction = %s, Line = %d, before last show_mm_time: %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, jiffies_to_usecs(jiffies-last_show_mm_time));
+	last_show_mm_time = jiffies;
+
+	if(durations == 15)
+	{
+		//printk("\033[31mFunction = %s, Line = %d, joe test auto_restart\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		//kernel_restart("");
+	}
+
+	for(i = 0; i < DB_MAX_CNT; i++)
+	{
+		if(i == 0)
+		{
+			//if( jiffies_to_usecs(time_cnt_table[i].lone_time.counter) >= 900000 )
+			if( (jiffies_to_usecs(time_cnt_table[i].lone_time.counter) >= 900000) && (atomic_read(&time_cnt_table[__alloc_pages_nodemask_count].do_cnt) > 25000) )
+			{
+				show_debug_info++;
+			}
+			else
+			{
+				show_debug_info = 0;
+			}
+
+			printk(CMA_ERR "durations is %d\n", durations);
+			printk(CMA_ERR "show_debug_info is %d\n", show_debug_info);
+            printk(CMA_ERR "do_fork thread_info_cache_cnt is %d\n", atomic_read(&thread_info_cache_cnt));
+		}
+
+
+		if(i == 0)
+		{
+			printk(CMA_ERR "alloc failed order cnt [%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d]\n", time_cnt_table[i].failed_order[0].counter,
+																	 time_cnt_table[i].failed_order[1].counter,
+																	 time_cnt_table[i].failed_order[2].counter,
+																	 time_cnt_table[i].failed_order[3].counter,
+																	 time_cnt_table[i].failed_order[4].counter,
+																	 time_cnt_table[i].failed_order[5].counter,
+																	 time_cnt_table[i].failed_order[6].counter,
+																	 time_cnt_table[i].failed_order[7].counter,
+																	 time_cnt_table[i].failed_order[8].counter,
+																	 time_cnt_table[i].failed_order[9].counter,
+																	 time_cnt_table[i].failed_order[10].counter);
+
+             printk(CMA_ERR "alloc pass order cnt [%d, %d, %d, %d, %d, %d, %d, %d, %d, %d, %d]\n", time_cnt_table[i].pass_order[0].counter,
+                                                                      time_cnt_table[i].pass_order[1].counter,
+                                                                      time_cnt_table[i].pass_order[2].counter,
+                                                                      time_cnt_table[i].pass_order[3].counter,
+                                                                      time_cnt_table[i].pass_order[4].counter,
+                                                                      time_cnt_table[i].pass_order[5].counter,
+                                                                      time_cnt_table[i].pass_order[6].counter,
+                                                                      time_cnt_table[i].pass_order[7].counter,
+                                                                      time_cnt_table[i].pass_order[8].counter,
+                                                                      time_cnt_table[i].pass_order[9].counter,
+                                                                      time_cnt_table[i].pass_order[10].counter);
+
+			 printk(CMA_ERR "order_0 min_cnt [U: %d, E: %d, M: %d, R: %d, C: %d, I: %d]\n", time_cnt_table[i].order0_cnt[0].counter,
+                                                                      time_cnt_table[i].order0_cnt[1].counter,
+                                                                      time_cnt_table[i].order0_cnt[2].counter,
+                                                                      time_cnt_table[i].order0_cnt[3].counter,
+                                                                      time_cnt_table[i].order0_cnt[4].counter,
+                                                                      time_cnt_table[i].order0_cnt[5].counter);
+
+			 printk(CMA_ERR "MIN NR_FREE_PAGES: %d, MIN NR_FREE_CMA_PAGES: %d, MIN NR_FILE_PAGES: %d\n",
+																		time_cnt_table[i].min_page_cnt[0].counter,
+																		time_cnt_table[i].min_page_cnt[1].counter,
+																		time_cnt_table[i].min_page_cnt[2].counter);
+
+			printk(CMA_ERR "MAX NR_FREE_PAGES: %d, MAX NR_FREE_CMA_PAGES: %d, MAX NR_FILE_PAGES: %d\n",
+																		time_cnt_table[i].max_page_cnt[0].counter,
+																		time_cnt_table[i].max_page_cnt[1].counter,
+																		time_cnt_table[i].max_page_cnt[2].counter);
+		}
+		printk(CMA_ERR "[%s, %d, %d, %d, %d]\n",
+			time_cnt_table[i].name, jiffies_to_usecs(time_cnt_table[i].lone_time.counter), time_cnt_table[i].do_cnt.counter, time_cnt_table[i].pass_cnt.counter, time_cnt_table[i].failed_cnt.counter);
+
+		/* reset data */
+		atomic_set(&time_cnt_table[i].lone_time, 0);
+		atomic_set(&time_cnt_table[i].do_cnt, 0);
+		atomic_set(&time_cnt_table[i].pass_cnt, 0);
+		atomic_set(&time_cnt_table[i].failed_cnt, 0);
+
+		for(j = 0; j < MAX_ORDER; j++)
+		{
+			atomic_set(&time_cnt_table[i].failed_order[j], 0);
+			atomic_set(&time_cnt_table[i].pass_order[j], 0);
+		}
+		for(j = 0; j < MIGRATE_TYPES; j++)
+		{
+			atomic_set(&time_cnt_table[i].order0_cnt[j], 99999);
+		}
+		for(j = 0; j < CNT_PAGES_TYPE; j++)
+		{
+			atomic_set(&time_cnt_table[i].min_page_cnt[j], 99999);
+		}
+		for(j = 0; j < CNT_PAGES_TYPE; j++)
+		{
+			atomic_set(&time_cnt_table[i].max_page_cnt[j], 0);
+		}
+	}
+
+	Show_MM_Timer.expires = jiffies + monitor_period * HZ;
+    add_timer(&Show_MM_Timer);
+
+	show_freemem_info();
+
+	printk(CMA_ERR "CMA Free: %lu kB \n"
+				,(global_page_state(NR_FREE_CMA_PAGES)) << (PAGE_SHIFT - 10)
+	);
+
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+    {
+	    unsigned long flags;
+		spin_lock_irqsave(&thread_info_cache_lock, flags);
+		printk("\033[35mFunction = %s, Line = %d, doing show_thread_trace_info\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+	    show_thread_trace_info();
+	    spin_unlock_irqrestore(&thread_info_cache_lock, flags);
+	}
+#endif
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	printk("\033[35mFunction = %s, Line = %d, doing show_page_trace_statics\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+	show_page_trace_statics();
+#endif
+
+}
+#endif
+
 /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
 static DEFINE_MUTEX(pcp_batch_high_lock);
 #define MIN_PERCPU_PAGELIST_FRACTION	(8)
@@ -829,6 +1063,10 @@ static inline void __free_one_page(struct page *page,
 
 	VM_BUG_ON(!zone_is_initialized(zone));
 	VM_BUG_ON_PAGE(page->flags & PAGE_FLAGS_CHECK_AT_PREP, page);
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	notify_free_page(page, (1<<order));
+#endif
 
 	VM_BUG_ON(migratetype == -1);
 	if (likely(!is_migrate_isolate(migratetype)))
@@ -1847,6 +2085,163 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 	return NULL;
 }
 
+#ifdef CONFIG_CMA
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+static void __adjust_managed_cma_page_count(struct zone *zone, long count)
+{
+	long total, cma, movable;
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	struct zone *reset_zone;
+	unsigned long lx_reclaimable = 0;
+	unsigned long lx_free;
+	unsigned long realtotalpages;
+	unsigned int CMA_zone_threshold_high;
+	unsigned int CMA_zone_threshold_low;
+#endif
+	unsigned int update_case = 1000;
+
+	zone->managed_cma_pages += count;
+
+	total = zone_page_state(zone, NR_FREE_PAGES);
+	cma = zone->managed_cma_pages;
+	movable = total - cma - high_wmark_pages(zone);
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	// reset CMA_threshold by getting user-space memory thresholds at /sys/module/lowmemorykiller/parameters/minfree
+	if (!CMA_set_threshold_done && lowmem_minfree[lowmem_minfree_index]) {
+		realtotalpages = node_present_pages(0);	// we assume only 1 node
+		printk(KERN_NOTICE "\033[31mrealtotalpages is %u pages\033[m\n", realtotalpages);
+		for_each_populated_zone(reset_zone) {
+			CMA_zone_threshold_low = ((lowmem_minfree[lowmem_minfree_index] * reset_zone->present_pages) / realtotalpages);
+			reset_zone->CMA_threshold_low = CMA_zone_threshold_low << PAGE_SHIFT - 10;
+			reset_zone->CMA_threshold_high += CMA_zone_threshold_low << PAGE_SHIFT - 10;
+			printk(KERN_NOTICE "\033[31mzone %s, final CMA_threshold_high = %d MB, CMA_threshold_low = %d MB\033[m\n",
+				reset_zone->name, reset_zone->CMA_threshold_high / 1024, reset_zone->CMA_threshold_low / 1024);
+		}
+		CMA_set_threshold_done = 1;
+	}
+
+	CMA_zone_threshold_high = zone->CMA_threshold_high;
+	CMA_zone_threshold_low = zone->CMA_threshold_low;
+#endif
+	/* No cma pages, so do only movable allocation */
+	if (cma <= 0) {
+		zone->max_try_movable = pageblock_nr_pages;
+		zone->max_try_cma = 0;
+		update_case = 0;
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+		lx_free = atomic_long_read(&zone->vm_stat[NR_FREE_PAGES]) + lx_reclaimable - zone->zone_reserve_pages;
+#endif
+		goto out;
+	}
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	/*
+	* We assign the total of pages that are free or recliamable to "lx_free".
+	* If "lx_free" > CMA_zone_threshold_high, we consume normal memory only. If "lx_free"
+	* < CMA_zone_threshold_low and there are avaiable CMA memory, we consume CMA memory
+	* only. In other cases, we comsume both of normal memory and CMA memory based
+	* on the ratio.
+	*
+	* Note: the pagecache pages are reclaimable except
+	*		- swapcache: pages that are ready to be swapped into ZRAM
+	*		- buffers: pages that are used to store any metadata related
+	*			to block devices (ex. inode)
+	*		- Shmem : shmget(), mmap(), files created in tmpfs
+	*		- Mapped : mmap(), shared library
+	*/
+	lx_reclaimable = atomic_long_read(&zone->vm_stat[NR_ZONE_INACTIVE_FILE]) +
+		atomic_long_read(&zone->vm_stat[NR_SLAB_RECLAIMABLE]);
+
+	lx_free = atomic_long_read(&zone->vm_stat[NR_FREE_PAGES]) + lx_reclaimable - zone->zone_reserve_pages;
+
+	if ((lx_free << (PAGE_SHIFT - 10)) > CMA_zone_threshold_high) {
+		zone->max_try_movable = pageblock_nr_pages;
+		zone->max_try_cma = 0;
+		update_case = 1;
+    } else if ((lx_free << (PAGE_SHIFT - 10)) < CMA_zone_threshold_low) {
+		zone->max_try_movable = 0;
+		zone->max_try_cma = cma;
+		update_case = 2;
+	} else {
+        if (movable > cma) {
+            zone->max_try_movable = (movable * pageblock_nr_pages) / cma;
+            zone->max_try_cma = pageblock_nr_pages;
+			update_case = 3;
+        }
+        else {
+            zone->max_try_movable = pageblock_nr_pages;
+            /*
+             * the pages borrowed from cma by movable are not included in
+             * zone->managed_cma_pages, so "movable < 0" should be considered
+             */
+			if (movable <= 0) {
+				zone->max_try_cma = pageblock_nr_pages;
+				update_case = 4;
+			} else {
+				zone->max_try_cma = cma * pageblock_nr_pages / movable;
+				update_case = 5;
+			}
+        }
+    }
+#else
+	if (movable > cma) {
+		zone->max_try_movable =
+		(movable * pageblock_nr_pages) / cma;
+		zone->max_try_cma = pageblock_nr_pages;
+		update_case = 6;
+	} else {
+		zone->max_try_movable = pageblock_nr_pages;
+        /*
+         * the pages borrowed from cma by movable are not included in
+         * zone->managed_cma_pages, so "movable < 0" should be considered
+         */
+		if (movable <= 0) {
+			zone->max_try_cma = pageblock_nr_pages;
+			update_case = 7;
+		} else {
+			zone->max_try_cma = cma * pageblock_nr_pages / movable;
+			update_case = 8;
+		}
+	}
+#endif
+out:
+	zone->nr_try_movable = zone->max_try_movable;
+	zone->nr_try_cma = zone->max_try_cma;
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	if (dcma_debug)
+		printk(KERN_EMERG "\033[31m[update %d] zone[%s] nr_try_movable is %d kB, nr_try_cma is %d kB\033[m\n",
+			update_case, zone->name, zone->nr_try_movable << (PAGE_SHIFT - 10), zone->nr_try_cma << (PAGE_SHIFT - 10));
+
+	if (dcma_debug)
+		printk(KERN_EMERG "\033[31mlx_free is %d kB, cma is %d kB\033[m\n", (lx_free << (PAGE_SHIFT - 10)), (cma  << (PAGE_SHIFT - 10)));
+#endif
+}
+
+/* spinlock is used */
+void adjust_managed_cma_page_count(struct zone *zone, long count)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&zone->lock, flags);
+    __adjust_managed_cma_page_count(zone, count);
+    spin_unlock_irqrestore(&zone->lock, flags);
+}
+
+void adjust_managed_cma_page_count_unlock(struct zone *zone, long count)
+{
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	if (dcma_debug) {
+		printk(KERN_EMERG "\033[31m[going to update] zone[%s] nr_try_movable is %d kB, nr_try_cma is %d kB\033[m\n",
+			zone->name, zone->nr_try_movable << (PAGE_SHIFT - 10), zone->nr_try_cma << (PAGE_SHIFT - 10));
+	}
+#endif
+    __adjust_managed_cma_page_count(zone, count);
+}
+
+#endif
+#endif
 
 /*
  * This array describes the order lists are fallen back to when
@@ -1868,7 +2263,58 @@ static int fallbacks[MIGRATE_TYPES][4] = {
 static struct page *__rmqueue_cma_fallback(struct zone *zone,
 					unsigned int order)
 {
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	struct page *page;
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	if (!should_dcma_work(zone)) // disable dcma
+		return __rmqueue_smallest(zone, order, MIGRATE_CMA);
+#endif
+
+	if (!zone->managed_cma_pages)	// the system having no cma memory
+		goto alloc_movable;
+
+	if (zone->nr_try_movable > 0)	// go allcate from non-cma memory
+		goto alloc_movable;
+
+	if (zone->nr_try_cma > 0)
+	{
+		/* Okay. Now, we can try to allocate the page from cma region */
+		zone->nr_try_cma -= 1 << order;
+		page = __rmqueue_smallest(zone, order, MIGRATE_CMA);
+
+		/* CMA pages can vanish through CMA allocation */
+		if (unlikely(!page && order == 0))
+			zone->nr_try_cma = 0;
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+		if (dcma_debug) {
+			if (page)
+				printk(KERN_EMERG "\033[31m[MIGRATE_CMA] zone[%s] nr_try_movable is %d kB, nr_try_cma is %d kB\033[m\n",
+					zone->name, zone->nr_try_movable << (PAGE_SHIFT - 10), zone->nr_try_cma << (PAGE_SHIFT - 10));
+			else
+				printk(KERN_EMERG "\033[31m[MIGRATE_CMA -> fallback] zone[%s] nr_try_movable is %d kB, nr_try_cma is %d kB\033[m\n",
+					zone->name, zone->nr_try_movable << (PAGE_SHIFT - 10), zone->nr_try_cma << (PAGE_SHIFT - 10));
+		}
+#endif
+
+		return page;
+	}
+
+	/* more chances for adjustment of aggressive alloc ratio, without spinlock */
+	adjust_managed_cma_page_count_unlock(zone, 0);
+
+alloc_movable:
+	zone->nr_try_movable -= 1 << order;
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	if (dcma_debug)
+		printk(KERN_EMERG "\033[31m[fallback] zone[%s] nr_try_movable is %d kB, nr_try_cma is %d kB\033[m\n",
+			zone->name, zone->nr_try_movable << (PAGE_SHIFT - 10), zone->nr_try_cma << (PAGE_SHIFT - 10));
+#endif
+	return NULL;
+#else
 	return __rmqueue_smallest(zone, order, MIGRATE_CMA);
+#endif
 }
 #else
 static inline struct page *__rmqueue_cma_fallback(struct zone *zone,
@@ -2227,6 +2673,7 @@ static struct page *__rmqueue(struct zone *zone, unsigned int order,
 			page = __rmqueue_fallback(zone, order, migratetype);
 	}
 
+done:
 	trace_mm_page_alloc_zone_locked(page, order, migratetype);
 	return page;
 }
@@ -2486,7 +2933,11 @@ void free_hot_cold_page(struct page *page, bool cold)
 	 * excessively into the page allocator
 	 */
 	if (migratetype >= MIGRATE_PCPTYPES) {
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+		if (unlikely(is_migrate_isolate(migratetype)) || is_migrate_cma(migratetype)) {
+#else
 		if (unlikely(is_migrate_isolate(migratetype))) {
+#endif
 			free_one_page(zone, page, pfn, 0, migratetype);
 			goto out;
 		}
@@ -2657,8 +3108,13 @@ struct page *buffered_rmqueue(struct zone *preferred_zone,
 				page = list_last_entry(list, struct page, lru);
 			else
 				page = list_first_entry(list, struct page, lru);
-
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+			__dec_zone_state(zone, NR_ALLOC_BATCH);
+#endif
 			list_del(&page->lru);
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+			notify_free_page(page, (1<<order));
+#endif
 			pcp->count--;
 
 		} while (check_new_pcp(page));
@@ -2683,10 +3139,17 @@ struct page *buffered_rmqueue(struct zone *preferred_zone,
 		spin_unlock(&zone->lock);
 		if (!page)
 			goto failed;
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+		__mod_zone_page_state(zone, NR_ALLOC_BATCH, -(1 << order));
+#endif
 		__mod_zone_freepage_state(zone, -(1 << order),
 					  get_pcppage_migratetype(page));
 	}
-
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	if (atomic_long_read(&zone->vm_stat[NR_ALLOC_BATCH]) <= 0 &&
+		!test_bit(ZONE_FAIR_DEPLETED, &zone->flags))
+			set_bit(ZONE_FAIR_DEPLETED, &zone->flags);
+#endif
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
 	zone_statistics(preferred_zone, zone, gfp_flags);
 	local_irq_restore(flags);
@@ -2808,9 +3271,20 @@ bool __zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
 		min -= min / 4;
 
 #ifdef CONFIG_CMA
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	/*
+	 * We don't want to regard the pages on CMA region as free
+	 * on watermark checking, since they cannot be used for
+	 * unmovable/reclaimable allocation and they can suddenly
+	 * vanish through CMA allocation
+	 */
+	if (IS_ENABLED(CONFIG_CMA) && z->managed_cma_pages)
+		free_pages -= zone_page_state(z, NR_FREE_CMA_PAGES);
+#else
 	/* If allocation can't use CMA areas don't use free CMA pages */
 	if (!(alloc_flags & ALLOC_CMA))
 		free_pages -= zone_page_state(z, NR_FREE_CMA_PAGES);
+#endif
 #endif
 
 	/*
@@ -2897,17 +3371,45 @@ bool zone_watermark_ok_safe(struct zone *z, unsigned int order,
 }
 
 #ifdef CONFIG_NUMA
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+static bool zone_local(struct zone *local_zone, struct zone *zone)
+{
+	return local_zone->node == zone->node;
+}
+#endif
+
 static bool zone_allows_reclaim(struct zone *local_zone, struct zone *zone)
 {
 	return node_distance(zone_to_nid(local_zone), zone_to_nid(zone)) <=
 				RECLAIM_DISTANCE;
 }
 #else	/* CONFIG_NUMA */
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+static bool zone_local(struct zone *local_zone, struct zone *zone)
+{
+	return true;
+}
+#endif
+
 static bool zone_allows_reclaim(struct zone *local_zone, struct zone *zone)
 {
 	return true;
 }
 #endif	/* CONFIG_NUMA */
+
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+static void reset_alloc_batches(struct zone *preferred_zone)
+{
+	struct zone *zone = preferred_zone->zone_pgdat->node_zones;
+
+	do {
+		mod_zone_page_state(zone, NR_ALLOC_BATCH,
+			high_wmark_pages(zone) - low_wmark_pages(zone) -
+			atomic_long_read(&zone->vm_stat[NR_ALLOC_BATCH]));
+		clear_bit(ZONE_FAIR_DEPLETED, &zone->flags);
+	} while (zone++ != preferred_zone);
+}
+#endif
 
 /*
  * get_page_from_freelist goes through the zonelist trying to allocate
@@ -2920,7 +3422,12 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 	struct zoneref *z = ac->preferred_zoneref;
 	struct zone *zone;
 	struct pglist_data *last_pgdat_dirty_limit = NULL;
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	bool fair_skipped = false;
+	bool apply_fair = (alloc_flags & ALLOC_FAIR);
 
+zonelist_scan:
+#endif
 	/*
 	 * Scan zonelist, looking for a zone with enough free.
 	 * See also __cpuset_node_allowed() comment in kernel/cpuset.c.
@@ -2934,6 +3441,25 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 			(alloc_flags & ALLOC_CPUSET) &&
 			!__cpuset_zone_allowed(zone, gfp_mask))
 				continue;
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+		/*
+		 * Distribute pages in proportion to the individual
+		 * zone size to ensure fair page aging.  The zone a
+		 * page was allocated in should have no effect on the
+		 * time the page has in memory before being reclaimed.
+		 */
+		if (apply_fair) {
+			if (test_bit(ZONE_FAIR_DEPLETED, &zone->flags)) {
+				fair_skipped = true;
+				continue;
+			}
+			if (!zone_local(ac->preferred_zoneref->zone, zone)) {
+				if (fair_skipped)
+					goto reset_fair;
+				apply_fair = false;
+			}
+		}
+#endif
 		/*
 		 * When allocating a page cache page for writing, we
 		 * want to get it from a node that is within its dirty
@@ -3011,6 +3537,25 @@ try_this_zone:
 			return page;
 		}
 	}
+
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	/*
+	 * The first pass makes sure allocations are spread fairly within the
+	 * local node.  However, the local node might have free pages left
+	 * after the fairness batches are exhausted, and remote zones haven't
+	 * even been considered yet.  Try once more without fairness, and
+	 * include remote zones now, before entering the slowpath and waking
+	 * kswapd: prefer spilling to a remote zone over swapping locally.
+	 */
+	if (fair_skipped) {
+reset_fair:
+		apply_fair = false;
+		fair_skipped = false;
+		reset_alloc_batches(ac->preferred_zoneref->zone);
+		z = ac->preferred_zoneref;
+		goto zonelist_scan;
+	}
+#endif
 
 	return NULL;
 }
@@ -3165,6 +3710,10 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 		unsigned int alloc_flags, const struct alloc_context *ac,
 		enum compact_priority prio, enum compact_result *compact_result)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
+
 	struct page *page;
 	unsigned int noreclaim_flag = current->flags & PF_MEMALLOC;
 
@@ -3193,6 +3742,10 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 		zone->compact_blockskip_flush = false;
 		compaction_defer_reset(zone, order, true);
 		count_vm_event(COMPACTSUCCESS);
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+		atomic_add((jiffies-time_start), &time_cnt_table[__alloc_pages_direct_compact_count].lone_time);
+		atomic_inc(&time_cnt_table[__alloc_pages_direct_compact_count].do_cnt);
+#endif
 		return page;
 	}
 
@@ -3203,6 +3756,11 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 	count_vm_event(COMPACTFAIL);
 
 	cond_resched();
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+		atomic_add((jiffies-time_start), &time_cnt_table[__alloc_pages_direct_compact_count].lone_time);
+		atomic_inc(&time_cnt_table[__alloc_pages_direct_compact_count].do_cnt);
+#endif
 
 	return NULL;
 }
@@ -3309,6 +3867,9 @@ static int
 __perform_reclaim(gfp_t gfp_mask, unsigned int order,
 					const struct alloc_context *ac)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
 	struct reclaim_state reclaim_state;
 	int progress;
 
@@ -3330,6 +3891,11 @@ __perform_reclaim(gfp_t gfp_mask, unsigned int order,
 
 	cond_resched();
 
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[__perform_reclaim_count].lone_time);
+	atomic_inc(&time_cnt_table[__perform_reclaim_count].do_cnt);
+#endif
+
 	return progress;
 }
 
@@ -3339,12 +3905,21 @@ __alloc_pages_direct_reclaim(gfp_t gfp_mask, unsigned int order,
 		unsigned int alloc_flags, const struct alloc_context *ac,
 		unsigned long *did_some_progress)
 {
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	unsigned long time_start = jiffies;
+#endif
+
 	struct page *page = NULL;
 	bool drained = false;
 
 	*did_some_progress = __perform_reclaim(gfp_mask, order, ac);
 	if (unlikely(!(*did_some_progress)))
+	{
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+		atomic_add((jiffies-time_start), &time_cnt_table[__alloc_pages_nodemask_count].lone_time);
+#endif
 		return NULL;
+	}
 
 retry:
 	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
@@ -3360,6 +3935,10 @@ retry:
 		drained = true;
 		goto retry;
 	}
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_add((jiffies-time_start), &time_cnt_table[__alloc_pages_nodemask_count].lone_time);
+#endif
 
 	return page;
 }
@@ -3410,8 +3989,12 @@ gfp_to_alloc_flags(gfp_t gfp_mask)
 		alloc_flags |= ALLOC_HARDER;
 
 #ifdef CONFIG_CMA
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	//do nothing
+#else
 	if (gfpflags_to_migratetype(gfp_mask) == MIGRATE_MOVABLE)
 		alloc_flags |= ALLOC_CMA;
+#endif
 #endif
 	return alloc_flags;
 }
@@ -3783,7 +4366,11 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 			struct zonelist *zonelist, nodemask_t *nodemask)
 {
 	struct page *page;
-	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+	unsigned int alloc_flags = ALLOC_WMARK_LOW|ALLOC_FAIR;
+#else
+        unsigned int alloc_flags = ALLOC_WMARK_LOW;
+#endif
 	gfp_t alloc_mask = gfp_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = {
 		.high_zoneidx = gfp_zone(gfp_mask),
@@ -3791,6 +4378,13 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 		.nodemask = nodemask,
 		.migratetype = gfpflags_to_migratetype(gfp_mask),
 	};
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	gfp_t org_gfp_mask = gfp_mask;
+#endif
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	atomic_inc(&time_cnt_table[0].do_cnt);
+	extern unsigned bootarg_cma_debug_level;
+#endif
 
 	if (cpusets_enabled()) {
 		alloc_mask |= __GFP_HARDWALL;
@@ -3816,8 +4410,12 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 	if (unlikely(!zonelist->_zonerefs->zone))
 		return NULL;
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+	// do nothing
+#else
 	if (IS_ENABLED(CONFIG_CMA) && ac.migratetype == MIGRATE_MOVABLE)
 		alloc_flags |= ALLOC_CMA;
+#endif
 
 	/* Dirty zone balancing only done in the fast path */
 	ac.spread_dirty_pages = (gfp_mask & __GFP_WRITE);
@@ -3841,6 +4439,96 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order,
 
 	/* First allocation attempt */
 	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_MONITOR
+	if(page)
+	{
+		atomic_inc(&time_cnt_table[0].pass_cnt);
+		atomic_inc(&time_cnt_table[0].pass_order[order]);
+		if(bootarg_cma_debug_level >= 2 && order > 0){
+			printk("\033[0;32;31m [HIORDER DEBUG] %s %d Level 2 Order > %d\033[m\n",__func__,__LINE__,order);
+			dump_stack();
+		}
+	}
+	else
+	{
+		atomic_inc(&time_cnt_table[0].failed_cnt);
+		atomic_inc(&time_cnt_table[0].failed_order[order]);
+		if(bootarg_cma_debug_level >= 1 && order > 0){
+			printk("\033[0;32;31m [HIORDER DEBUG] %s %d Level 1 Order > %d\033[m\n",__func__,__LINE__,order);
+			dump_stack();
+		}
+	}
+
+	dump_cnt++;
+	if(dump_cnt >= 100 || show_debug_info > 0)
+	{
+		unsigned long free_pages = global_page_state(NR_FREE_PAGES);
+		unsigned long cma_pages  = global_page_state(NR_FREE_CMA_PAGES);
+		unsigned long file_pages = global_node_page_state(NR_FILE_PAGES);
+
+		/* insert min */
+		if(atomic_read(&time_cnt_table[0].min_page_cnt[0]) > free_pages)
+		{
+			atomic_set(&time_cnt_table[0].min_page_cnt[0], free_pages);
+		}
+		if(atomic_read(&time_cnt_table[0].min_page_cnt[1]) > cma_pages)
+		{
+			atomic_set(&time_cnt_table[0].min_page_cnt[1], cma_pages);
+		}
+		if(atomic_read(&time_cnt_table[0].min_page_cnt[2]) > file_pages)
+		{
+			atomic_set(&time_cnt_table[0].min_page_cnt[2], file_pages);
+		}
+
+		/* insert max */
+		if(atomic_read(&time_cnt_table[0].max_page_cnt[0]) < free_pages)
+		{
+			atomic_set(&time_cnt_table[0].max_page_cnt[0], free_pages);
+		}
+		if(atomic_read(&time_cnt_table[0].max_page_cnt[1]) < cma_pages)
+		{
+			atomic_set(&time_cnt_table[0].max_page_cnt[1], cma_pages);
+		}
+		if(atomic_read(&time_cnt_table[0].max_page_cnt[2]) < file_pages)
+		{
+			atomic_set(&time_cnt_table[0].max_page_cnt[2], file_pages);
+		}
+		dump_cnt = 0;
+	}
+
+	if( (!page && order == 0 && ac.migratetype == MIGRATE_UNMOVABLE) || (show_debug_info > 0) )
+	{
+		unsigned long flags;
+		int type = ac.migratetype;
+		struct zone *preferred_zone = ac.preferred_zoneref->zone;
+
+		if(preferred_zone)
+		{
+			struct free_area *area;
+			spin_lock_irqsave(&preferred_zone->lock, flags);
+			area = &preferred_zone->free_area[order];	// get order_0 free_area
+
+			//for (type = 0; type < MIGRATE_TYPES; type++)
+			{
+				struct list_head *head = area->free_list[type].next;
+				int total = 0;
+
+				while(head != &area->free_list[type])
+				{
+					head = head->next;
+					total += 1 << order;		// total is ihe page cnt of order 0 of migratetype
+				}
+				if( atomic_read(&time_cnt_table[0].order0_cnt[type]) > total)
+				{
+					atomic_set(&time_cnt_table[0].order0_cnt[type], total);	// set the min page_cnt
+				}
+			}
+
+			spin_unlock_irqrestore(&preferred_zone->lock, flags);
+		}
+	}
+#endif
 	if (likely(page))
 		goto out;
 
@@ -3872,6 +4560,13 @@ out:
 		kmemcheck_pagealloc_alloc(page, order, gfp_mask);
 
 	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	if(page)
+	{
+		notify_alloc_page(page, 1<<order, org_gfp_mask);
+	}
+#endif
 
 	return page;
 }
@@ -5879,6 +6574,18 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat)
 		zone_seqlock_init(zone);
 		zone_pcp_init(zone);
 
+#ifdef CONFIG_CMA
+#ifdef CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+		zone->managed_cma_pages = 0;
+		printk(KERN_DEBUG "\033[31mFunction = %s, Line = %d, set zone %s managed_cma_pagesto to 0\033[m\n", __PRETTY_FUNCTION__, __LINE__, zone->name);
+#endif  //CONFIG_MP_CMA_PATCH_CMA_AGGRESSIVE_ALLOC
+#endif  //CONFIG_CMA
+
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+		/* For bootup, initialized properly in watermark setup */
+		mod_zone_page_state(zone, NR_ALLOC_BATCH, zone->managed_pages);
+#endif
+
 		if (!size)
 			continue;
 
@@ -5888,6 +6595,10 @@ static void __paginginit free_area_init_core(struct pglist_data *pgdat)
 		BUG_ON(ret);
 		memmap_init(size, nid, j, zone_start_pfn);
 	}
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	update_zone_total_cma_size();
+#endif
 }
 
 static void __ref alloc_node_mem_map(struct pglist_data *pgdat)
@@ -6628,6 +7339,9 @@ static void calculate_totalreserve_pages(void)
 			pgdat->totalreserve_pages += max;
 
 			reserve_pages += max;
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+			zone->zone_reserve_pages = max;
+#endif
 		}
 	}
 	totalreserve_pages = reserve_pages;
@@ -6732,6 +7446,12 @@ static void __setup_per_zone_wmarks(void)
 		zone->watermark[WMARK_HIGH] = min_wmark_pages(zone) +
 					low + min * 2;
 
+#ifdef CONFIG_MP_BUDDY_SYS_PATCH_FAIR_ZONE_ALLOC
+		__mod_zone_page_state(zone, NR_ALLOC_BATCH,
+			high_wmark_pages(zone) - low_wmark_pages(zone) -
+			atomic_long_read(&zone->vm_stat[NR_ALLOC_BATCH]));
+#endif
+
 		spin_unlock_irqrestore(&zone->lock, flags);
 	}
 
@@ -6752,6 +7472,98 @@ void setup_per_zone_wmarks(void)
 	__setup_per_zone_wmarks();
 	mutex_unlock(&zonelists_mutex);
 }
+
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+
+#define MAX_PROC_SIZE 20
+static char proc_data[MAX_PROC_SIZE];
+static struct proc_dir_entry *proc_write_entry;
+
+int read_CMA_threshold_proc(char *buf, char **start, off_t offset, int count, int *eof, void *data)
+{
+	show_dcma_info();
+	return 0;
+}
+
+int write_CMA_threshold_proc(struct file *file, const char *buf, int count, void *data)
+{
+    char *th1, *th2;
+    char* cur = proc_data;
+    unsigned int val_th1, val_th2;
+
+    memset(proc_data, 0, MAX_PROC_SIZE);
+    if(count > MAX_PROC_SIZE)
+        count = MAX_PROC_SIZE;
+    if(copy_from_user(proc_data, buf, count))
+        return -EFAULT;
+
+    //printk("proc_data = %s\n", proc_data);
+    th1 = strsep(&cur, ",");
+    //printk("cur = %s\n", cur);
+    th2 = cur;
+    printk("th1 = %s, th2 = %s\n", th1, th2);
+    if((th1 == NULL) || (th2 == NULL)){
+        printk("TH1 or TH2 == NULL\n");
+        return count;
+    }
+    if((th1[0] == '\0') || (th2[0] == '\0')){
+        printk("TH1 or TH2 == empty value\n");
+        return count;
+    }
+
+	if (kstrtouint(th1, 10, &val_th1)) {
+		printk("invalid config th1 = %s, kstrtouint error\n", th1);
+		return -EINVAL;
+	}
+	if (kstrtouint(th2, 10, &val_th2)) {
+		printk("invalid config th2 = %s, kstrtouint error\n", th2);
+		return -EINVAL;
+	}
+    if(val_th1 > val_th2){
+        printk("invalid config: TH1 > TH2\n");
+        return count;
+    }
+
+    return count;
+}
+
+int proc_open(struct inode *inode,struct file *filp)
+{
+	if (!(try_module_get(THIS_MODULE))) {
+		printk("try_module_get fail!!\n");
+		return -EINVAL;
+	}
+    return 0;
+}
+
+int proc_close(struct inode *inode,struct file *filp)
+{
+    module_put(THIS_MODULE);
+    return 0;
+}
+
+static const struct file_operations CMA_threshold_fops = {
+    .owner      = THIS_MODULE,
+    .read = read_CMA_threshold_proc,
+    .write = write_CMA_threshold_proc,
+    .open = proc_open,
+    .release = proc_close,
+};
+
+int create_CMA_threshold_proc_entry(void)
+{
+    proc_write_entry = proc_create("CMA_threshold", 0666, NULL, &CMA_threshold_fops);
+
+    if(!proc_write_entry)
+    {
+        printk(KERN_INFO "Error creating proc entry: CMA_threshold");
+        return -ENOMEM;
+    }
+	printk("\033[35mCMA_threshold proc initialized\033[m\n");
+
+	return 0;
+}
+#endif
 
 /*
  * Initialise min_free_kbytes.
@@ -6804,6 +7616,30 @@ int __meminit init_per_zone_wmark_min(void)
 	setup_min_slab_ratio();
 #endif
 
+#ifdef CONFIG_MP_CMA_PATCH_CMA_DYNAMIC_STRATEGY
+	struct zone *zone;
+	unsigned long flags;
+	create_CMA_threshold_proc_entry();
+
+	// CMA_threshold will be reset at adjust_managed_cma_page_count() after getting user-space memory thresholds
+	// at /sys/module/lowmemorykiller/parameters/minfree
+	for_each_populated_zone(zone)
+	{
+		spin_lock_irqsave(&zone->lock, flags);
+		if (zone->CMA_threshold_low == 0)
+			zone->CMA_threshold_low = 50 * 1024;	// dcma low threshold is default 50MB
+
+		if (zone->total_CMA_size > 0)
+			zone->CMA_threshold_high = zone->total_CMA_size * 1024;	// unit: KB
+		else
+			zone->CMA_threshold_high = 100 * 1024;	// dcma high threshold is default 50MB
+		spin_unlock_irqrestore(&zone->lock, flags);
+		printk(KERN_NOTICE "\033[31mzone: %s\033[m\n", zone->name);
+		printk(KERN_NOTICE"\033[35m    total_CMA_size = %d MB\033[m\n", zone->total_CMA_size);
+		printk(KERN_NOTICE"\033[31m    [Init] CMA_threshold_low = %d MB, CMA_threshold_high = %d MB\033[m\n", zone->CMA_threshold_low / 1024, zone->CMA_threshold_high / 1024);
+	}
+	//printk(KERN_NOTICE "\033[35mlowmem_minfree[%d] = %d pages\033[m\n", lowmem_minfree_index, lowmem_minfree[lowmem_minfree_index]);
+#endif
 	return 0;
 }
 core_initcall(init_per_zone_wmark_min)
@@ -7201,6 +8037,9 @@ static unsigned long pfn_max_align_up(unsigned long pfn)
 				pageblock_nr_pages));
 }
 
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+extern struct cma *pfn_to_cma(unsigned long start);
+#endif
 /* [start, end) must belong to a single zone. */
 static int __alloc_contig_migrate_range(struct compact_control *cc,
 					unsigned long start, unsigned long end)
@@ -7210,18 +8049,23 @@ static int __alloc_contig_migrate_range(struct compact_control *cc,
 	unsigned long pfn = start;
 	unsigned int tries = 0;
 	int ret = 0;
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+	struct cma *cma_source = NULL;
+	struct cma_measurement *cma_measurement_data = NULL;
+	unsigned long nr_try_migrated = 0;
+#endif
 
 	migrate_prep();
 
-	while (pfn < end || !list_empty(&cc->migratepages)) {
+	while (pfn < end || !list_empty(&cc->migratepages)) {	// !list_empty(&cc->migratepages) means migration failed, so retry it
 		if (fatal_signal_pending(current)) {
 			ret = -EINTR;
 			break;
 		}
 
-		if (list_empty(&cc->migratepages)) {
+		if (list_empty(&cc->migratepages)) {	// if list_empty(&cc->migratepages), find 32 new pages to be migrated
 			cc->nr_migratepages = 0;
-			pfn = isolate_migratepages_range(cc, pfn, end);
+			pfn = isolate_migratepages_range(cc, pfn, end);	// 32 pages per isolate, adding isolating page into cc
 			if (!pfn) {
 				ret = -EINTR;
 				break;
@@ -7229,6 +8073,17 @@ static int __alloc_contig_migrate_range(struct compact_control *cc,
 			tries = 0;
 		} else if (++tries == 5) {
 			ret = ret < 0 ? ret : -EBUSY;
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+			if(ret >= 0)
+			{
+				printk("\033[35m[Start] Function = %s, Line = %d, ret: %d, pfn is 0x%lX, end is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret, pfn, end);
+				struct page *test_page, *test_next;
+
+				list_for_each_entry_safe(test_page, test_next, &cc->migratepages, lru)
+					show_page_trace2(page_to_pfn(test_page));
+				printk("\033[35m[End] Function = %s, Line = %d, ret: %d, pfn is 0x%lX, end is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret, pfn, end);
+			}
+#endif
 			break;
 		}
 
@@ -7236,13 +8091,42 @@ static int __alloc_contig_migrate_range(struct compact_control *cc,
 							&cc->migratepages);
 		cc->nr_migratepages -= nr_reclaimed;
 
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		nr_try_migrated += cc->nr_migratepages;
+#endif
+
 		ret = migrate_pages(&cc->migratepages, alloc_migrate_target,
 				    NULL, 0, cc->mode, MR_CMA);
 	}
 	if (ret < 0) {
 		putback_movable_pages(&cc->migratepages);
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+		/* update nr_try_migrated to cma_measurement_data */
+		cma_source = pfn_to_cma(start);
+		if(cma_source)
+		{
+			cma_measurement_data = cma_source->cma_measurement_ptr;
+			mutex_lock(&cma_measurement_data->cma_measurement_lock);
+			cma_measurement_data->total_migration_size_kb += (PAGE_SIZE * nr_try_migrated) >> 10;
+			mutex_unlock(&cma_measurement_data->cma_measurement_lock);
+			printk(KERN_DEBUG "\033[35mmigration data is %lu kb\033[m\n", (PAGE_SIZE * nr_try_migrated) >> 10);
+		}
+#endif
 		return ret;
 	}
+
+#ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
+	/* update nr_try_migrated to cma_measurement_data */
+	cma_source = pfn_to_cma(start);
+	if(cma_source)
+	{
+		cma_measurement_data = cma_source->cma_measurement_ptr;
+		mutex_lock(&cma_measurement_data->cma_measurement_lock);
+		cma_measurement_data->total_migration_size_kb += (PAGE_SIZE * nr_try_migrated) >> 10;
+		mutex_unlock(&cma_measurement_data->cma_measurement_lock);
+		printk(KERN_DEBUG "\033[35mmigration data is %lu kb\033[m\n", (PAGE_SIZE * nr_try_migrated) >> 10);
+	}
+#endif
 	return 0;
 }
 
@@ -7272,6 +8156,9 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 	unsigned long outer_start, outer_end;
 	unsigned int order;
 	int ret = 0;
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+	volatile int retry_times;
+#endif
 
 	struct compact_control cc = {
 		.nr_migratepages = 0,
@@ -7306,11 +8193,17 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 	 * put back to page allocator so that buddy can use them.
 	 */
 
+	// mark to MIGRAE_ISOLATE for [start, end], move isolated free_pages to free_area->free_list[ISOLATED], nr_free and nr_cma_free will not count these isolated free pages
 	ret = start_isolate_page_range(pfn_max_align_down(start),
 				       pfn_max_align_up(end), migratetype,
 				       false);
 	if (ret)
 		return ret;
+
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+	retry_times = 0;
+re_check:
+#endif
 
 	/*
 	 * In case of -EBUSY, we'd like to know which page causes problem.
@@ -7324,8 +8217,11 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 	 */
 	ret = __alloc_contig_migrate_range(&cc, start, end);
 	if (ret && ret != -EBUSY)
+	{
+		printk("\033[35mFunction = %s, Line = %d, __alloc_contig_migrate_range get ret %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, ret);
 		goto done;
-	ret =0;
+	}
+	ret = 0;
 
 	/*
 	 * Pages from [start, end) are within a MAX_ORDER_NR_PAGES
@@ -7372,8 +8268,13 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 
 	/* Make sure the range is really isolated. */
 	if (test_pages_isolated(outer_start, end, false)) {
+#ifdef CONFIG_MP_ION_PATCH_MSTAR
+		pr_warn("alloc_contig_range test_pages_isolated(%lx(%lx), %lx) failed, retry_times = %d\n",
+			outer_start, start, end, retry_times);
+#else
 		pr_info_ratelimited("%s: [%lx, %lx) PFNs busy\n",
 			__func__, outer_start, end);
+#endif
 		ret = -EBUSY;
 		goto done;
 	}
@@ -7394,6 +8295,14 @@ int alloc_contig_range(unsigned long start, unsigned long end,
 done:
 	undo_isolate_page_range(pfn_max_align_down(start),
 				pfn_max_align_up(end), migratetype);
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+	if(ret == 0)
+	{
+		struct page *page = pfn_to_page(start);
+		notify_alloc_page(page, end-start, 0xFFFFFFFF & ~__GFP_MOVABLE);
+	}
+#endif
 	return ret;
 }
 
@@ -7520,3 +8429,824 @@ bool is_free_buddy_page(struct page *page)
 
 	return order < MAX_ORDER;
 }
+
+#ifdef CONFIG_MP_DEBUG_TOOL_MEMORY_USAGE_TRACE
+#define PAGE_TRACE_STACK_DEPTH 8
+#define TRACE_PRT_LOW_LIMIT 1024
+
+struct mstar_page_alloc_stack
+{
+	u32 crc32;
+	unsigned int alloc_page_cnt;
+	unsigned int ksm_pages;
+	unsigned int anon_pages;
+	unsigned int file_pages;
+    union
+    {
+	   struct hlist_node hlist;
+	   struct list_head list;
+    };
+	unsigned long trace[PAGE_TRACE_STACK_DEPTH];
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+	int thread_info_cnt;
+#endif
+};
+
+struct mstar_page_trace_struct
+{
+  unsigned char allocated;
+  unsigned char lock_state;
+  unsigned short stack_index;
+  gfp_t  gfp_mask;
+  //struct list_head sort_list;
+  unsigned int insert_ms;
+};
+
+extern void list_sort(void *priv, struct list_head *head,
+		int (*cmp)(void *priv, struct list_head *a,
+			struct list_head *b));
+
+extern char _text[], _end[];
+
+static DEFINE_SPINLOCK(monitor_list_spinlock);
+
+struct mstar_page_trace_struct  *monitor_array_root = NULL;
+
+struct mstar_page_trace_struct  *monitor_array_LX = NULL;
+struct mstar_page_trace_struct  *monitor_array_LX2 = NULL;
+struct mstar_page_trace_struct  *monitor_array_LX3 = NULL;
+
+unsigned long monitor_array_LX_base = 0;
+unsigned long monitor_array_LX_size = 0;
+unsigned long monitor_array_LX2_base = 0;
+unsigned long monitor_array_LX2_size = 0;
+unsigned long monitor_array_LX3_base = 0;
+unsigned long monitor_array_LX3_size = 0;
+
+unsigned long g_mon_reserve_pfn = 0;
+extern unsigned long lx_mem_addr;// = PHYS_OFFSET;
+extern unsigned long lx_mem_size;// = INVALID_PHY_ADDR; //default setting
+extern unsigned long lx_mem2_addr;// = INVALID_PHY_ADDR; //default setting
+extern unsigned long lx_mem2_size;// = INVALID_PHY_ADDR; //default setting
+extern unsigned long lx_mem3_addr;// = INVALID_PHY_ADDR; //default setting
+extern unsigned long lx_mem3_size;// = INVALID_PHY_ADDR; //default setting
+
+static DEFINE_HASHTABLE(page_alloc_stack_table, PAGE_ALLOC_STACK_HASH_BITS);
+LIST_HEAD(page_alloc_stack_heap_head);
+unsigned int g_total_stack_cnt;
+struct mstar_page_alloc_stack *g_stack_head;
+
+static void init_array_pointer(void)
+{
+	struct page *page = pfn_to_page(g_mon_reserve_pfn);
+	int i;
+
+	monitor_array_root = (struct mstar_page_trace_struct*)page_address(page);
+	memset(monitor_array_root, 0, sizeof(struct mstar_page_trace_struct) * (monitor_array_LX_size + monitor_array_LX2_size + monitor_array_LX3_size));
+    monitor_array_LX = monitor_array_root;
+
+	if(monitor_array_LX2_size)
+		monitor_array_LX2 = monitor_array_LX + monitor_array_LX_size;
+
+	if(monitor_array_LX3_size)
+		monitor_array_LX3 = monitor_array_LX + monitor_array_LX_size + monitor_array_LX2_size;
+
+	g_stack_head = (struct mstar_page_alloc_stack*)(monitor_array_LX + monitor_array_LX_size + monitor_array_LX2_size + monitor_array_LX3_size);
+
+	for(i = 0; i < MAX_STACK_COUNT; i++)
+		list_add(&g_stack_head[i].list, &page_alloc_stack_heap_head);
+	g_total_stack_cnt = 0;
+}
+
+static int search_cnt = 0;
+static int cmp_cnt = 0;
+static inline struct mstar_page_alloc_stack *find_page_stack_struct(unsigned long back_trace[])
+{
+	struct mstar_page_alloc_stack *stk;
+	unsigned long flags;
+	unsigned long key;
+	u32 crc;
+	static int conflict_check_times = 10000;
+
+	search_cnt++;
+
+	crc = crc32(0xA7561348, back_trace, sizeof(unsigned long)*PAGE_TRACE_STACK_DEPTH);
+	key = hash_32(crc, PAGE_ALLOC_STACK_HASH_BITS);
+	hash_for_each_possible(page_alloc_stack_table, stk, hlist, key)
+
+	if(crc == stk->crc32)
+	{
+		cmp_cnt++;
+		if(conflict_check_times> 0)
+		{
+			conflict_check_times--;
+			BUG_ON(memcmp(back_trace, stk->trace,sizeof(unsigned long)*PAGE_TRACE_STACK_DEPTH));
+		}
+		return stk;
+	}
+	else
+		cmp_cnt++;
+
+	spin_lock_irqsave(&monitor_list_spinlock, flags);
+
+	if(!monitor_array_root)
+		init_array_pointer();
+	if(list_empty(&page_alloc_stack_heap_head))
+	{
+		printk(KERN_ERR "Too much alloc stack found(%d), more than max%d\n",
+		g_total_stack_cnt, MAX_STACK_COUNT);
+		BUG();
+	}
+
+	stk = container_of(page_alloc_stack_heap_head.next, struct mstar_page_alloc_stack, list);
+	list_del(&stk->list);
+	stk->crc32 = crc;
+	stk->alloc_page_cnt = 0;
+	stk->ksm_pages = 0;
+	stk->anon_pages = 0;
+	stk->file_pages = 0;
+	memcpy(stk->trace, back_trace, sizeof(unsigned long)*PAGE_TRACE_STACK_DEPTH);
+	hash_add(page_alloc_stack_table, &stk->hlist, key);
+	spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+	g_total_stack_cnt++;
+	conflict_check_times = 10000;
+	return stk;
+}
+
+unsigned long monitor_get_reserve_size(void )
+{
+  unsigned long total_size = lx_mem_size;
+
+  monitor_array_LX_base = __phys_to_pfn(lx_mem_addr);
+  monitor_array_LX_size = lx_mem_size/PAGE_SIZE;
+
+  if(lx_mem2_addr != INVALID_PHY_ADDR)
+  {
+	  total_size += lx_mem2_size;
+
+	  monitor_array_LX2_base = __phys_to_pfn(lx_mem2_addr);
+	  monitor_array_LX2_size = lx_mem2_size/PAGE_SIZE;
+  }
+  if(lx_mem3_addr != INVALID_PHY_ADDR)
+  {
+	  total_size += lx_mem3_size;
+
+	  monitor_array_LX3_base = __phys_to_pfn(lx_mem3_addr);
+	  monitor_array_LX3_size = lx_mem3_size/PAGE_SIZE;
+  }
+
+  BUG_ON(total_size & (PAGE_SIZE-1));
+  total_size /= PAGE_SIZE;
+
+  return sizeof(struct mstar_page_trace_struct)*total_size+sizeof(struct mstar_page_alloc_stack)*MAX_STACK_COUNT;;
+}
+
+void set_monitor_array(unsigned long pfn)
+{
+	printk(KERN_ERR "set_monitor_array %ld\n", pfn);
+	g_mon_reserve_pfn = pfn;
+};
+
+void reserve_page_trace_mem(phys_addr_t beg,phys_addr_t end)
+{
+	phys_addr_t addr;
+	int size = monitor_get_reserve_size();
+	size = ALIGN(size, PAGE_SIZE);
+	addr = memblock_find_in_range(beg, end, size, PAGE_SIZE);
+
+	if(addr>= 0)
+	{
+		if (memblock_is_region_reserved(addr, size) || memblock_reserve(addr, size) < 0)
+		{
+			BUG();
+		}
+		g_mon_reserve_pfn = __phys_to_pfn(addr);
+	}
+}
+
+static struct mstar_page_trace_struct *get_traceinfo(unsigned long pfn)
+{
+	struct mstar_page_trace_struct *trace_info;
+
+	if(!monitor_array_root)
+	{
+		unsigned long flags;
+		spin_lock_irqsave(&monitor_list_spinlock, flags);
+		if(!monitor_array_root)
+			init_array_pointer();
+		spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+	}
+
+	BUG_ON(monitor_array_root == NULL);
+	if(pfn >= monitor_array_LX_base && pfn < (monitor_array_LX_base + monitor_array_LX_size))
+		trace_info = monitor_array_LX + (pfn - monitor_array_LX_base);
+	else  if(pfn >= monitor_array_LX2_base && pfn < (monitor_array_LX2_base + monitor_array_LX2_size))
+		trace_info = monitor_array_LX2 + (pfn - monitor_array_LX2_base);
+	else  if(pfn >= monitor_array_LX3_base && pfn < (monitor_array_LX3_base + monitor_array_LX3_size))
+		trace_info = monitor_array_LX3 + (pfn - monitor_array_LX3_base);
+	else
+		BUG();
+	return trace_info;
+}
+
+static unsigned long get_trace_pfn(struct mstar_page_trace_struct *info)
+{
+
+	BUG_ON(monitor_array_root == NULL);
+	if(info>=monitor_array_LX && info<monitor_array_LX+monitor_array_LX_size)
+		return monitor_array_LX_base+(info-monitor_array_LX);
+	if(monitor_array_LX2_size &&
+		   info>=monitor_array_LX2 && info<monitor_array_LX2+monitor_array_LX2_size)
+		return monitor_array_LX2_base+(info-monitor_array_LX2);
+	if(monitor_array_LX3_size &&
+		   info>=monitor_array_LX3 && info<monitor_array_LX3+monitor_array_LX3_size)
+		return monitor_array_LX3_base+(info-monitor_array_LX3);
+
+	BUG();
+	return (unsigned long)-1;
+}
+
+void notify_free_page(struct page *page, int count)
+{
+	struct mstar_page_trace_struct *trace_info;
+	int i;
+	unsigned long flags;
+	unsigned long pfn = page_to_pfn(page);
+
+	rcu_read_lock();
+	for(i = 0; i < count; i++)
+	{
+		trace_info = get_traceinfo(pfn + i);
+		if(trace_info->lock_state)
+		{
+			break;
+		}
+		trace_info->allocated = 0;
+		trace_info->insert_ms = 0;
+		trace_info->stack_index = 0xFFFF;
+	}
+	rcu_read_unlock();
+
+	if(i < count)
+	{
+		spin_lock_irqsave(&monitor_list_spinlock, flags);
+		for( ; i < count; i++)
+		{
+			trace_info = get_traceinfo(pfn + i);
+			trace_info->allocated = 0;
+			trace_info->insert_ms = 0;
+			trace_info->stack_index = 0xFFFF;
+		}
+		spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+	}
+}
+
+void notify_alloc_page(struct page *page, int count, gfp_t gfp_mask)
+{
+	int i = 0;
+	unsigned long pfn = page_to_pfn(page);
+	struct mstar_page_trace_struct *trace_info;
+	unsigned long back_trace[10];
+	struct stack_trace stack_trace;
+	unsigned long flags;
+	int cpy_count, cpy_beg;
+	struct mstar_page_alloc_stack *stk;
+
+	//memset(back_trace, 0, sizeof(back_trace));
+	memset(&stack_trace, 0, sizeof(stack_trace));
+	stack_trace.max_entries = 10;
+	stack_trace.entries = back_trace;
+	save_stack_trace(&stack_trace);
+	for(cpy_count = 0; cpy_count < 8; cpy_count++)
+	{
+		if(back_trace[cpy_count + 2] == ULONG_MAX)	// [2] ~ [9]
+		{
+			break;
+		}
+	}
+	if(cpy_count < 8)
+		cpy_count++;	//we need to cpy ULONG_MAX
+
+	if(cpy_count >= PAGE_TRACE_STACK_DEPTH)
+	{
+		cpy_beg += cpy_count - PAGE_TRACE_STACK_DEPTH + 2;
+		cpy_count = PAGE_TRACE_STACK_DEPTH;
+	}
+	else
+	{
+		memset(back_trace + 2 + cpy_count, 0, sizeof(unsigned long)*(PAGE_TRACE_STACK_DEPTH - cpy_count));
+		cpy_beg = 2;
+	}
+	stk = find_page_stack_struct(back_trace + cpy_beg);
+
+	rcu_read_lock();
+	for(i = 0; i < count; i++)
+	{
+		trace_info = get_traceinfo(pfn + i);
+		if(trace_info->lock_state)
+		{
+			break;
+		}
+		if(trace_info->allocated)	// no lock_state, and allocated
+		{
+			int j;
+
+			printk("\033[35m[Case 1, i is %d/%d, pfn is 0x%lX, trace_info->stack_index is %d] last_alloced from stack[%u]:\033[m\n", i, count, pfn, trace_info->stack_index, trace_info->insert_ms);
+			BUG_ON(trace_info->stack_index >= MAX_STACK_COUNT);
+			for(j = 0; j < PAGE_TRACE_STACK_DEPTH; j++)
+			{
+				if(g_stack_head[trace_info->stack_index].trace[j] == ULONG_MAX)
+					break;
+
+				//printk(KERN_ERR "		 ");
+				print_ip_sym(g_stack_head[trace_info->stack_index].trace[j]);
+			}
+			printk("\033[35m[Done][Case 1, i is %d/%d][now ms: %u]\033[m\n", i, count, jiffies_to_msecs(jiffies));
+
+			BUG();
+		}
+
+		//memcpy(trace_info->trace, back_trace+cpy_beg, sizeof(unsigned long)*cpy_count);
+		trace_info->allocated = 1;
+		trace_info->insert_ms = jiffies_to_msecs(jiffies);
+		trace_info->stack_index = stk - g_stack_head;
+		trace_info->gfp_mask = gfp_mask;
+		BUG_ON(trace_info->stack_index >= MAX_STACK_COUNT);
+	}
+	rcu_read_unlock();
+
+	if(i < count)
+	{
+		spin_lock_irqsave(&monitor_list_spinlock, flags);
+		for( ; i < count; i++)
+		{
+			trace_info = get_traceinfo(pfn + i);
+			if(trace_info->allocated)
+			{
+				int j;
+
+				printk("\033[35m[Case 2, i is %d/%d, pfn is 0x%lX, trace_info->stack_index is %d] last_alloced from stack:\033[m\n", i, count, pfn, trace_info->stack_index);
+				BUG_ON(trace_info->stack_index >= MAX_STACK_COUNT);
+				for(j = 0; j < PAGE_TRACE_STACK_DEPTH; j++)
+				{
+					if(g_stack_head[trace_info->stack_index].trace[j] == ULONG_MAX)
+						break;
+
+					//printk(KERN_ERR "		");
+					print_ip_sym(g_stack_head[trace_info->stack_index].trace[j]);
+				}
+				printk("\033[35m[Done][Case 2, i is %d/%d]\033[m\n", i, count);
+
+				BUG();
+			}
+
+			//memcpy(trace_info->trace, back_trace+cpy_beg, sizeof(unsigned long)*cpy_count);
+			trace_info->allocated = 1;
+			trace_info->insert_ms = jiffies_to_msecs(jiffies);
+			trace_info->stack_index = stk - g_stack_head;
+			trace_info->gfp_mask = gfp_mask;
+			BUG_ON(trace_info->stack_index >= MAX_STACK_COUNT);
+		}
+		spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+	}
+}
+
+void show_page_trace(unsigned long pfn);
+void notify_migrate_page(struct page *page_src, struct page *page_dst)
+{
+	struct mstar_page_trace_struct *trace_info1, *trace_info2;
+	unsigned long flags;
+
+	rcu_read_lock();
+	trace_info1 = get_traceinfo(page_to_pfn(page_src));
+	trace_info2 = get_traceinfo(page_to_pfn(page_dst));
+
+	if(!trace_info1->allocated)
+		printk("\033[35mFunction = %s, Line = %d, pfn_src is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, page_to_pfn(page_src)); // joe.liu
+	if(!trace_info2->allocated)
+		printk("\033[35mFunction = %s, Line = %d, pfn_dst is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, page_to_pfn(page_dst)); // joe.liu
+
+	BUG_ON(!trace_info1->allocated || !trace_info2->allocated);
+
+	if(trace_info1->lock_state || trace_info2->lock_state)
+	{
+		rcu_read_unlock();
+		goto RETRY;
+	}
+
+	if(!(trace_info2->gfp_mask & __GFP_MOVABLE) && is_cma_page(page_dst))
+	{
+		show_page_trace(page_to_pfn(page_dst));
+		BUG();
+	}
+
+	if(!(trace_info1->gfp_mask & __GFP_MOVABLE) && is_cma_page(page_src))
+	{
+		show_page_trace(page_to_pfn(page_src));
+		BUG();
+	}
+
+	trace_info2->stack_index = trace_info1->stack_index;
+	// memcpy(trace_info2->trace, trace_info1->trace, sizeof(unsigned long)*PAGE_TRACE_STACK_DEPTH);
+	rcu_read_unlock();
+	return;
+
+RETRY:
+	spin_lock_irqsave(&monitor_list_spinlock, flags);
+	trace_info2->stack_index = trace_info1->stack_index;
+	//memcpy(trace_info2->trace, trace_info1->trace, sizeof(unsigned long)*PAGE_TRACE_STACK_DEPTH);
+	spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+}
+
+static void __show_page_trace_statics(struct rcu_head *head)
+{
+	int i;
+	unsigned long flags;
+	int total_free_slot=0, total_free_traced=0, total_alloc_traced=0;
+	struct mstar_page_trace_struct *trace_info1;
+	struct sysinfo meminfo;
+	__kernel_ulong_t total_prt = 0, tmp_rec;
+	unsigned long debug_reserve= ALIGN(monitor_get_reserve_size(), PAGE_SIZE)/PAGE_SIZE;
+	unsigned long kernel_reserve = ALIGN(_end - _text, PAGE_SIZE)/PAGE_SIZE;
+	struct mstar_page_alloc_stack *stk;
+	struct hlist_node *tmp;
+	unsigned long pfn;
+	struct page *page;
+
+	hash_for_each_safe(page_alloc_stack_table, i, tmp, stk, hlist)
+	{
+		stk->alloc_page_cnt = 0;
+		stk->ksm_pages = 0;
+		stk->anon_pages = 0;
+		stk->file_pages = 0;
+	}
+
+	si_meminfo(&meminfo);
+	spin_lock_irqsave(&monitor_list_spinlock, flags);
+
+    for(i=0;i<monitor_array_LX_size+monitor_array_LX2_size+monitor_array_LX3_size; i++)
+    {
+       trace_info1 = monitor_array_root+i;
+	   if(trace_info1->allocated==0)//if(PageBuddy(pfn_to_page(trace_info1->pfn)))
+		{
+		  total_free_traced++;
+		  trace_info1->lock_state = 0;//we will not trace this page at this time, release it
+		  continue;
+		}
+	    pfn = get_trace_pfn(trace_info1);
+		page = pfn_to_page(pfn);
+	    BUG_ON(trace_info1->stack_index>=MAX_STACK_COUNT);
+		g_stack_head[trace_info1->stack_index].alloc_page_cnt++;
+
+        if(PageLRU(page))
+        {
+		   if(PageKsm(page))
+			   g_stack_head[trace_info1->stack_index].ksm_pages++;
+		   else if(PageAnon(page))
+			   g_stack_head[trace_info1->stack_index].anon_pages++;
+		   else if(page_is_file_cache(page))
+			   g_stack_head[trace_info1->stack_index].file_pages++;
+        }
+
+	    total_alloc_traced++;
+		trace_info1->lock_state = 0;//we will not trace this page at this time, release it
+
+    }
+	tmp_rec = total_alloc_traced;
+    spin_unlock_irqrestore(&monitor_list_spinlock, flags);
+
+    printk(KERN_ERR "In show_page_alloc_statics(%d, %d, %d, %d)\n    total %u stacks\n",
+		  total_free_slot, total_free_traced, total_alloc_traced, total_free_traced+total_alloc_traced, g_total_stack_cnt);
+	hash_for_each_safe(page_alloc_stack_table, i, tmp, stk, hlist)
+	{
+
+	    if(stk->alloc_page_cnt*4 >= TRACE_PRT_LOW_LIMIT)
+	    {   int k;
+		printk(KERN_ERR "%dk(ksm%dk anon%dk file%dk others%dk) mem allocated from stack:\n",
+				   stk->alloc_page_cnt*4, stk->ksm_pages*4, stk->anon_pages*4, stk->file_pages*4,
+				   stk->alloc_page_cnt*4 -stk->ksm_pages*4-stk->anon_pages*4-stk->file_pages*4);
+			for(k=0;k<PAGE_TRACE_STACK_DEPTH; k++)
+		    {
+		       if(stk->trace[k] == ULONG_MAX)
+			       break;
+			   printk(KERN_ERR "       ");
+		       print_ip_sym(stk->trace[k]);
+		    }
+			total_prt += stk->alloc_page_cnt;
+	    }
+	    total_alloc_traced -= stk->alloc_page_cnt;
+
+	}
+	BUG_ON(total_alloc_traced);
+	BUG_ON(meminfo.totalram > monitor_array_LX_size+monitor_array_LX2_size+monitor_array_LX3_size);
+
+
+	printk(KERN_ERR "\n\n\n   total ram size=%ldk, total_free_size=%ldk, total allocated size=%ldk,"
+		  "total print size=%ldk, debug_reserve%ldk, kernel_reserve%ldk, untraced%ldk\n", meminfo.totalram*4, meminfo.freeram*4, tmp_rec*4, total_prt*4,
+		  debug_reserve*4, kernel_reserve*4,
+		  meminfo.totalram*4-meminfo.freeram*4-tmp_rec*4);
+	printk(KERN_ERR "\n search%d, cmp%d\n",
+		    search_cnt, cmp_cnt);
+	search_cnt = cmp_cnt =0;
+
+}
+
+void show_page_trace_statics(void)
+{
+	static struct rcu_head rcu_list_head;
+	int i;
+	struct mstar_page_trace_struct *trace_info;
+
+	rcu_read_lock();
+	for(i = 0; i < monitor_array_LX_size + monitor_array_LX2_size + monitor_array_LX3_size; i++)
+	{
+		trace_info = monitor_array_root + i;
+		BUG_ON(trace_info->lock_state);
+		trace_info->lock_state = 1;
+	}
+
+	call_rcu(&rcu_list_head, __show_page_trace_statics);
+	rcu_read_unlock();
+}
+
+//unsigned long total_traced;
+//unsigned long tatal_untraced;
+void show_page_trace2(unsigned long pfn)
+{
+	struct mstar_page_trace_struct *trace_info;
+	int i;
+	static int tmp = 0;
+
+	dump_page(pfn_to_page(pfn), __PRETTY_FUNCTION__);
+
+	//spin_lock_irqsave(&lock_page_trace_spinlock, flags);
+	trace_info = get_traceinfo(pfn);
+
+	printk(KERN_ERR "\033[31mallocated stack before(gfp_mask:0x%08x): \033[m\n", trace_info->gfp_mask);
+	rcu_read_lock();
+    if(trace_info->stack_index >= MAX_STACK_COUNT)
+    {
+       printk("trace_info->stack_index is %d\n", trace_info->stack_index);
+	   return;
+       //BUG_ON(1);
+    }
+
+	for(i = 0; i < PAGE_TRACE_STACK_DEPTH; i++)
+	{
+		if(g_stack_head[trace_info->stack_index].trace[i] == ULONG_MAX)
+			break;
+		print_ip_sym(g_stack_head[trace_info->stack_index].trace[i]);
+	}
+	rcu_read_unlock();
+	printk(KERN_ERR "\033[32mfinish showing allocated stack\033[m\n");
+}
+
+void show_page_trace(unsigned long pfn)
+{
+	struct mstar_page_trace_struct *trace_info;
+	int i;
+    static int tmp = 0;
+
+	dump_page(pfn_to_page(pfn), __PRETTY_FUNCTION__);
+
+	if(++tmp&1)
+	{
+		printk("\033[35m[START] migrate stack:\033[m\n");
+		dump_stack();
+		printk("\033[35m[DONE] migrate stack:\033[m\n");
+		return;
+    }
+
+	//spin_lock_irqsave(&lock_page_trace_spinlock, flags);
+	trace_info = get_traceinfo(pfn);
+
+	printk(KERN_ERR "\033[31mallocated stack before(gfp_mask:0x%08x): \033[m\n", trace_info->gfp_mask);
+	if(trace_info->stack_index >= MAX_STACK_COUNT)
+	{
+		printk("trace_info->stack_index is %d\n", trace_info->stack_index);
+		return;
+		//BUG_ON(1);
+	}
+
+	for(i = 0; i < PAGE_TRACE_STACK_DEPTH; i++)
+	{
+		if(g_stack_head[trace_info->stack_index].trace[i] == ULONG_MAX)
+			break;
+		print_ip_sym(g_stack_head[trace_info->stack_index].trace[i]);
+	}
+	printk(KERN_ERR "\033[32mfinish showing allocated stack\033[m\n");
+}
+
+#ifdef CONFIG_MP_DEBUG_TOOL_THREAD_CREATE_MONITOR
+struct thread_trace_info
+{
+	struct list_head   allocated_list;
+	struct list_head   sort_list;
+	struct thread_info *thread_info;
+	int count;
+	int count_zombie;
+	int new_create_cnt;
+	uint32_t create_jiffies;
+	short  alloc_stack;
+	short zombie;
+	short track;
+	char comm[TASK_COMM_LEN];
+};
+LIST_HEAD(trace_thread_info_list);
+LIST_HEAD(trace_thread_sort_list);
+void notify_alloc_thread_info(struct thread_info *thread_info)
+{
+  unsigned long back_trace[10];
+  struct stack_trace stack_trace;
+  int cpy_count, cpy_beg;
+  struct mstar_page_alloc_stack *stk;
+  struct thread_trace_info *trace_info;
+  trace_info = (struct thread_trace_info *)kmalloc(sizeof(struct thread_trace_info), GFP_KERNEL);
+  if(trace_info == NULL)
+  {
+     printk(KERN_ERR "failed to alloc struct thread_trace_info for %p\n", thread_info);
+	 return;
+  }
+  memset(&stack_trace, 0, sizeof(stack_trace));
+  stack_trace.max_entries = 10;
+  stack_trace.entries = back_trace;
+  save_stack_trace(&stack_trace);
+  for(cpy_count=0;cpy_count<8; cpy_count++)
+  {
+		if(back_trace[cpy_count+2] == ULONG_MAX)
+		{
+			break;
+		}
+  }
+  if(cpy_count<8)
+     cpy_count++;//we need to cpy ULONG_MAX
+  if(cpy_count>=PAGE_TRACE_STACK_DEPTH)
+  {
+	cpy_beg += cpy_count-PAGE_TRACE_STACK_DEPTH+2;
+    cpy_count = PAGE_TRACE_STACK_DEPTH;
+  }
+  else
+  {
+      memset(back_trace+2+cpy_count, 0, sizeof(unsigned long)*(PAGE_TRACE_STACK_DEPTH-cpy_count));
+	  cpy_beg = 2;
+  }
+  stk = find_page_stack_struct(back_trace+cpy_beg);
+  trace_info->alloc_stack = stk-g_stack_head;
+  trace_info->thread_info = thread_info;
+  strncpy(trace_info->comm, current->comm, sizeof(trace_info->comm));
+  trace_info->zombie = 0;
+  trace_info->track = 0;
+  trace_info->create_jiffies = jiffies;
+  list_add(&trace_info->allocated_list, &trace_thread_info_list);
+}
+
+void notify_alloc_thread_free(struct thread_info *thread_info)
+{
+   struct thread_trace_info *trace_info;
+   list_for_each_entry(trace_info, &trace_thread_info_list, allocated_list)
+   {
+      if(trace_info->thread_info == thread_info)
+      {
+         list_del(&trace_info->allocated_list);
+		 if(trace_info->track)
+			printk(KERN_ERR " free thread_info %p\n", thread_info);
+		 kfree(trace_info);
+		 return;
+      }
+   }
+   printk(KERN_ERR "warning , thread_info %p not traced\n", thread_info);
+}
+
+extern spinlock_t thread_info_cache_lock;
+void notify_task_thread_zombie(struct task_struct  *tsk)
+{
+ unsigned long flags;
+ struct thread_trace_info *trace_info;
+	spin_lock_irqsave(&thread_info_cache_lock, flags);
+   list_for_each_entry(trace_info, &trace_thread_info_list, allocated_list)
+   {
+      if(trace_info->thread_info == tsk->stack)
+      {
+         trace_info->zombie = 1;
+		 break;
+      }
+   }
+	 spin_unlock_irqrestore(&thread_info_cache_lock, flags);
+}
+
+int trace_info_cmp_comm(void *priv, struct list_head *a,
+			  struct list_head *b)
+{
+    struct thread_trace_info *info1 = container_of(a, struct thread_trace_info, allocated_list);
+	struct thread_trace_info *info2 = container_of(b, struct thread_trace_info, allocated_list);
+	return strncmp(info1->comm, info2->comm, sizeof(info1->comm));
+}
+
+int trace_info_cmp_cnt(void *priv, struct list_head *a,
+			  struct list_head *b)
+{
+    struct thread_trace_info *info1 = container_of(a, struct thread_trace_info, sort_list);
+	struct thread_trace_info *info2 = container_of(b, struct thread_trace_info, sort_list);
+	if(info1->count>info2->count)
+		return -1;
+	if(info1->count<info2->count)
+		return 1;
+	return 0;
+}
+
+void trace_info_track(struct thread_info *thread_info)
+{
+	struct thread_trace_info *trace_info = NULL;
+	unsigned long flags;
+	   spin_lock_irqsave(&thread_info_cache_lock, flags);
+	list_for_each_entry(trace_info, &trace_thread_info_list, allocated_list)
+	{
+	   if(trace_info->thread_info == thread_info)
+	   {
+		  trace_info->track = 1;
+		  printk(KERN_ERR "  trace_info_track track %p\n", thread_info);
+		  spin_unlock_irqrestore(&thread_info_cache_lock, flags);
+		  return;
+	   }
+	}
+	printk(KERN_ERR "  unable find trace info for %p\n", thread_info);
+	spin_unlock_irqrestore(&thread_info_cache_lock, flags);
+}
+
+void show_thread_trace_info(void)
+{
+	int i;
+    struct mstar_page_alloc_stack *stk;
+	struct hlist_node *tmp;
+	struct thread_trace_info *trace_info;
+	long total_count = 0, total2=0;
+	struct list_head *next,*list_tmp;
+	struct thread_trace_info *info;
+	hash_for_each_safe(page_alloc_stack_table, i, tmp, stk, hlist)
+	{
+		stk->thread_info_cnt = 0;
+	}
+	list_for_each_entry(trace_info, &trace_thread_info_list, allocated_list)
+	{
+	    g_stack_head[trace_info->alloc_stack].thread_info_cnt++;
+	}
+	hash_for_each_safe(page_alloc_stack_table, i, tmp, stk, hlist)
+	{
+	    if(stk->thread_info_cnt)
+	    {   int k;
+		printk(KERN_ERR " %d tread info allocate from stack: \n",
+				   stk->thread_info_cnt);
+			for(k=0;k<PAGE_TRACE_STACK_DEPTH; k++)
+		    {
+		       if(stk->trace[k] == ULONG_MAX)
+			       break;
+			   printk(KERN_ERR "       ");
+		       print_ip_sym(stk->trace[k]);
+		    }
+			total_count += stk->thread_info_cnt;
+	    }
+	}
+	list_sort(NULL,  &trace_thread_info_list, trace_info_cmp_comm);
+	next = trace_thread_info_list.next;
+	INIT_LIST_HEAD(&trace_thread_sort_list);
+	while(next != &trace_thread_info_list)
+	{
+	   int count = 1;
+	   int zombie = 0;
+	   int new_create_cnt = 0;
+	   info = container_of(next, struct thread_trace_info, allocated_list);
+	   if(info->zombie)
+	     zombie = 1;
+	   if(jiffies-info->create_jiffies<5*HZ)
+		   new_create_cnt++;
+	   list_tmp = next->next;
+	   while(list_tmp!=&trace_thread_info_list)
+	   {
+	     int res = trace_info_cmp_comm(NULL, next, list_tmp);
+		 BUG_ON(res > 0);
+		 if(res < 0)
+			break;
+		 count++;
+		 if(container_of(list_tmp,struct thread_trace_info, allocated_list)->zombie)
+			zombie++;
+		 if(jiffies-container_of(list_tmp,struct thread_trace_info, allocated_list)->create_jiffies<5*HZ)
+			new_create_cnt++;
+		 list_tmp = list_tmp->next;
+	   }
+	   list_add(&info->sort_list, &trace_thread_sort_list);
+	   info->count = count;
+	   info->count_zombie = zombie;
+	   info->new_create_cnt = new_create_cnt;
+	   total2 += count;
+	   next = list_tmp;
+	}
+	list_sort(NULL,  &trace_thread_sort_list, trace_info_cmp_cnt);
+	list_for_each_entry(trace_info, &trace_thread_sort_list, sort_list)
+	{
+		printk(KERN_ERR "     fork from %s %dtimes(zombie %d, new %d)\n",
+			trace_info->comm, trace_info->count, trace_info->count_zombie, trace_info->new_create_cnt );
+	}
+    printk(KERN_ERR "show_thread_trace_info total count %ld\n", total_count);
+}
+#endif
+#endif

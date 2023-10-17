@@ -28,8 +28,6 @@
 #include <linux/memblock.h>
 #include <linux/fs.h>
 #include <linux/io.h>
-#include <linux/slab.h>
-#include <linux/stop_machine.h>
 #include <linux/mm.h>
 
 #include <asm/barrier.h>
@@ -43,6 +41,22 @@
 #include <asm/tlb.h>
 #include <asm/memblock.h>
 #include <asm/mmu_context.h>
+#include <mstar/mpatch_macro.h>
+
+#if (MP_PLATFORM_ARM_64bit_PORTING == 1)
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
+
+/*
+ * Global variable to indicate if paging_init be excuted
+ */
+volatile u64 is_paging_init = 0;
+volatile void __iomem *UART_BASE;
+
+#ifdef CONFIG_MSTAR_ARM
+phys_addr_t arm_lowmem_limit __initdata = 0; /* temp, we do not calculate the arm_lowmem_limit in 64_bit */
+#endif
+#endif
 
 u64 idmap_t0sz = TCR_T0SZ(VA_BITS);
 
@@ -96,6 +110,17 @@ static phys_addr_t __init early_pgtable_alloc(void)
 	return phys;
 }
 
+static bool pgattr_change_is_safe(u64 old, u64 new)
+{
+	/*
+	 * The following mapping attributes may be updated in live
+	 * kernel mappings without the need for break-before-make.
+	 */
+	static const pteval_t mask = PTE_PXN | PTE_RDONLY | PTE_WRITE;
+
+	return old  == 0 || new  == 0 || ((old ^ new) & ~mask) == 0;
+}
+
 static void alloc_init_pte(pmd_t *pmd, unsigned long addr,
 				  unsigned long end, unsigned long pfn,
 				  pgprot_t prot,
@@ -116,8 +141,17 @@ static void alloc_init_pte(pmd_t *pmd, unsigned long addr,
 
 	pte = pte_set_fixmap_offset(pmd, addr);
 	do {
+		pte_t old_pte = *pte;
+
 		set_pte(pte, pfn_pte(pfn, prot));
 		pfn++;
+
+		/*
+		 * After the PTE entry has been populated once, we
+		 * only allow updates to the permission attributes.
+		 */
+		BUG_ON(!pgattr_change_is_safe(pte_val(old_pte), pte_val(*pte)));
+
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 
 	pte_clear_fixmap();
@@ -147,27 +181,27 @@ static void alloc_init_pmd(pud_t *pud, unsigned long addr, unsigned long end,
 
 	pmd = pmd_set_fixmap_offset(pud, addr);
 	do {
+		pmd_t old_pmd = *pmd;
+
 		next = pmd_addr_end(addr, end);
+
 		/* try section mapping first */
 		if (((addr | next | phys) & ~SECTION_MASK) == 0 &&
 		      allow_block_mappings) {
-			pmd_t old_pmd =*pmd;
 			pmd_set_huge(pmd, phys, prot);
+
 			/*
-			 * Check for previous table entries created during
-			 * boot (__create_page_tables) and flush them.
+			 * After the PMD entry has been populated once, we
+			 * only allow updates to the permission attributes.
 			 */
-			if (!pmd_none(old_pmd)) {
-				flush_tlb_all();
-				if (pmd_table(old_pmd)) {
-					phys_addr_t table = pmd_page_paddr(old_pmd);
-					if (!WARN_ON_ONCE(slab_is_available()))
-						memblock_free(table, PAGE_SIZE);
-				}
-			}
+			BUG_ON(!pgattr_change_is_safe(pmd_val(old_pmd),
+						      pmd_val(*pmd)));
 		} else {
 			alloc_init_pte(pmd, addr, next, __phys_to_pfn(phys),
 				       prot, pgtable_alloc);
+
+			BUG_ON(pmd_val(old_pmd) != 0 &&
+			       pmd_val(old_pmd) != pmd_val(*pmd));
 		}
 		phys += next - addr;
 	} while (pmd++, addr = next, addr != end);
@@ -205,33 +239,28 @@ static void alloc_init_pud(pgd_t *pgd, unsigned long addr, unsigned long end,
 
 	pud = pud_set_fixmap_offset(pgd, addr);
 	do {
+		pud_t old_pud = *pud;
+
 		next = pud_addr_end(addr, end);
 
 		/*
 		 * For 4K granule only, attempt to put down a 1GB block
 		 */
 		if (use_1G_block(addr, next, phys) && allow_block_mappings) {
-			pud_t old_pud = *pud;
 			pud_set_huge(pud, phys, prot);
 
 			/*
-			 * If we have an old value for a pud, it will
-			 * be pointing to a pmd table that we no longer
-			 * need (from swapper_pg_dir).
-			 *
-			 * Look up the old pmd table and free it.
+			 * After the PUD entry has been populated once, we
+			 * only allow updates to the permission attributes.
 			 */
-			if (!pud_none(old_pud)) {
-				flush_tlb_all();
-				if (pud_table(old_pud)) {
-					phys_addr_t table = pud_page_paddr(old_pud);
-					if (!WARN_ON_ONCE(slab_is_available()))
-						memblock_free(table, PAGE_SIZE);
-				}
-			}
+			BUG_ON(!pgattr_change_is_safe(pud_val(old_pud),
+						      pud_val(*pud)));
 		} else {
 			alloc_init_pmd(pud, addr, next, phys, prot,
 				       pgtable_alloc, allow_block_mappings);
+
+			BUG_ON(pud_val(old_pud) != 0 &&
+			       pud_val(old_pud) != pud_val(*pud));
 		}
 		phys += next - addr;
 	} while (pud++, addr = next, addr != end);
@@ -397,6 +426,14 @@ void mark_rodata_ro(void)
 	section_size = (unsigned long)__init_begin - (unsigned long)__start_rodata;
 	create_mapping_late(__pa_symbol(__start_rodata), (unsigned long)__start_rodata,
 			    section_size, PAGE_KERNEL_RO);
+
+#if defined(CONFIG_MP_MSTAR_STR_BASE)
+	section_size = (unsigned long)__init_end - (unsigned long)__init_begin;
+	create_mapping_late(__pa_symbol(__init_begin), (unsigned long)__init_begin,
+						section_size, PAGE_KERNEL_ROX);
+#endif
+	/* flush the TLBs after updating live kernel mappings */
+	flush_tlb_all();
 }
 
 static void __init map_kernel_segment(pgd_t *pgd, void *va_start, void *va_end,
@@ -465,6 +502,7 @@ static void __init map_kernel(pgd_t *pgd)
 	map_kernel_segment(pgd, _data, _end, PAGE_KERNEL, &vmlinux_data);
 
 	if (!pgd_val(*pgd_offset_raw(pgd, FIXADDR_START))) {
+
 		/*
 		 * The fixmap falls in a separate pgd to the kernel, and doesn't
 		 * live in the carveout for the swapper_pg_dir. We can simply
@@ -502,6 +540,11 @@ void __init paging_init(void)
 	map_kernel(pgd);
 	map_mem(pgd);
 
+#if (MP_PLATFORM_ARM_64bit_PORTING == 1)
+	is_paging_init = 1;
+	UART_BASE = early_ioremap(0x00000001f200000, PAGE_SIZE);
+#endif
+
 	/*
 	 * We want to reuse the original swapper_pg_dir so we don't have to
 	 * communicate the new address to non-coherent secondaries in
@@ -523,6 +566,15 @@ void __init paging_init(void)
 	 */
 	memblock_free(__pa_symbol(swapper_pg_dir) + PAGE_SIZE,
 		      SWAPPER_DIR_SIZE - PAGE_SIZE);
+}
+
+/*
+ * Enable the identity mapping to allow the MMU disabling.
+ */
+void setup_mm_for_reboot(void)
+{
+    cpu_switch_mm(idmap_pg_dir, &init_mm);
+    flush_tlb_all();
 }
 
 /*

@@ -57,6 +57,26 @@ tmp3		.req	x9
 	.weak memset
 ENTRY(__memset)
 ENTRY(memset)
+#if 0//defined(CONFIG_MP_PLATFORM_ARM)
+	mov	x4, x0
+	and	w1, w1, #0xff
+	orr	w1, w1, w1, lsl #8
+	orr	w1, w1, w1, lsl #16
+	orr	x1, x1, x1, lsl #32
+	subs	x2, x2, #4
+	b.mi	2f
+1:	str	w1, [x4], #4
+	subs	x2, x2, #4
+	b.pl	1b
+2:	adds	x2, x2, #2
+	b.mi	4f
+	sub	x2, x2, #2
+	strh	w1, [x4], #2
+4:	adds	x2, x2, #1
+	b.mi	5f
+	strb	w1, [x4]
+5:	ret
+#else
 	mov	dst, dstin	/* Preserve return value.  */
 	and	A_lw, val, #255
 	orr	A_lw, A_lw, A_lw, lsl #8
@@ -215,5 +235,6 @@ ENTRY(memset)
 	ands	count, count, zva_bits_x
 	b.ne	.Ltail_maybe_long
 	ret
+#endif
 ENDPIPROC(memset)
 ENDPROC(__memset)

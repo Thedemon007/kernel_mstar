@@ -339,13 +339,26 @@ static unsigned find_battery_quirk(struct hid_device *hdev)
 	return quirks;
 }
 
+static void hidinput_update_battery(struct hid_device *dev, int value)
+{
+	struct power_supply *battery = dev->battery;
+
+	/* May have failed to initialize properly (e.g., duplicate uniqueId) */
+	if (battery == NULL)
+		return;
+
+	if (value != dev->battery_val) {
+		dev->battery_val = value;
+		power_supply_changed(battery);
+	}
+}
+
 static int hidinput_get_battery_property(struct power_supply *psy,
 					 enum power_supply_property prop,
 					 union power_supply_propval *val)
 {
 	struct hid_device *dev = power_supply_get_drvdata(psy);
 	int ret = 0;
-	__u8 *buf;
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_PRESENT:
@@ -354,29 +367,14 @@ static int hidinput_get_battery_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_CAPACITY:
-
-		buf = kmalloc(2 * sizeof(__u8), GFP_KERNEL);
-		if (!buf) {
-			ret = -ENOMEM;
-			break;
-		}
-		ret = hid_hw_raw_request(dev, dev->battery_report_id, buf, 2,
-					 dev->battery_report_type,
-					 HID_REQ_GET_REPORT);
-
-		if (ret != 2) {
-			ret = -ENODATA;
-			kfree(buf);
-			break;
-		}
 		ret = 0;
-
 		if (dev->battery_min < dev->battery_max &&
-		    buf[1] >= dev->battery_min &&
-		    buf[1] <= dev->battery_max)
-			val->intval = (100 * (buf[1] - dev->battery_min)) /
+			dev->battery_val >= dev->battery_min &&
+			dev->battery_val <= dev->battery_max)
+			val->intval = (100 * (dev->battery_val - dev->battery_min)) /
 				(dev->battery_max - dev->battery_min);
-		kfree(buf);
+		else
+			ret = -EINVAL;
 		break;
 
 	case POWER_SUPPLY_PROP_MODEL_NAME:
@@ -449,6 +447,7 @@ static bool hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
 
 	dev->battery_min = min;
 	dev->battery_max = max;
+	dev->battery_val = -1;
 	dev->battery_report_type = report_type;
 	dev->battery_report_id = field->report->id;
 
@@ -459,6 +458,7 @@ static bool hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
 		kfree(psy_desc->name);
 		kfree(psy_desc);
 		dev->battery = NULL;
+		goto out;
 	} else {
 		power_supply_powers(dev->battery, &dev->dev);
 	}
@@ -765,9 +765,15 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	case HID_UP_CONSUMER:	/* USB HUT v1.12, pages 75-84 */
 		switch (usage->hid & HID_USAGE) {
 		case 0x000: goto ignore;
+		case 0x002:
+			map_key_clear(KEY_VNUMPAD);
+			break;
 		case 0x030: map_key_clear(KEY_POWER);		break;
 		case 0x031: map_key_clear(KEY_RESTART);		break;
 		case 0x032: map_key_clear(KEY_SLEEP);		break;
+		case 0x033:
+			map_key_clear(KEY_SETTINGS);
+			break;
 		case 0x034: map_key_clear(KEY_SLEEP);		break;
 		case 0x035: map_key_clear(KEY_KBDILLUMTOGGLE);	break;
 		case 0x036: map_key_clear(BTN_MISC);		break;
@@ -1080,11 +1086,9 @@ mapped:
 		set_bit(MSC_SCAN, input->mscbit);
 	}
 
+ignore:
 	return;
 
-ignore:
-	usage->type = 0;
-	usage->code = 0;
 }
 
 void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct hid_usage *usage, __s32 value)
@@ -1096,6 +1100,14 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		return;
 
 	input = field->hidinput->input;
+
+#ifdef CONFIG_HID_BATTERY_STRENGTH
+	if (usage->hid == HID_DC_BATTERYSTRENGTH) {
+		hidinput_update_battery(hid, value);
+		hid_dbg(hid, "battery value is %d (range %d-%d)\n",
+				value, hid->battery_min, hid->battery_max);
+	}
+#endif
 
 	if (!usage->type)
 		return;

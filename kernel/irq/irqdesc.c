@@ -610,7 +610,13 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	int ret = 0;
 
 	irq_enter();
+#ifdef CONFIG_MP_INTR_ERROR_CHECK_NON_STOP
+	extern unsigned int mst_dbg_irq_interval;
+	ktime_t ktime_enter;
+	s64 irq_cost;
 
+	ktime_enter = ktime_get();
+#endif
 #ifdef CONFIG_IRQ_DOMAIN
 	if (lookup)
 		irq = irq_find_mapping(domain, hwirq);
@@ -622,11 +628,22 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 	 */
 	if (unlikely(!irq || irq >= nr_irqs)) {
 		ack_bad_irq(irq);
+		pr_crit("unexpected IRQ trap at vector %02x\n", hwirq);
 		ret = -EINVAL;
 	} else {
 		generic_handle_irq(irq);
 	}
 
+#ifdef CONFIG_MP_INTR_ERROR_CHECK_NON_STOP
+	irq_cost = ktime_to_ms(ktime_sub(ktime_get(), ktime_enter));
+
+	if (irq_cost >= mst_dbg_irq_interval) {
+	    pr_err("##################################################################\n"
+		"Abnormal interrupt behavior detected!!! irq%d took %u ms\n"
+		"##################################################################\n",
+		   irq, irq_cost);
+	}
+#endif
 	irq_exit();
 	set_irq_regs(old_regs);
 	return ret;

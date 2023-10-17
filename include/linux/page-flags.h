@@ -13,6 +13,8 @@
 #include <generated/bounds.h>
 #endif /* !__GENERATING_BOUNDS_H */
 
+#include <mstar/mpatch_macro.h> //Mstar patch macro
+
 /*
  * Various page->flags bits:
  *
@@ -460,6 +462,10 @@ int __test_set_page_writeback(struct page *page, bool keep_write);
 #define test_set_page_writeback_keepwrite(page)	\
 	__test_set_page_writeback(page, true)
 
+#if (MP_NTFS3G_WRAP==1)
+int test_clear_page_writeback_wrap(struct page *page);  //AlanYu 20111121 : wrap for test_clear_page_writeback
+#endif
+
 static inline void set_page_writeback(struct page *page)
 {
 	test_set_page_writeback(page);
@@ -658,6 +664,31 @@ PAGE_MAPCOUNT_OPS(Balloon, BALLOON)
  */
 #define PAGE_KMEMCG_MAPCOUNT_VALUE		(-512)
 PAGE_MAPCOUNT_OPS(Kmemcg, KMEMCG)
+
+/*
+ * vmalloc pages may be mapped to userspace, so we need some other way
+ * to distinguish them from other kinds of pages.  Use page->mapping
+ * for this purpose.  Values below 0x1000 cannot be real pointers.
+ */
+#define MAPPING_VMalloc		(void *)0x440
+
+#define PAGE_MAPPING_OPS(name)						\
+static __always_inline int Page##name(struct page *page)		\
+{									\
+	return page->mapping == MAPPING_##name;				\
+}									\
+static __always_inline void __SetPage##name(struct page *page)		\
+{									\
+	VM_BUG_ON_PAGE(page->mapping != NULL, page);			\
+	page->mapping = MAPPING_##name;					\
+}									\
+static __always_inline void __ClearPage##name(struct page *page)	\
+{									\
+	VM_BUG_ON_PAGE(page->mapping != MAPPING_##name, page);		\
+	page->mapping = NULL;						\
+}
+
+PAGE_MAPPING_OPS(VMalloc)
 
 extern bool is_free_buddy_page(struct page *page);
 

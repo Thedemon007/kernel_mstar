@@ -10,3 +10,7 @@ obj-$(CONFIG_PM_SLEEP) += pm.o
 obj-$(CONFIG_GENERIC_MSI_IRQ) += msi.o
 obj-$(CONFIG_GENERIC_IRQ_IPI) += ipi.o
 obj-$(CONFIG_SMP) += affinity.o
+
+#if (MP_PLATFORM_ARCH_GENERAL == 1)
+EXTRA_CFLAGS      +=  -Ifs/proc
+#endif

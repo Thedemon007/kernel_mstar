@@ -51,6 +51,11 @@ struct thread_info {
 	u64			ttbr0;		/* saved TTBR0_EL1 */
 #endif
 	int			preempt_count;	/* 0 => preemptable, <0 => bug */
+	int			cpu;		/* cpu */
+#ifdef CONFIG_MP_AMAZON_NON_ROOT_SECURE_DEBUG
+	char			lfn[128];
+	int			sc_mode_flag;
+#endif
 };
 
 #define INIT_THREAD_INFO(tsk)						\

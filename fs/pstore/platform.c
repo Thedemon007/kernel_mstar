@@ -492,7 +492,7 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 		is_locked = spin_trylock_irqsave(&psinfo->buf_lock, flags);
 		if (!is_locked) {
 			pr_err("pstore dump routine blocked in %s path, may corrupt error record\n"
-				       , in_nmi() ? "NMI" : why);
+					   , in_nmi() ? "NMI" : why);
 		}
 	} else {
 		spin_lock_irqsave(&psinfo->buf_lock, flags);
@@ -538,7 +538,7 @@ static void pstore_dump(struct kmsg_dumper *dumper,
 		}
 
 		ret = psinfo->write(PSTORE_TYPE_DMESG, reason, &id, part,
-				    oopscount, compressed, total_len, psinfo);
+					oopscount, compressed, total_len, psinfo);
 		if (ret == 0 && reason == KMSG_DUMP_OOPS && pstore_is_mounted())
 			pstore_new_entry = 1;
 
@@ -614,21 +614,21 @@ static void pstore_unregister_console(void) {}
 #endif
 
 static int pstore_write_compat(enum pstore_type_id type,
-			       enum kmsg_dump_reason reason,
-			       u64 *id, unsigned int part, int count,
-			       bool compressed, size_t size,
-			       struct pstore_info *psi)
+				   enum kmsg_dump_reason reason,
+				   u64 *id, unsigned int part, int count,
+				   bool compressed, size_t size,
+				   struct pstore_info *psi)
 {
 	return psi->write_buf(type, reason, id, part, psinfo->buf, compressed,
-			     size, psi);
+				 size, psi);
 }
 
 static int pstore_write_buf_user_compat(enum pstore_type_id type,
-			       enum kmsg_dump_reason reason,
-			       u64 *id, unsigned int part,
-			       const char __user *buf,
-			       bool compressed, size_t size,
-			       struct pstore_info *psi)
+				   enum kmsg_dump_reason reason,
+				   u64 *id, unsigned int part,
+				   const char __user *buf,
+				   bool compressed, size_t size,
+				   struct pstore_info *psi)
 {
 	unsigned long flags = 0;
 	size_t i, bufsize = size;
@@ -648,7 +648,7 @@ static int pstore_write_buf_user_compat(enum pstore_type_id type,
 			break;
 		}
 		ret = psi->write_buf(type, reason, id, part, psinfo->buf,
-				     compressed, c, psi);
+					 compressed, c, psi);
 		if (unlikely(ret < 0))
 			break;
 		i += c;
@@ -703,6 +703,10 @@ int pstore_register(struct pstore_info *psi)
 		pstore_register_ftrace();
 	if (psi->flags & PSTORE_FLAGS_PMSG)
 		pstore_register_pmsg();
+#ifdef CONFIG_PSTORE_TVMSG
+	if (psi->flags & PSTORE_FLAGS_TVMSG)
+		pstore_register_tvmsg();
+#endif
 
 	/* Start watching for new records, if desired. */
 	if (pstore_update_ms >= 0) {
@@ -732,6 +736,10 @@ void pstore_unregister(struct pstore_info *psi)
 	del_timer_sync(&pstore_timer);
 	flush_work(&pstore_work);
 
+#ifdef CONFIG_PSTORE_TVMSG
+	if (psi->flags & PSTORE_FLAGS_TVMSG)
+		pstore_unregister_tvmsg();
+#endif
 	if (psi->flags & PSTORE_FLAGS_PMSG)
 		pstore_unregister_pmsg();
 	if (psi->flags & PSTORE_FLAGS_FTRACE)
@@ -786,14 +794,14 @@ void pstore_get_records(int quiet)
 			if (unzipped_len > 0) {
 				if (ecc_notice_size)
 					memcpy(big_oops_buf + unzipped_len,
-					       buf + size, ecc_notice_size);
+						   buf + size, ecc_notice_size);
 				kfree(buf);
 				buf = big_oops_buf;
 				size = unzipped_len;
 				compressed = false;
 			} else {
 				pr_err("decompression failed;returned %d\n",
-				       unzipped_len);
+					   unzipped_len);
 				compressed = true;
 			}
 		}
