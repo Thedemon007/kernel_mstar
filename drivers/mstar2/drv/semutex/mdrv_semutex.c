@@ -144,7 +144,9 @@ static DEFINE_MUTEX(semutex_rwlock);
 #define RWLOCK_NAME_LEN  64
 #define RWLOCK_SUPPORTED 320
 
+/* Fix SOPHIA-3810 */
 #define MDRV_SEMUTEX_MAX            (32)
+
 //-------------------------------------------------------------------------------------------------
 //  Local Structurs
 //-------------------------------------------------------------------------------------------------;
@@ -561,34 +563,28 @@ void clear_pid(SemutexModHandle *dev,int index)
 
 static int _Cleanup_Mutex(struct file *filp,SemutexModHandle *dev)
 {
-    int i;
+    int i, flag = false;
 
     for(i = 0 ; i < MUTEX_SUPPORTED ; i ++)
     {
-        if(i < 40)
-            SEMUTEX_DPRINTK(" i=%d, mutex name = %s ,status = %d,lockedpid=%d,locked_tgid=%d,pid=%d,tgid = %d\n",
-            i,dev->mutex_info[i].name,dev->mutex_info[i].locked_status,dev->mutex_info[i].locked_pid,dev->mutex_info[i].locked_tgid,current->pid,current->tgid);
-
-        //if(strcmp(dev->mutex_info[i].name,"SkiaDecodeMutex") == 0)
-            //printk(KERN_ERR "~!~ i=%d, mutex name = %s ,status = %d,lockedpid=%d,locked_tgid=%d,pid=%d,tgid = %d\n",
-            //i,dev->mutex_info[i].name,dev->mutex_info[i].locked_status,dev->mutex_info[i].locked_pid,dev->mutex_info[i].locked_tgid,current->pid,current->tgid);
-
+        mutex_lock(&semutex_mutex);
         if(dev->mutex_info[i].locked_tgid == current->tgid)
-        {//the process which locked the mutex cleanup(probably terminated un-normally)
-            BUG_ON(dev->mutex_info[i].locked_status == false);
-
-            mutex_lock(&semutex_mutex);
+        {
             dev->mutex_info[i].locked_status = false;
             dev->mutex_info[i].locked_pid = 0;
             dev->mutex_info[i].locked_tgid = 0;
             dev->mutex_info[i].locked_file = NULL;
             memset(dev->mutex_info[i].procname, 0, MUTEX_NAME_LEN);
             dev->mutex_info[i].cross_thread_unlock = E_CROSS_THREAD_UNLOCK_DISABLE;
-            mutex_unlock(&semutex_mutex);
 
+            flag = true;
+        }
+        mutex_unlock(&semutex_mutex);
+
+        if (flag == true)
+        {
             up(dev->mutex_info[i].sem);
-
-            //printk(KERN_ERR"~!~@@@@@@@@@@@@@@ i=%d, mutex name = %s \n",i,dev->mutex_info[i].name);
+            flag = false;
         }
     }
 
@@ -639,7 +635,7 @@ static int _MDrv_SEMUTEX_Release(struct inode *inode, struct file *filp)
 {
     procinfo *pprocinfo = filp->private_data;
     SemutexModHandle *dev =  pprocinfo->semutex;
-    int i = 0;
+    int i = 0, flag = false;
 
     BUG_ON(dev->refcnt_sharemem < 0);
     //if open, don't map , then close, dev->refcnt_sharemem will be 0, it is allowed!
@@ -676,18 +672,22 @@ static int _MDrv_SEMUTEX_Release(struct inode *inode, struct file *filp)
     //mutex clean up??
     for(i = 0 ; i < MUTEX_SUPPORTED ; i ++)
     {
+        mutex_lock(&semutex_mutex);
         if(dev->mutex_info[i].locked_file == filp)
-        {//the process which locked the mutex cleanup(probably terminated un-normally)
-            BUG_ON(dev->mutex_info[i].locked_status == false);
-            up(dev->mutex_info[i].sem);
-
-            mutex_lock(&semutex_mutex);
+        {
             dev->mutex_info[i].locked_status = false;
             dev->mutex_info[i].locked_file = NULL;
             dev->mutex_info[i].cross_thread_unlock = E_CROSS_THREAD_UNLOCK_DISABLE;
-            mutex_unlock(&semutex_mutex);
             printk(KERN_EMERG" i=%d, mutex name = %s \n",i,dev->mutex_info[i].name);
-            //break;
+
+            flag = true;
+        }
+        mutex_unlock(&semutex_mutex);
+
+        if (flag == TRUE)
+        {
+            up(dev->mutex_info[i].sem);
+            flag = false;
         }
     }
 
@@ -819,7 +819,11 @@ err_no_vma:
     return -ENOMEM;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static vm_fault_t semutex_vma_fault(struct vm_fault *vmf)
+#else
 static int semutex_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+#endif
 {
     SEMUTEX_DPRINTK("semutex_vma_fault !!! \n");
     BUG();
@@ -1097,6 +1101,7 @@ static int _MDrv_SEMUTEX_Ioctl(struct inode *inode, struct file *filp, unsigned 
             {
                 int first_unused = -1,ret_index;
                 char namefromuser[MUTEX_NAME_LEN] = {0};
+
                 if(copy_from_user(namefromuser, (void __user *)arg, MUTEX_NAME_LEN-1))
                 {
                     printk(KERN_EMERG"create mutex: copy from user error!\n");
@@ -1104,12 +1109,14 @@ static int _MDrv_SEMUTEX_Ioctl(struct inode *inode, struct file *filp, unsigned 
                     goto return_index0;
                 }
 
-		namefromuser[MUTEX_NAME_LEN - 1] = '\0';
-		if (strlen(namefromuser) == 0) {
-			printk(KERN_EMERG "string name is empty.\n");
-			ret_index = -ENOENT;
-			goto return_index0;
-		}
+                /* Fix SOPHIA-3823 */
+                namefromuser[MUTEX_NAME_LEN - 1] = '\0';
+                if (strlen(namefromuser) == 0)
+                {
+                    printk(KERN_EMERG "string name is empty.\n");
+                    ret_index = -ENOENT;
+                    goto return_index0;
+                }
 
                 mutex_lock(&semutex_mutex);
                 for(i = 0 ; i < MUTEX_SUPPORTED; i ++)
@@ -1133,9 +1140,9 @@ static int _MDrv_SEMUTEX_Ioctl(struct inode *inode, struct file *filp, unsigned 
                     ret_index = -ENOENT;
                     goto return_index;
                 }
-		memset(dev->mutex_info[first_unused].name, '\0', MUTEX_NAME_LEN);
+                memset(dev->mutex_info[first_unused].name, '\0', MUTEX_NAME_LEN);
                 strncpy(dev->mutex_info[first_unused].name,namefromuser,MUTEX_NAME_LEN-1);
-		if (dev->mutex_info[first_unused].sem == NULL)
+                if(dev->mutex_info[first_unused].sem == NULL)
                 {
                     dev->mutex_info[first_unused].sem = kmalloc(sizeof(struct semaphore),GFP_KERNEL);
                     if(dev->mutex_info[first_unused].sem == NULL)
@@ -1167,17 +1174,19 @@ return_index0:
                 }
 
                 lockarg.index -= (int)MUTEX_INDEX_BEGIN;
+                /* Fix SOPHIA-3819 */
+                if ((lockarg.index < 0) || (lockarg.index >= MUTEX_SUPPORTED))
+                    return -1;
 
-		if ((lockarg.index < 0) || (lockarg.index >= MUTEX_SUPPORTED))
-			return -1;
+                SEMUTEX_DPRINTK("[SEMUTEX] index %d name %s  lock with timeout \n",
+                                lockarg.index, dev->mutex_info[lockarg.index].name);
 
-		SEMUTEX_DPRINTK("[SEMUTEX] index %d name %s  lock with timeout \n",
-				lockarg.index, dev->mutex_info[lockarg.index].name);
-
-		if (dev->mutex_info[lockarg.index].sem == NULL) {
-			printk("[SEMUTEX] sem is NULL.\n");
-			return -1;
-		}
+                /* Fix SOPHIA-3830 */
+                if (dev->mutex_info[lockarg.index].sem == NULL)
+                {
+                    printk("[SEMUTEX] sem is NULL.\n");
+                    return -1;
+                }
 
                 res = down_timeout(dev->mutex_info[lockarg.index].sem, msecs_to_jiffies(lockarg.time));
                 if(res == -ETIME)
@@ -1211,9 +1220,11 @@ return_index0:
 
                 index -= (int)MUTEX_INDEX_BEGIN;
 
-		if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
-			(dev->mutex_info[index].sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3830 */
+                if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
+                    (dev->mutex_info[index].sem == NULL))
+                    return -1;
+
                 flag = down_trylock(dev->mutex_info[index].sem);
                 //~!~ may have problem here!!!!
 
@@ -1240,10 +1251,13 @@ return_index0:
                 err = get_user(index, (int __user *)arg);
                 if (err)
                     return -1;
+
                 index -= (int)MUTEX_INDEX_BEGIN;
-		if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
-			(dev->mutex_info[index].sem == NULL))
-			return -1;
+
+                /* Fix SOPHIA-3830 */
+                if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
+                    (dev->mutex_info[index].sem == NULL))
+                    return -1;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,10)
                 //ret = -ETIME;
@@ -1287,9 +1301,11 @@ return_index0:
                 //printk(KERN_EMERG"~!~! unlock index %d \n",index);
 
                 index -= (int)MUTEX_INDEX_BEGIN;
-		if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
-			(dev->mutex_info[index].sem == NULL))
-			return -1;
+
+                /* Fix SOPHIA-3830 */
+                if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
+                    (dev->mutex_info[index].sem == NULL))
+                    return -1;
 
                 mutex_lock(&semutex_mutex);
                 if(dev->mutex_info[index].locked_status == false)
@@ -1311,7 +1327,11 @@ return_index0:
             printk(KERN_WARNING "WARNING2!Try to unlock mutex index %d name %s with pid %d->%s , but not in the lock pid %d->%s\n",
                     index,dev->mutex_info[index].name,current->pid,current->comm,dev->mutex_info[index].locked_pid,dev->mutex_info[index].procname);
                     mutex_unlock(&semutex_mutex);
-            up(dev->mutex_info[index].sem);
+                    /*
+                     * SOPHIA-3837:
+                     * This feature avoid deadlock when thread dead.
+                     */
+                    up(dev->mutex_info[index].sem);
                     return 0;
                 }
                 if(dev->mutex_info[index].locked_file != filp)
@@ -1344,9 +1364,11 @@ return_index0:
                 }
 
                 unlock_info.index -= (int)MUTEX_INDEX_BEGIN;
-		if ((unlock_info.index < 0) || (unlock_info.index >= MUTEX_SUPPORTED) ||
-			(dev->mutex_info[unlock_info.index].sem == NULL))
-			return -1;
+
+                /* Fix SOPHIA-3830 */
+                if ((unlock_info.index < 0) || (unlock_info.index >= MUTEX_SUPPORTED) ||
+                    (dev->mutex_info[unlock_info.index].sem == NULL))
+                    return -1;
 
                 mutex_lock(&semutex_mutex);
                 dev->mutex_info[unlock_info.index].cross_thread_unlock = unlock_info.flag;
@@ -1361,12 +1383,15 @@ return_index0:
                     return -1;
 
                 index -= (int)MUTEX_INDEX_BEGIN;
-		if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
-			(dev->mutex_info[index].sem == NULL))
-			return -1;
 
-		memset(dev->mutex_info[index].name, 0, strlen(dev->mutex_info[index].name));
-		sema_init(dev->mutex_info[index].sem, 1);
+                /* Fix SOPHIA-3830 */
+                if ((index < 0) || (index >= MUTEX_SUPPORTED) ||
+                    (dev->mutex_info[index].sem == NULL))
+                    return -1;
+
+                memset(dev->mutex_info[index].name,0,strlen(dev->mutex_info[index].name));
+                /* Fix SOPHIA-3835 */
+                sema_init(dev->mutex_info[index].sem, 1);
             }
             break;
         case MDRV_SEMUTEX_CREATE_SEMAPHORE:
@@ -1379,6 +1404,7 @@ return_index0:
                     printk("[SEMUTEX] ERROR, get create semaphore parameter failed!\n");
                     return -EINVAL;
                 }
+
                 semaarg.semaname[SEMA_NAME_LEN-1] = '\0';
                 //check parameter
                 if (strlen(semaarg.semaname) == 0)
@@ -1387,7 +1413,8 @@ return_index0:
                     return -EINVAL;
                 }
 
-		if ((semaarg.semanum <= 0) || (semaarg.semanum > MDRV_SEMUTEX_MAX))
+                /* Fix SOPHIA-3810 */
+                if ((semaarg.semanum <= 0) || (semaarg.semanum > MDRV_SEMUTEX_MAX))
                 {
                     printk("[SEMUTEX] ERROR, create semaphore number error :%d!\n", semaarg.semanum);
                     return -EINVAL;
@@ -1434,12 +1461,13 @@ return_index0:
                     dev->sema_info[first_unused].sema_number = semaarg.semanum;
                     dev->sema_info[first_unused].locked_count = 0;
                     dev->sema_info[first_unused].locked_pid_list = kmalloc(sizeof(pid_t)*semaarg.semanum,GFP_KERNEL);
-
-			if (dev->sema_info[first_unused].locked_pid_list == NULL) {
-				printk("[SEMUTEX] ERROR, not enough memory for MDRV_SEMUTEX_CREATE_SEMAPHORE!\n");
-				ret_index = -ENOMEM;
-				goto create_semaphore_end;
-			}
+                    /* Fix SOPHIA-3810. */
+                    if (dev->sema_info[first_unused].locked_pid_list == NULL)
+                    {
+                        printk("[SEMUTEX] ERROR, not enough memory for MDRV_SEMUTEX_CREATE_SEMAPHORE!\n");
+                        ret_index = -ENOMEM;
+                        goto create_semaphore_end;
+                    }
 
                     for(i = 0; i < semaarg.semanum ; i++)
                     {
@@ -1535,11 +1563,14 @@ create_semaphore_end:
                 mutex_unlock(&semutex_semaphore);
 
                 ret = down_trylock(dev->sema_info[index].sem);
-		if (ret == 0) {
-			mutex_lock(&semutex_semaphore);
-			set_pid(dev, index);
-			mutex_unlock(&semutex_semaphore);
-		}
+
+                /* Fix SOPHIA-3825 */
+                if (ret == 0)
+                {
+                    mutex_lock(&semutex_semaphore);
+                    set_pid(dev,index);
+                    mutex_unlock(&semutex_semaphore);
+                }
 
                 SEMUTEX_DPRINTK("[SEMUTEX] Semaphore trylock return with ret %d \n", ret);
                 return ret;
@@ -1638,10 +1669,12 @@ create_semaphore_end:
                     return -1;
                 }
 
-		if (len <= 0) {
-			printk("the required length %d not belong natural number.\n", len);
-			return -1;
-		}
+                /* Fix SOPHIA-3839 */
+                if (len <= 0)
+                {
+                    printk("the required length %d not belong natural number.\n", len);
+                    return -1;
+                }
 
                 SEMUTEX_DPRINTK( " Try to create sharememory len=%d !!!! \n",len);
                 len += PAGE_SIZE - 1;
@@ -1711,10 +1744,12 @@ create_semaphore_end:
                     return -1;
                 }
 
-		if (len <= 0) {
-			printk("the required length %d not belong natural number.\n", len);
-			return -1;
-		}
+                /* Fix SOPHIA-3839 */
+                if (len <= 0)
+                {
+                    printk("the required length %d not belong natural number.\n", len);
+                    return -1;
+                }
 
                 SEMUTEX_DPRINTK( "DEBUG! Try to expand sharememory len=%d !!!! \n",len);
                 len += PAGE_SIZE - 1;
@@ -1761,7 +1796,6 @@ create_semaphore_end:
                 int first_unused = -1,ret_index;
                 char namefromuser[RWLOCK_NAME_LEN] = {0};
 
-
                 if(copy_from_user(namefromuser, (void __user *)arg, RWLOCK_NAME_LEN-1))
                 {
                     printk(KERN_EMERG"create rwlock: copy from user error!\n");
@@ -1769,12 +1803,14 @@ create_semaphore_end:
                     goto return_rwlock_index0;
                 }
 
-		namefromuser[RWLOCK_NAME_LEN - 1] = '\0';
-		if (strlen(namefromuser) == 0) {
-			printk(KERN_EMERG "string name is empty.\n");
-			ret_index = -ENOENT;
-			goto return_rwlock_index0;
-		}
+                /* Fix SOPHIA-3823 */
+                namefromuser[RWLOCK_NAME_LEN - 1] = '\0';
+                if (strlen(namefromuser) == 0)
+                {
+                    printk(KERN_EMERG "string name is empty.\n");
+                    ret_index = -ENOENT;
+                    goto return_rwlock_index0;
+                }
 
                 mutex_lock(&semutex_rwlock);
                 for(i = 0 ; i < RWLOCK_SUPPORTED; i ++)
@@ -1796,7 +1832,7 @@ create_semaphore_end:
                     ret_index = -ENOENT;
                     goto return_rwlock_index;
                 }
-		memset(dev->rwlock_info[first_unused].name, '\0', RWLOCK_NAME_LEN);
+                memset(dev->rwlock_info[first_unused].name, '\0', RWLOCK_NAME_LEN);
                 strncpy(dev->rwlock_info[first_unused].name,namefromuser,RWLOCK_NAME_LEN-1);
                 if(dev->rwlock_info[first_unused].rw_sem == NULL)
                 {
@@ -1829,9 +1865,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 kfree(dev->rwlock_info[index].rw_sem);
                 dev->rwlock_info[index].rw_sem = NULL;
@@ -1848,9 +1885,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 down_read(dev->rwlock_info[index].rw_sem);
 
@@ -1879,9 +1917,10 @@ return_rwlock_index0:
                 }
                 // lockarg.time: ms
                 lockarg.index -= (int)MUTEX_INDEX_BEGIN;
-
-		if ((lockarg.index < 0) || (lockarg.index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[lockarg.index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((lockarg.index < 0) || (lockarg.index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[lockarg.index].rw_sem == NULL))
+                    return -1;
 
                 do_gettimeofday(&begin);
                 do
@@ -1917,9 +1956,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 flag = down_read_trylock(dev->rwlock_info[index].rw_sem);
 
@@ -1944,9 +1984,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 down_write(dev->rwlock_info[index].rw_sem);
 
@@ -1977,9 +2018,10 @@ return_rwlock_index0:
                 }
                 // lockarg.time: ms
                 lockarg.index -= (int)MUTEX_INDEX_BEGIN;
-
-		if ((lockarg.index < 0) || (lockarg.index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[lockarg.index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((lockarg.index < 0) || (lockarg.index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[lockarg.index].rw_sem == NULL))
+                    return -1;
 
                 do_gettimeofday(&begin);
                 do
@@ -2018,9 +2060,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 flag = down_write_trylock(dev->rwlock_info[index].rw_sem);
 
@@ -2047,9 +2090,10 @@ return_rwlock_index0:
                 if (err)
                     return -1;
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 mutex_lock(&semutex_rwlock); // critical start
                 if(dev->rwlock_info[index].locked_file != filp)
@@ -2081,9 +2125,10 @@ return_rwlock_index0:
                     return -1;
 
                 index -= (int)RWLOCK_INDEX_BEGIN;
-
-		if ((index < 0) || (index >= RWLOCK_SUPPORTED) || (dev->rwlock_info[index].rw_sem == NULL))
-			return -1;
+                /* Fix SOPHIA-3815 again. */
+                if ((index < 0) || (index >= RWLOCK_SUPPORTED) ||
+                    (dev->rwlock_info[index].rw_sem == NULL))
+                    return -1;
 
                 mutex_lock(&semutex_rwlock); // critical start
 

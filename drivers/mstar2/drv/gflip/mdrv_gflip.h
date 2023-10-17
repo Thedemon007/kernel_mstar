@@ -55,7 +55,7 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 /// @file   mdrv_gflip.h
 /// @brief  MediaTek gflip Interface header file
-/// @author Inc.
+/// @author MediaTek Inc.
 /// @attention
 /// <b><em></em></b>
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -131,8 +131,8 @@ typedef enum
 }   EN_GOP_PAL_SIZE;
 
 typedef struct gflip_getvsync_data {
-	MS_U32 vsync_gop;
-	MS_S64 vsync_ts;
+    MS_U32 vsync_gop;
+    MS_S64 vsync_ts;
 }   GFLIP_GETVSYNC_DATA, *PGFLIP_GETVSYNC_DATA;
 
 typedef void (*FP_CFD_GOP_PreProcess)(const STU_CFDAPI_TOP_CONTROL_GOP * pstu_Cfd_api_top, STU_CFDAPI_GOP_PREPROCESS_OUT * pst_Cfd_api_out);
@@ -182,13 +182,15 @@ INTERFACE MS_BOOL MDrv_GFLIP_VECapWaitOnFrame(MS_BOOL *pbEna, MS_U8 *pu8FramNum)
 INTERFACE void MDrv_GFLIP_SetVECaptureConfig(PMS_GFLIP_VEC_CONFIG pstGflipVECConfig);
 INTERFACE void MDrv_GFLIP_GetVECaptureConfig(PMS_GFLIP_VEC_CONFIG pstGflipVECConfig);
 INTERFACE MS_BOOL _MDrv_GFLIP_ClearFlipQueue(MS_U32 u32GopIdx,MS_U32 u32GwinIdx);
-INTERFACE MS_S64 MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx);
+INTERFACE MS_BOOL MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx);
+INTERFACE MS_S64 MDrv_GFLIP_WaitForVsync_EX(MS_U32 u32GopIdx);
 INTERFACE MS_BOOL MDrv_GFLIP_GetVsync(MS_U32 u32GopIdx);
 INTERFACE MS_BOOL _MDrv_GFLIP_SetGwinInfo(MS_GWIN_INFO stGwinInfo);
 INTERFACE int MDrv_GFLIP_Suspend(void);
 INTERFACE int MDrv_GFLIP_Resume(void);
 INTERFACE SYMBOL_WEAK MS_BOOL MDrv_GFLIP_Register_CB(MS_U8 u8Type,void *fpCB);
 INTERFACE SYMBOL_WEAK MS_BOOL _MDrv_GFLIP_CSC_Calc(ST_GFLIP_GOP_CSC_PARAM *pstGflipCSCParam);
+INTERFACE SYMBOL_WEAK MS_BOOL _MDrv_GFLIP_SetBWPEnFlag(MS_U32 u32GopIdx, MS_BOOL bEnable);
 //INTERFACE void MDrv_GFLIP_FilmDriverHWVer1(void);
 //INTERFACE void MDrv_GFLIP_FilmDriverHWVer2(void);
 #if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))

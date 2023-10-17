@@ -346,6 +346,12 @@ printk("\033[0;32;31m [Ian] IIC_ReadParam %s %d %d %d %d %d %d %d %d %d %p %d\03
                 //no delay may read fail randomly and read data is always 0
 #endif
 #endif
+		if ((IIC_ReadParam.u8AddrSizeIIC > IIC_MAX_ADDR_SIZE) || (IIC_ReadParam.u32DataSizeIIC > IIC_MAX_BUF_SIZE))
+		{
+			printk("\033[0;32;31m %s %d :ERROR: Address size or data size is over! \033[m\n", __func__, __LINE__);
+			return -1;
+		}
+
 		if( IIC_ReadParam.u32DataSizeIIC > IIC_RD_BUF_SIZE )
 		{
 			IIC_ReadParam.u8pbufIIC = kmalloc(IIC_ReadParam.u32DataSizeIIC, GFP_KERNEL);
@@ -405,7 +411,7 @@ printk("\033[0;32;31m [Ian] IIC_ReadParam %s %d %d %d %d %d %d %d %d %d %p %d\03
 				goto end;
 			}
 
-			if (copy_to_user(data32->u8pbufIIC, IIC_ReadParam.u8pbufIIC, sizeof(U8)*u32RetCountIIC))
+			if (copy_to_user(data32->u8pbufIIC, data->u8pbufIIC, sizeof(U8)*u32RetCountIIC))
 			{
 				printk("\033[0;32;31m %s %d :ERROR: Copy to User Error! \033[m\n", __func__, __LINE__);
 				u32RetCountIIC = -1;
@@ -442,6 +448,12 @@ printk("\033[0;32;31m [Ian] IIC_ReadParam %s %d %d %d %d %d %d %d %d %d %p %d\03
 		//no delay may read fail randomly and read data is always 0
 #endif
 #endif
+
+		if ((IIC_ReadParam.u8AddrSizeIIC > IIC_MAX_ADDR_SIZE) || (IIC_ReadParam.u32DataSizeIIC > IIC_MAX_BUF_SIZE))
+		{
+			printk("\033[0;32;31m %s %d :ERROR: Address size or data size is over! \033[m\n", __func__, __LINE__);
+			return -1;
+		}
 
 		if( IIC_ReadParam.u32DataSizeIIC > IIC_RD_BUF_SIZE )
 		{
@@ -537,6 +549,12 @@ static ssize_t _MDrv_IIC_Write(struct file *filp, const char __user *buf, size_t
 			return -1;
 		}
 
+		if ((IIC_WriteParam.u8AddrSizeIIC > IIC_MAX_ADDR_SIZE) || (IIC_WriteParam.u32DataSizeIIC > IIC_MAX_BUF_SIZE))
+		{
+			printk("\033[0;32;31m %s %d :ERROR: Address size or data size is over! \033[m\n", __func__, __LINE__);
+			return -1;
+		}
+
 		if (IIC_WriteParam.u8AddrSizeIIC > IIC_WR_ADDR_SIZE)
 		{
 			IIC_WriteParam.u8AddrIIC = kmalloc(IIC_WriteParam.u8AddrSizeIIC, GFP_KERNEL);
@@ -615,6 +633,12 @@ static ssize_t _MDrv_IIC_Write(struct file *filp, const char __user *buf, size_t
 			IIC_WriteParam.u8AddrSizeIIC,\
 			IIC_WriteParam.u32DataSizeIIC);
 #endif
+
+		if ((IIC_WriteParam.u8AddrSizeIIC > IIC_MAX_ADDR_SIZE) || (IIC_WriteParam.u32DataSizeIIC > IIC_MAX_BUF_SIZE))
+		{
+			printk("\033[0;32;31m %s %d :ERROR: Address size or data size is over! \033[m\n", __func__, __LINE__);
+			return -1;
+		}
 
 		if (IIC_WriteParam.u8AddrSizeIIC > IIC_WR_ADDR_SIZE)
 		{
@@ -1215,9 +1239,11 @@ static int mstar_iic_drv_resume(struct platform_device *dev)
     return 0;
 }
 
+static u8 first_probe = 0;
+
 static int mstar_iic_drv_probe(struct platform_device *pdev)
 {
-	int retval = 0;
+	int retval = 0, i = 0;
 	struct mstar_i2c_dev *i2c_dev;
 	struct i2c_adapter *adap;
 	struct device_node *dn;
@@ -1342,6 +1368,13 @@ static int mstar_iic_drv_probe(struct platform_device *pdev)
 #endif
 	/* all set, now init the ioctl interface */
 	mod_iic_init();
+
+	if (first_probe == 0)
+	{
+		first_probe = 1;
+		for(i=0;i<HWI2C_PORTS;i++)
+			HWIIC_MUTEX_CREATE(i);
+	}
 	return 0;
 
 err_gpio:

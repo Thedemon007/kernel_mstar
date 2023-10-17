@@ -78,6 +78,6 @@
 	#define OTG_IRQ_UHC E_IRQ_UHC
 #endif
 
-
+#define VBUS_SWITCH_GPIO
 
 #endif  /* define _OTG_MSTAR_40932_H */

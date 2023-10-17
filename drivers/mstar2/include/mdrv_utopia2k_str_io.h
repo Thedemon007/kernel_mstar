@@ -72,6 +72,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 // Define & data type
 ////////////////////////////////////////////////////////////////////////////////
+#define UTOPIA2K_STR_NAME "Mstar-utopia2k-str"
 
 enum utopia2k_str_power_mode {
     UTOPIA2K_STR_POWER_SUSPEND = 1,
@@ -79,7 +80,15 @@ enum utopia2k_str_power_mode {
     UTOPIA2K_STR_POWER_MAX,
 };
 
-typedef int (*FUtopiaSTR)(int u32PowerState, void* pModule);
+#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
+enum stage_nr {
+    STR_STAGE_NONE,
+    STR_STAGE_1,
+    STR_STAGE_2,
+};
+#endif
+
+typedef unsigned int (*FUtopiaSTR)(unsigned int u32PowerState, void* pModule);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Extern Function
@@ -88,6 +97,63 @@ typedef int (*FUtopiaSTR)(int u32PowerState, void* pModule);
 int mdrv_utopia2k_str_setup_function_ptr(void* pModuleTmp, FUtopiaSTR fpSTR);
 int mdrv_utopia2k_str_wait_condition(const char* name, MS_U32 mode, MS_U32 stage);
 int mdrv_utopia2k_str_send_condition(const char* name, MS_U32 mode, MS_U32 stage);
+
+int utopia2k_str_init(void);
+int utopia2k_str_setup_function_ptr(void* pModuleTmp, FUtopiaSTR fpSTR);
+int utopia2k_str_wait_condition(const char* name, MS_U32 mode, MS_U32 stage);
+int utopia2k_str_send_condition(const char* name, MS_U32 mode, MS_U32 stage);
+int utopia2k_str_set_data(char *key, char *value);
+int utopia2k_str_get_data(char *key, char *value);
+void utopia2k_str_exit(void);
+
+int utopia2k_str_init_v2(void);
+int utopia2k_str_setup_function_ptr_v2(void* pModuleTmp, FUtopiaSTR fpSTR);
+int utopia2k_str_wait_condition_v2(const char* name, MS_U32 mode, MS_U32 stage);
+int utopia2k_str_send_condition_v2(const char* name, MS_U32 mode, MS_U32 stage);
+int utopia2k_str_set_data_v2(char *key, char *value);
+int utopia2k_str_get_data_v2(char *key, char *value);
+void utopia2k_str_exit_v2(void);
+
+#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
+#include <linux/of.h>
+
+static inline enum stage_nr check_stage(const char *name)
+{
+    int i, rc;
+    struct device_node *nproot, *np;
+    const char *strings[32] = {0};
+
+    nproot = of_find_node_by_name(NULL, UTOPIA2K_STR_NAME);
+    if (!nproot) {
+        pr_err("Utopia2k-STR: cannot find [%s] node in dts\n", UTOPIA2K_STR_NAME);
+        return STR_STAGE_1;
+    }
+
+    np = of_find_node_by_name(nproot, "str-stage2");
+    if (!np) {
+        // It's not a bug
+        pr_info_once("Utopia2k-STR: no module pm cb register to stage 2!\n");
+        return STR_STAGE_1;
+    }
+
+    rc = of_property_read_string_array(np, "functions", strings, ARRAY_SIZE(strings));
+    if (rc < 0) {
+        pr_err("Utopia2k-STR: register %s to STR stage 2 failed!\n", name);
+        return STR_STAGE_1;
+    }
+
+    /* This is a ugly way to register STR stage 2 */
+    for (i = 0; i < rc; ++i) {
+        /* find it! register to stage2 */
+        if (!strncmp(name, strings[i], strlen(strings[i]))) {
+            pr_info("Utopia2k-STR: register %s to STR stage 2\n", name);
+            return STR_STAGE_2;
+        }
+    }
+
+    return STR_STAGE_1;
+}
+#endif
 
 /*
  * ioctl operations

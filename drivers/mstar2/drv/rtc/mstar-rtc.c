@@ -1,10 +1,64 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/delay.h>
-#include <linux/debugfs.h>
+#include <linux/version.h>
 
 #include "chip_int.h"
 #include "mdrv_types.h"
@@ -14,10 +68,18 @@
 #include <linux/of.h>
 #endif
 
+#if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
+#include <linux/namei.h>
+#include <linux/proc_fs.h>
+#include "mdrv_system.h"
+#include <linux/seq_file.h>
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
+
 struct mstar_rtc_plat_data {
     u32 index;
     u32 xtal;
     u32 freq;
+    u32 default_cnt;
 };
 
 #if !defined(CONFIG_OF)
@@ -25,6 +87,7 @@ static struct mstar_rtc_plat_data mstar_rtc_pdata = {
         .index = 0,
         .xtal = 12000000,  // external clock reference @ 12MHz
         .freq = 1,         // RTC update frequency in second
+        .default_cnt = 946684800,
 };
 
 struct platform_device mstar_rtc_pdev = {
@@ -48,7 +111,76 @@ struct mstar_rtc_dev {
 static u8 rtc_int_is_enabled = 0;
 #endif
 
-static unsigned int rtc_str_time;
+#if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
+static struct proc_dir_entry *mdb_rtc_proc_entry = NULL;
+static bool mdb_rtc_is_wakeup = TRUE;
+static int mdb_rtc_node_open(struct inode *inode, struct file *file);
+static ssize_t mdb_rtc_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
+const struct file_operations mdb_rtc_node_operations = {
+    .owner      = THIS_MODULE,
+    .open       = mdb_rtc_node_open,
+    .read       = seq_read,
+    .write      = mdb_rtc_node_write,
+    .llseek     = seq_lseek,
+    .release    = single_release,
+};
+
+static ssize_t mdb_rtc_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+    char tmpString[20] = {};
+
+    if (!count) {
+        printk("count is 0\n");
+        return 0;
+    }
+
+    if (count > (sizeof(tmpString) - 1)) {
+        printk("input is too big\n");
+        return -EINVAL;
+    }
+
+    if (copy_from_user(tmpString, buf, count)) {
+        printk("copy_from_user failed\n");
+        return -EFAULT;
+    }
+
+    if (!strncmp(tmpString, "help", 4)) {
+        printk("\n--------- MStar RTC Help ---------\n");
+        printk("  Get RTC Information:\n");
+        printk("    cat /proc/utopia_mdb/rtc\n");
+        printk("  Disable RTC wakeup:\n");
+        printk("    echo wakeup_disable > /proc/utopia_mdb/rtc\n");
+        printk("  Enable RTC wakeup:\n");
+        printk("    echo wakeup_enable > /proc/utopia_mdb/rtc\n");
+    } else if (!strncmp(tmpString, "wakeup_disable", 14)) {
+        mdb_rtc_is_wakeup = FALSE;
+        printk("Disable RTC wakeup\n");
+    } else if (!strncmp(tmpString, "wakeup_enable", 13)) {
+        mdb_rtc_is_wakeup = TRUE;
+        printk("Enable RTC wakeup\n");
+    }
+
+    return count;
+}
+
+static int mdb_rtc_node_show(struct seq_file *m, void *v)
+{
+    seq_printf(m, "\n--------- MStar MBX Info ---------\n");
+
+    seq_printf(m, " MStar RTC Debug Usage:\n");
+    seq_printf(m, "  echo help > /proc/utopia_mdb/rtc\n\n");
+
+    seq_printf(m, " RTC wakeup state: %s\n", (mdb_rtc_is_wakeup ? "TRUE" : "FALSE"));
+
+    return 0;
+}
+
+static int mdb_rtc_node_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, mdb_rtc_node_show, NULL);
+}
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
+
 static int mstar_rtc_get_time(struct device *dev, struct rtc_time *tm)
 {
     struct timeval time;
@@ -120,7 +252,7 @@ static int mstar_rtc_alarm_irq_enable(struct device *dev, unsigned int enable)
 
 static int mstar_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 {
-	PM_RtcParam pmRtcParam = {0};
+	PM_RtcParam pmRtcParam;
 	unsigned long sec;
 
 	printk(KERN_ERR "mstar-rtc %s\n", __func__);
@@ -129,14 +261,6 @@ static int mstar_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alarm)
 		rtc_tm_to_time(&alarm->time, &sec);
 	else
 		sec = 0;
-
-	if (rtc_str_time > 0) {
-		struct timeval tv;
-		pmRtcParam.u8PmRtcIndex = 0;
-		tv.tv_sec = (__kernel_time_t)MDrv_RTC_GetCount(&pmRtcParam);
-		sec = rtc_str_time + tv.tv_sec;
-		pr_info("will sleep %d second \n", rtc_str_time);
-	}
 
 	pmRtcParam.u8PmRtcIndex = 0;
 	pmRtcParam.u32RtcSetMatchCounter = (u32)sec;
@@ -209,6 +333,7 @@ static int mstar_rtc_parse_dt(struct device_node *dn, struct mstar_rtc_dev *msta
     u32 rtc_index = 0;
     u32 freq = 0;
     u32 xtal = 0;
+    u32 rtc_default_cnt = 0;
 
     if ((of_property_read_u32(dn, "index", &rtc_index) != 0) ||
         (of_property_read_u32(dn, "xtal", &xtal) != 0)       ||
@@ -222,6 +347,13 @@ static int mstar_rtc_parse_dt(struct device_node *dn, struct mstar_rtc_dev *msta
 
     mstar_rtc->mstar_rtc_param.u8PmRtcIndex = rtc_index;
     mstar_rtc->mstar_rtc_param.u32RtcCtrlWord = xtal / freq;
+
+    if (of_property_read_u32(dn, "default_cnt", &rtc_default_cnt) != 0) {
+        printk(KERN_NOTICE "mstar-rtc parse dt default_cnt fail, set default to 946684800\n");
+        rtc_default_cnt = 946684800;
+    }
+
+    mstar_rtc->mstar_rtc_param.u32RtcDefaultAcCounter = rtc_default_cnt;
 #if 0
     printk("rtc index = %d\n", rtc_index);
     printk("rtc xtal = %d\n", xtal);
@@ -242,6 +374,8 @@ static int __init mstar_rtc_probe(struct platform_device *pdev)
 #else
     struct mstar_rtc_plat_data *mstar_pdata;
 #endif
+    u32 rtc_count;
+    u8 rtc_index;
 
     printk(KERN_INFO "mstar-rtc probe\n");
 
@@ -270,6 +404,7 @@ static int __init mstar_rtc_probe(struct platform_device *pdev)
     mstar_rtc->mstar_rtc_param.u8PmRtcIndex = mstar_pdata->index;
     // clock freq = xtal / cw
     mstar_rtc->mstar_rtc_param.u32RtcCtrlWord = mstar_pdata->xtal / mstar_pdata->freq;
+    mstar_rtc->mstar_rtc_param.u32RtcDefaultAcCounter = mstar_pdata->default_cnt;
 #endif
 
     spin_lock_init(&mstar_rtc->mstar_rtc_lock);
@@ -279,16 +414,50 @@ static int __init mstar_rtc_probe(struct platform_device *pdev)
 
     MDrv_RTC_Init(&mstar_rtc->mstar_rtc_param);
 
-    // provide an initial counter value for RTC to avoid hctosys return error.
-    mstar_rtc->mstar_rtc_param.u32RtcSetCounter = 946684800;
-    MDrv_RTC_SetCount(&mstar_rtc->mstar_rtc_param);
+    rtc_count = MDrv_RTC_GetCount(&mstar_rtc->mstar_rtc_param);
 
-    mstar_rtc->rtc = rtc_device_register("mstar-rtc", &pdev->dev, &mstar_rtc_ops, THIS_MODULE);
+    if (rtc_count <= mstar_rtc->mstar_rtc_param.u32RtcDefaultAcCounter) {
+        // provide an initial counter value for RTC to avoid hctosys return error.
+        mstar_rtc->mstar_rtc_param.u32RtcSetCounter = mstar_rtc->mstar_rtc_param.u32RtcDefaultAcCounter;
+        MDrv_RTC_SetCount(&mstar_rtc->mstar_rtc_param);
+        printk(KERN_INFO "[%s %d] set rtc count to %d\n", __FUNCTION__, __LINE__, mstar_rtc->mstar_rtc_param.u32RtcDefaultAcCounter);
+#if !defined(CONFIG_MSTAR_M7322) && !defined(CONFIG_MSTAR_M5621)
+        /* switch dummy reg usage from rtc0 to rtc1 due to brick terminator */
+        rtc_index = mstar_rtc->mstar_rtc_param.u8PmRtcIndex;
+        mstar_rtc->mstar_rtc_param.u8PmRtcIndex = 1;
+        mstar_rtc->mstar_rtc_param.u8PmRtcDummyIndex = 0;
+        MDrv_RTC_SetDummy(&mstar_rtc->mstar_rtc_param, 0);
+        mstar_rtc->mstar_rtc_param.u8PmRtcDummyIndex = 1;
+        MDrv_RTC_SetDummy(&mstar_rtc->mstar_rtc_param, 0);
+        /* restore rtc back */
+        mstar_rtc->mstar_rtc_param.u8PmRtcIndex = rtc_index;
+#endif /* !CONFIG_MSTAR_M7322 && !CONFIG_MSTAR_M5621 */
+    }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,108)
+    mstar_rtc->rtc = devm_rtc_allocate_device(&pdev->dev);
     if (IS_ERR(mstar_rtc->rtc))
     {
-        printk(KERN_ERR "mstar-rtc: fail to register RTC device: %ld\n", PTR_ERR(mstar_rtc->rtc));
+        printk(KERN_ERR "mstar-rtc: fail to allocate RTC device: %ld\n", PTR_ERR(mstar_rtc->rtc));
         return PTR_ERR(mstar_rtc->rtc);
     }
+
+    mstar_rtc->rtc->ops = &mstar_rtc_ops;
+
+    ret = rtc_register_device(mstar_rtc->rtc);
+    if (ret) {
+        dev_err(&pdev->dev, "unable to register device\n");
+        return ret;
+    }
+#else
+     mstar_rtc->rtc = rtc_device_register("mstar-rtc", &pdev->dev, &mstar_rtc_ops, THIS_MODULE);
+
+     if (IS_ERR(mstar_rtc->rtc))
+     {
+         printk(KERN_ERR "mstar-rtc: fail to register RTC device: %ld\n", PTR_ERR(mstar_rtc->rtc));
+         return PTR_ERR(mstar_rtc->rtc);
+     }
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,108) */
 
 #if defined (CONFIG_ANDROID)
     ret = Request_RTC_IRQ(mstar_rtc_irq_handler, &pdev->dev);
@@ -298,7 +467,7 @@ static int __init mstar_rtc_probe(struct platform_device *pdev)
         return ret;
     }
 
-	//disable_irq(E_IRQ_PM_SLEEP);
+    //disable_irq(E_IRQ_PM_SLEEP);
 #endif
 
     printk(KERN_INFO "mstar-rtc: rtc%d registered\n", mstar_rtc->rtc->id);
@@ -309,9 +478,12 @@ static int __init mstar_rtc_probe(struct platform_device *pdev)
 
 static int __exit mstar_rtc_remove(struct platform_device *pdev)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,108)
+#else
 	struct rtc_device *rtc = platform_get_drvdata(pdev);
 
 	rtc_device_unregister(rtc);
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,108) */
 
 	return 0;
 }
@@ -325,7 +497,15 @@ static int mstar_rtc_suspend(struct device *pdev)
 
     memset(&buf, 0, sizeof(PM_WakeCfg_t));
     MDrv_PM_Read_Key(PM_KEY_DEFAULT, (char *)&buf);
+#if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
+    if (mdb_rtc_is_wakeup == FALSE)
+        buf.bPmWakeEnableRTC0 = 0x0;
+    else
+        buf.bPmWakeEnableRTC0 = 0x1;
+#else
     buf.bPmWakeEnableRTC0 = 0x1;
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
+
     MDrv_PM_Write_Key(PM_KEY_DEFAULT, (char *)&buf, sizeof(PM_WakeCfg_t));
 #endif
 
@@ -375,6 +555,13 @@ static int __init mstar_rtc_init(void)
     }
 #endif
 
+#if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
+    MDrv_SYS_UtopiaMdbMkdir();
+    mdb_rtc_proc_entry = proc_create("utopia_mdb/rtc", (S_IRUGO|S_IWUGO), NULL, &mdb_rtc_node_operations);
+    if (mdb_rtc_proc_entry == NULL)
+        printk(KERN_ERR "mstar-rtc: unable to create proc node\n");
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
+
     printk(KERN_DEBUG "mstar-rtc: init done\n");
 
 	return 0;
@@ -383,62 +570,14 @@ static int __init mstar_rtc_init(void)
 static void __exit mstar_rtc_fini(void)
 {
 	platform_driver_unregister(&mstar_rtc_driver);
-}
-
-static int rtc_str_time_debug_show(struct seq_file *s, void *data)
-{
-	seq_printf(s, "%d\n", rtc_str_time);
-}
-
-static int rtc_str_time_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, rtc_str_time_debug_show, NULL);
-}
-
-static int rtc_str_time_debug_write(struct file *file, const char __user *userbuf, size_t count, loff_t *ppos)
-{
-	char buf[64];
-	unsigned int set;
-	count = min_t(size_t, count, (sizeof(buf)-1));
-	if (copy_from_user(buf, userbuf, count))
-		return -EFAULT;
-
-	buf[count] = '\0';
-
-	if (strict_strtol(buf, 0, &set) != 0)
-		return -EINVAL;
-
-	pr_info("set rtc_str_time to %d s\n", set);
-	rtc_str_time = set;
-
-	return count;
-}
-
-static const struct file_operations rtc_str_time_debug_fops = {
-	.open		= rtc_str_time_debug_open,
-	.read		= seq_read,
-	.write		= rtc_str_time_debug_write,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int __init rtc_str_time_debug_init(void)
-{
-	struct deentry *d;
-
-	d = debugfs_create_file("rtc_str_time", 0664, NULL, NULL,
-		&rtc_str_time_debug_fops);
-	if (!d) {
-		pr_err("Failed to create rtc_str_time debug file \n");
-		return -ENOMEM;
-	}
-
-	return 0;
+#if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
+    if (mdb_rtc_proc_entry != NULL)
+        proc_remove(mdb_rtc_proc_entry);
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
 }
 
 module_init(mstar_rtc_init);
 module_exit(mstar_rtc_fini);
-late_initcall(rtc_str_time_debug_init);
 
 MODULE_AUTHOR("Mstarsemi");
 MODULE_LICENSE("GPL");

@@ -221,6 +221,7 @@ HAL_HWI2C_DMA_MIUCH;
 //-------------------------------------------------------------------------------------------------
 //  Function and Variable
 //-------------------------------------------------------------------------------------------------
+extern void MHal_IIC_STR_Record(void);
 extern void MHal_IIC_Init(void);
 extern void MHal_IIC_Clock_Select(U8 u8ClockIIC);
 extern BOOL MHal_IIC_Start(U32 u32PortOffset);

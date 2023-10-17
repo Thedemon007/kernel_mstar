@@ -100,8 +100,6 @@
 #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 #include <prom.h>
 #endif
-#include <linux/dcache.h>
-#include <linux/debugfs.h>
 
 #include "mst_devid.h"
 #include "mdrv_types.h"
@@ -325,7 +323,7 @@ MSYSTEM_STATIC int __init _mod_sys_init(void)
     // @FIXME: for GE bug. Slow down MCU clock to 123MHz
     TOP_REG(REG_TOP_MCU) = (TOP_REG(REG_TOP_MCU) & ~(TOP_CKG_MCU_MASK)) | TOP_CKG_MCU_SRC_123;
 
-    MDrv_MIU_Init();
+    MDrv_MIU_Kernel_Init();
     #endif
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 17, 0)) && defined(CONFIG_MSTAR_RTC)
@@ -495,11 +493,9 @@ static long Compat_mod_sys_ioctl(struct file *filp, unsigned int cmd, unsigned l
     case IOCTL_SYS_ENABLE_MUDI:
     case IOCTL_SYS_DISABLE_MUDI:
     case IOCTL_SYS_SPI_LOAD: //20100120 Terry, SPI Load Code
-    case IOCTL_SYS_FORCE_OAD_UPGRADE_FROM_DRAM:
-    case IOCTL_SYS_FORCE_ENV_UPGRADE_FROM_DRAM:
-	{
-		return filp->f_op->unlocked_ioctl(filp, cmd,(unsigned long)compat_ptr(arg));
-	}
+    {
+        return filp->f_op->unlocked_ioctl(filp, cmd,(unsigned long)compat_ptr(arg));
+    }
 
     default:
         SYS_WARNING("Unknown ioctl command %d\n", cmd);
@@ -537,6 +533,7 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
     case IOCTL_SYS_INFO:
         {
             IO_Sys_Info_t j;
+			memset(&j, 0, sizeof(j));
 #if defined(CONFIG_MIPS)
             get_boot_mem_info(LINUX_MEM, &(j.LX_MEM_ADDR), &(j.LX_MEM_LENGTH));
             get_boot_mem_info(LINUX_MEM2, &(j.LX_MEM2_ADDR), &(j.LX_MEM2_LENGTH));
@@ -556,15 +553,15 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
                 printk( "copy_to_user error\n" ) ;
             }
 #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-            get_boot_mem_info(LINUX_MEM, &(j.LX_MEM_ADDR), &(j.LX_MEM_LENGTH));
-            get_boot_mem_info(LINUX_MEM2, &(j.LX_MEM2_ADDR), &(j.LX_MEM2_LENGTH));
-            get_boot_mem_info(EMAC_MEM, &(j.EMAC_ADDR), &(j.EMAC_LENGTH));
-            get_boot_mem_info(DRAM, &(j.DRAM_ADDR), &(j.DRAM_LENGTH));
-            get_boot_mem_info(BB, &(j.BB_ADDR), &(j.BB_LENGTH));
-            get_boot_mem_info(MPOOL_MEM, &(j.MPOOL_MEM_ADDR), &(j.MPOOL_MEM_LENGTH));
-            get_boot_mem_info(G3D_MEM0, &(j.G3D_MEM0_ADDR), &(j.G3D_MEM0_LENGTH));
-            get_boot_mem_info(G3D_MEM1, &(j.G3D_MEM1_ADDR), &(j.G3D_MEM1_LENGTH));
-            get_boot_mem_info(G3D_CMDQ, &(j.G3D_CMDQ_ADDR), &(j.G3D_CMDQ_LENGTH));
+            get_boot_mem_info(LINUX_MEM, (phys_addr_t *)&(j.LX_MEM_ADDR), (phys_addr_t *)&(j.LX_MEM_LENGTH));
+            get_boot_mem_info(LINUX_MEM2, (phys_addr_t *)&(j.LX_MEM2_ADDR), (phys_addr_t *)&(j.LX_MEM2_LENGTH));
+            get_boot_mem_info(EMAC_MEM, (phys_addr_t *)&(j.EMAC_ADDR), (phys_addr_t *)&(j.EMAC_LENGTH));
+            get_boot_mem_info(DRAM, (phys_addr_t *)&(j.DRAM_ADDR), (phys_addr_t *)&(j.DRAM_LENGTH));
+            get_boot_mem_info(BB, (phys_addr_t *)&(j.BB_ADDR), (phys_addr_t *)&(j.BB_LENGTH));
+            get_boot_mem_info(MPOOL_MEM, (phys_addr_t *)&(j.MPOOL_MEM_ADDR), (phys_addr_t *)&(j.MPOOL_MEM_LENGTH));
+            get_boot_mem_info(G3D_MEM0, (phys_addr_t *)&(j.G3D_MEM0_ADDR), (phys_addr_t *)&(j.G3D_MEM0_LENGTH));
+            get_boot_mem_info(G3D_MEM1, (phys_addr_t *)&(j.G3D_MEM1_ADDR), (phys_addr_t *)&(j.G3D_MEM1_LENGTH));
+            get_boot_mem_info(G3D_CMDQ, (phys_addr_t *)&(j.G3D_CMDQ_ADDR), (phys_addr_t *)&(j.G3D_CMDQ_LENGTH));
 
 			if (j.LX_MEM2_ADDR >= ARM_MIU1_BUS_BASE)
                 j.LX_MEM2_ADDR = j.LX_MEM2_ADDR - ARM_MIU1_BUS_BASE + MIU1_OFFSET;
@@ -602,18 +599,18 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
                 printk( "copy_to_user error\n" ) ;
             }
 #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-            get_boot_mem_info(LINUX_MEM, &(j.LX_MEM_ADDR), &(j.LX_MEM_LENGTH));
-            get_boot_mem_info(LINUX_MEM2, &(j.LX_MEM2_ADDR), &(j.LX_MEM2_LENGTH));
-            get_boot_mem_info(LINUX_MEM3, &(j.LX_MEM3_ADDR), &(j.LX_MEM3_LENGTH));
-            get_boot_mem_info(LINUX_MEM4, &(j.LX_MEM4_ADDR), &(j.LX_MEM4_LENGTH));
-            get_boot_mem_info(LINUX_MEM5, &(j.LX_MEM5_ADDR), &(j.LX_MEM5_LENGTH));
-            get_boot_mem_info(EMAC_MEM, &(j.EMAC_ADDR), &(j.EMAC_LENGTH));
-            get_boot_mem_info(DRAM, &(j.DRAM_ADDR), &(j.DRAM_LENGTH));
-            get_boot_mem_info(BB, &(j.BB_ADDR), &(j.BB_LENGTH));
-            get_boot_mem_info(MPOOL_MEM, &(j.MPOOL_MEM_ADDR), &(j.MPOOL_MEM_LENGTH));
-            get_boot_mem_info(G3D_MEM0, &(j.G3D_MEM0_ADDR), &(j.G3D_MEM0_LENGTH));
-            get_boot_mem_info(G3D_MEM1, &(j.G3D_MEM1_ADDR), &(j.G3D_MEM1_LENGTH));
-            get_boot_mem_info(G3D_CMDQ, &(j.G3D_CMDQ_ADDR), &(j.G3D_CMDQ_LENGTH));
+            get_boot_mem_info(LINUX_MEM, (phys_addr_t *)&(j.LX_MEM_ADDR), (phys_addr_t *)&(j.LX_MEM_LENGTH));
+            get_boot_mem_info(LINUX_MEM2, (phys_addr_t *)&(j.LX_MEM2_ADDR), (phys_addr_t *)&(j.LX_MEM2_LENGTH));
+            get_boot_mem_info(LINUX_MEM3, (phys_addr_t *)&(j.LX_MEM3_ADDR), (phys_addr_t *)&(j.LX_MEM3_LENGTH));
+            get_boot_mem_info(LINUX_MEM4, (phys_addr_t *)&(j.LX_MEM4_ADDR), (phys_addr_t *)&(j.LX_MEM4_LENGTH));
+            get_boot_mem_info(LINUX_MEM5, (phys_addr_t *)&(j.LX_MEM5_ADDR), (phys_addr_t *)&(j.LX_MEM5_LENGTH));
+            get_boot_mem_info(EMAC_MEM, (phys_addr_t *)&(j.EMAC_ADDR), (phys_addr_t *)&(j.EMAC_LENGTH));
+            get_boot_mem_info(DRAM, (phys_addr_t *)&(j.DRAM_ADDR), (phys_addr_t *)&(j.DRAM_LENGTH));
+            get_boot_mem_info(BB, (phys_addr_t *)&(j.BB_ADDR), (phys_addr_t *)&(j.BB_LENGTH));
+            get_boot_mem_info(MPOOL_MEM, (phys_addr_t *)&(j.MPOOL_MEM_ADDR), (phys_addr_t *)&(j.MPOOL_MEM_LENGTH));
+            get_boot_mem_info(G3D_MEM0, (phys_addr_t *)&(j.G3D_MEM0_ADDR), (phys_addr_t *)&(j.G3D_MEM0_LENGTH));
+            get_boot_mem_info(G3D_MEM1, (phys_addr_t *)&(j.G3D_MEM1_ADDR), (phys_addr_t *)&(j.G3D_MEM1_LENGTH));
+            get_boot_mem_info(G3D_CMDQ, (phys_addr_t *)&(j.G3D_CMDQ_ADDR), (phys_addr_t *)&(j.G3D_CMDQ_LENGTH));
 
  			/*
 			if (j.LX_MEM2_ADDR >= ARM_MIU1_BUS_BASE)
@@ -651,18 +648,18 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
         break;
 
     case IOCTL_SYS_READ_GEN_REGISTER:
-	SYS_PRINT("ioctl command IOCTL_SYS_READ_GEN_REGISTER is not supported.\n");
-	err = -ENOTTY;
+        SYS_PRINT("ioctl command IOCTL_SYS_READ_GEN_REGISTER is not supported.\n");
+        err = -ENOTTY;
         break;
 
     case IOCTL_SYS_WRITE_GEN_REGISTER:
-	SYS_PRINT("ioctl command IOCTL_SYS_WRITE_GEN_REGISTER is not supported.\n");
-	err = -ENOTTY;
+        SYS_PRINT("ioctl command IOCTL_SYS_WRITE_GEN_REGISTER is not supported.\n");
+        err = -ENOTTY;
         break;
 //#if defined(CONFIG_Triton)
     case IOCTL_SYS_LOAD_AEON:
-	SYS_PRINT("ioctl command IOCTL_SYS_LOAD_AEON is not supported.\n");
-	err = -ENOTTY;
+        SYS_PRINT("ioctl command IOCTL_SYS_LOAD_AEON is not supported.\n");
+        err = -ENOTTY;
         break;
 
     case IOCTL_SYS_RESET_AEON:
@@ -692,8 +689,8 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
 
 #ifdef IO_SYS_REG_OP
     case IOCTL_SYS_REG_OP:
-	SYS_PRINT("ioctl command IOCTL_SYS_REG_OP is not supported.\n");
-	err = -ENOTTY;
+        SYS_PRINT("ioctl command IOCTL_SYS_REG_OP is not supported.\n");
+        err = -ENOTTY;
         break ;
 #endif
 
@@ -827,15 +824,6 @@ static int  _mod_sys_ioctl(struct inode *inode, struct file *filp, unsigned int 
         disable_MUDI();
         break;
 
-    case IOCTL_SYS_SPI_LOAD: //20100120 Terry, SPI Load Code
-	    break;
-    case IOCTL_SYS_FORCE_OAD_UPGRADE_FROM_DRAM:
-        MDrv_SYS_ForceUpgradeOADByDRAM(arg);
-        break;
-    case IOCTL_SYS_FORCE_ENV_UPGRADE_FROM_DRAM:
-        MDrv_SYS_ForceUpgradeENVByDRAM(arg);
-        break;
-
     default:
         SYS_WARNING("Unknown ioctl command %d\n", cmd);
         return -ENOTTY;
@@ -880,212 +868,13 @@ static ssize_t _mod_sys_read(struct file *filp, char __user *buf, size_t count, 
 
 }
 
-static int show_is_support_dolby_vision(struct seq_file *s, void *data)
-{
-	bool b_is_support_dolby_vision = false;
-	if (0 > MDrv_SYS_IsSupportDolbyVision(&b_is_support_dolby_vision)) {
-		printk(KERN_ERR "[%s:%d]Error: MDrv_SYS_IsSupportDolbyVision fail\n", __FUNCTION__, __LINE__);
-		return -EIO;
-	} else {
-		seq_printf(s, "%d", b_is_support_dolby_vision ? 1 : 0);
-	}
-	return 0;
-}
-
-static int open_is_support_dolby_vision(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_is_support_dolby_vision, NULL);
-}
-
-static const struct file_operations fops_is_support_dolby_vision = {
-	.open       = open_is_support_dolby_vision,
-	.read       = seq_read,
-	.llseek     = seq_lseek,
-	.release    = single_release,
-};
-
-static int show_is_support_dolby_atmos(struct seq_file *s, void *data)
-{
-	bool b_is_support_dolby_atmos = false;
-	if (0 > MDrv_SYS_IsSupportDolbyAtmos(&b_is_support_dolby_atmos)) {
-		printk(KERN_ERR "[%s:%d]Error: MDrv_SYS_IsSupportDolbyAtmos fail\n", __FUNCTION__, __LINE__);
-		return -EIO;
-	} else {
-		seq_printf(s, "%d", b_is_support_dolby_atmos ? 1 : 0);
-	}
-	return 0;
-}
-
-static int open_is_support_dolby_atmos(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_is_support_dolby_atmos, NULL);
-}
-
-static const struct file_operations fops_is_support_dolby_atmos = {
-	.open       = open_is_support_dolby_atmos,
-	.read       = seq_read,
-	.llseek     = seq_lseek,
-	.release    = single_release,
-};
-
-static int __init init_is_support_dolby_vision(void)
-{
-	struct dentry *d;
-	d = debugfs_create_file("is_support_dolby_vision", 0664, NULL, NULL, &fops_is_support_dolby_vision);
-	if (!d) {
-		pr_err("Failed to create is_support_dolby_vision debug file.\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-
-static int __init init_is_support_dolby_atmos(void)
-{
-	struct dentry *d;
-	d = debugfs_create_file("is_support_dolby_atmos", 0664, NULL, NULL, &fops_is_support_dolby_atmos);
-	if (!d) {
-		pr_err("Failed to create is_support_dolby_atmos debug file.\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-
 EXPORT_SYMBOL(_mod_sys_get_dts_value);
 #if defined(CONFIG_MSTAR_MSYSTEM) || defined(CONFIG_MSTAR_MSYSTEM_MODULE)
 #else//#if defined(CONFIG_MSTAR_MSYSTEM) || defined(CONFIG_MSTAR_MSYSTEM_MODULE)
 module_init(_mod_sys_init);
 module_exit(_mod_sys_exit);
-late_initcall(init_is_support_dolby_vision);
-late_initcall(init_is_support_dolby_atmos);
 
 MODULE_AUTHOR("MSTAR");
 MODULE_DESCRIPTION("SYSTEM driver");
 MODULE_LICENSE("MSTAR");
 #endif//#if defined(CONFIG_MSTAR_MSYSTEM) || defined(CONFIG_MSTAR_MSYSTEM_MODULE)
-
-ssize_t write_switch_uart(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
-{
-	int MAX_WRITE_BUFFER = 10;
-	char buffer[MAX_WRITE_BUFFER];
-	unsigned int OnOff = 0;
-	unsigned int garbage = 0;
-
-	if (!count)
-		return count;
-
-	if (count >= MAX_WRITE_BUFFER)
-		count = MAX_WRITE_BUFFER - 1;
-
-	if (copy_from_user(buffer, buf, count))
-		return -EFAULT;
-
-	buffer[count] = '\0';
-
-	if (sscanf(buffer, "%d %d", &OnOff, &garbage) == 2) {
-		return -EINVAL;
-	} else if (sscanf(buffer, "%d", &OnOff) == 1) {
-		MDrv_SYS_SWITCH_UART(OnOff);
-		return count;
-	}
-	return -EINVAL;
-}
-
-static int show_switch_uart(struct seq_file *s, void *v)
-{
-	return 0;
-}
-
-static int open_switch_uart(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_switch_uart, NULL);
-}
-
-static const struct file_operations fops_switch_uart = {
-	.open       = open_switch_uart,
-	.write      = write_switch_uart,
-	.read       = seq_read,
-	.llseek     = seq_lseek,
-	.release    = single_release,
-};
-
-static int __init init_switch_uart(void)
-{
-	struct dentry *d;
-	d = debugfs_create_file("switch_uart", 0664, NULL, NULL, &fops_switch_uart);
-	if (!d) {
-		pr_err("Failed to create switch_uart debug file.\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-
-late_initcall(init_switch_uart);
-
-#ifdef CONFIG_SECURITY_SELINUX_KERN_PERMISSIVE
-extern int selinux_enforcing;
-extern bool selinux_set_enforce(bool enforce);
-static ssize_t show_enforce(struct seq_file *s, void *data)
-{
-	seq_printf(s, "%d", selinux_enforcing);
-	return 0;
-}
-
-static int open_enforce(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_enforce, NULL);
-}
-
-static ssize_t write_enforce(struct file *file, const char __user *buf,
-				 size_t count, loff_t *ppos)
-{
-	char *page = NULL;
-	ssize_t length;
-	int new_value;
-
-	if (count >= PAGE_SIZE)
-		return -ENOMEM;
-
-	/* No partial writes. */
-	if (*ppos != 0)
-		return -EINVAL;
-
-	page = memdup_user_nul(buf, count);
-	if (IS_ERR(page))
-		return PTR_ERR(page);
-
-	length = -EINVAL;
-	if (sscanf(page, "%d", &new_value) != 1)
-		goto out;
-
-	selinux_set_enforce(new_value);
-
-	length = count;
-out:
-	kfree(page);
-	return length;
-}
-#else
-#define open_enforce NULL
-#define write_enforce NULL
-#endif
-
-static const struct file_operations fops_enforce = {
-	.open		= open_enforce,
-	.write		= write_enforce,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
-static int __init init_enforce(void)
-{
-	struct dentry *d;
-	d = debugfs_create_file("enforce", 0664, NULL, NULL, &fops_enforce);
-	if (!d) {
-		pr_err("Failed to create enforce debug file.\n");
-		return -ENOMEM;
-	}
-	return 0;
-}
-
-late_initcall(init_enforce);

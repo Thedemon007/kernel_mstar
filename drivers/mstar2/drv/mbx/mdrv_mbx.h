@@ -52,7 +52,6 @@
  *
  *****************************************************************************/
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 /// @file   mdrv_mbx.h
 /// @brief  MStar Mailbox Driver DDI
@@ -121,8 +120,10 @@
 
 /// Define FD ID for kernel mode usage
 #define MBX_KERNEL_FD 99
-/// Define trigger value for kernel mode usage (1: will not trigger kill_fasync)
-#define MBX_KERNEL_TRIGGER 1
+/// Define trigger value for kernel mode usage (FALSE: will not trigger kill_fasync)
+#define MBX_KERNEL_TRIGGER FALSE
+
+#define MBX_ASYNCNOTIFIER_MAX CONFIG_MSTAR_MBX_ASYNC_NOTIFIER_SIZE
 //=============================================================================
 // Type and Structure Declaration
 //=============================================================================
@@ -419,14 +420,34 @@ typedef struct  __attribute__((packed))
     MS_U32 u32InstantMsgCount;
 }MBX_MSGQ_Status;
 
+typedef struct __attribute__((packed))
+{
+    MS_S16 s16MsgFirst; //the first MsgPoolItem slot idx in MsgPool
+    MS_S16 s16MsgEnd; //the end MsgPoolItem slot idx in MsgPool
+
+    MS_S16 s16InstantMsgFirst; //the first instant MsgPoolItem slot idx in MsgPool
+    MS_S16 s16InstantMsgEnd; //the end instant MsgPoolItem slot idx in MsgPool
+
+    MS_U16 u16MsgNum; //the number of MsgPoolItem in MsgQ;
+    MS_U16 u16InstantMsgNum; //the number of instant MsgPoolItem in MsgQ;
+
+    MS_U16 u16MsgQStatus; //the MsgQ Status: invalid; normal, empty; voerflow;
+    MS_U16 u16MsgQSize; //the MsgQ size when the msg class is registed; should be no larger than MAX_MBX_QUEUE_SIZE
+
+    MS_S16 s16MsgQNotifierID; //the MsgQ Register in MBX Driver
+    MS_S16 s16NextMsgQ; //the Next MsgQ which belongs to the same Register;
+}MSGPOOL_MsgQMgr; //message queue manager, per class per queue.
+
 typedef struct  __attribute__((packed))
 {
-	TYPE_MBX_C_U64 u32AsyncID;
-	struct fasync_struct  *async_queue; /* asynchronous readers */
-	MS_S16 s16MsgQFirst; /* the first MsgQ Idx */
-	MS_U16 u16Usage; /* the slot usage of notifier*/
-	MS_BOOL bEnable; /* the register message queue is enabled or not */
-}MBX_ASYNC_NOTIFIER;
+    TYPE_MBX_C_U64 u32AsyncID;
+    struct fasync_struct  *async_queue; /* asynchronous readers */
+    MS_S16 s16MsgQFirst; /* the first MsgQ Idx */
+    MS_U16 u16Usage; /* the slot usage of notifier*/
+    MS_BOOL bEnable; /* the register message queue is enabled or not */
+    MSGPOOL_MsgQMgr msgQmgr[E_MBX_CLASS_MAX]; /* message queue manager per process */
+    MS_BOOL bTrigger[E_MBX_CLASS_MAX];
+} MBX_ASYNC_NOTIFIER;
 
 #define MBX_DEV_FLAG_PM2HKINT 0x01
 #define MBX_DEV_FLAG_HK2PMINT 0x02
@@ -464,7 +485,7 @@ INTERFACE MBX_Result  MDrv_MBX_CheckMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, M
 INTERFACE MBX_Result  MDrv_MBX_CheckMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag);
 INTERFACE MBX_Result  MDrv_MBX_GetMsgQueueStatus(MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus);
 INTERFACE MBX_Result  MDrv_MBX_GetMsgQueueStatus_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus);
-INTERFACE MBX_Result  MDrv_MBX_RemoveLatestMsg(void);
+INTERFACE MBX_Result  MDrv_MBX_RemoveLatestMsg(TYPE_MBX_C_U64 u32AsyncID);
 
 // For Application Set/Get Information API:
 INTERFACE MBX_Result  MDrv_MBX_SetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size);

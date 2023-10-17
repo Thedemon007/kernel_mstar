@@ -65,6 +65,7 @@
 //-------------------------------------------------------------------------------------------------
 #include <linux/irq.h>
 #include <linux/printk.h>
+#include <linux/slab.h>
 #include "MsTypes.h"
 #include "mdrv_types.h"
 #include "mdrv_miu.h"
@@ -76,6 +77,10 @@
 #include "mdrv_system.h"
 
 #include <string.h>
+
+#ifdef CHIP_FLUSH_READ
+#include "chip_setup.h"
+#endif
 //-------------------------------------------------------------------------------------------------
 //  Define
 //-------------------------------------------------------------------------------------------------
@@ -281,7 +286,7 @@
 //-------------------------------------------------------------------------------------------------
 //  Local Structures
 //-------------------------------------------------------------------------------------------------
-const eMIUClientID clientTbl[MIU_MAX_DEVICE][MIU_MAX_TBL_CLIENT] =
+static const eMIUClientID clientTbl[MIU_MAX_DEVICE][MIU_MAX_TBL_CLIENT] =
 {
     {
         MIU_CLIENT_GP0,
@@ -321,7 +326,7 @@ const eMIUClientID clientTbl[MIU_MAX_DEVICE][MIU_MAX_TBL_CLIENT] =
     }
 };
 
-MS_U32 clientId_KernelProtect[MIU_MAX_PROTECT_ID_NUM] =
+static MS_U32 clientId_KernelProtect[MIU_MAX_PROTECT_ID_NUM] =
 {
     MIU_CLIENT_CPU_R,   //0
     MIU_CLIENT_CPU_W,
@@ -373,14 +378,16 @@ typedef enum
 //-------------------------------------------------------------------------------------------------
 //static MS_U32 _gMIU_MapBase = 0xBF200000;      //default set to MIPS platfrom
 #if defined(CONFIG_ARM) || defined(CONFIG_MIPS)
-static MS_U32 _gMIU_MapBase = 0xFD200000UL;   //default set to arm 32bit platfrom
+static MS_U32 _gMIU_MapBase = 0xFD200000UL;
+#define _gPM_MapBase 0xFD000000
 #elif defined(CONFIG_ARM64)
 extern ptrdiff_t mstar_pm_base;
 static ptrdiff_t _gMIU_MapBase;
+#define _gPM_MapBase mstar_pm_base
 #endif
 
-MS_BOOL IDEnables[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK][MIU_MAX_PROTECT_ID_NUM];
-MS_U32 IDs[MIU_MAX_DEVICE][MIU_MAX_PROTECT_ID_GROUP_NUM][MIU_MAX_PROTECT_ID_NUM];
+static MS_BOOL IDEnables[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK][MIU_MAX_PROTECT_ID_NUM];
+static MS_U32 IDs[MIU_MAX_DEVICE][MIU_MAX_PROTECT_ID_GROUP_NUM][MIU_MAX_PROTECT_ID_NUM];
 MS_U32 ProtectGroupSelect[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK] = {{1,1,1,1,1,1,1,1}, {1,1,1,1,1,1,1,1}};
 MS_U32 ProtectAddr[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK][MIU_PROTECT_START_END];   //MIU_PROTECT_START_END : 0->start, 1->end
 
@@ -412,7 +419,7 @@ MS_PHY HAL_MIU_BA2PA(MS_PHY u64BusAddr)
     return u64PhyAddr;
 }
 
-MS_S16 HAL_MIU_GetClientInfo(MS_U8 u8MiuDev, eMIUClientID eClientID)
+static MS_S16 HAL_MIU_GetClientInfo(MS_U8 u8MiuDev, eMIUClientID eClientID)
 {
     MS_S16 idx;
 
@@ -436,7 +443,7 @@ MS_S16 HAL_MIU_GetClientInfo(MS_U8 u8MiuDev, eMIUClientID eClientID)
 /// @param <RET>        \b MS_U8
 /// @param <GLOBAL>     \b None :
 ////////////////////////////////////////////////////////////////////////////////
-MS_U8 HAL_MIU_ReadByte(MS_U32 u32RegAddr)
+static MS_U8 HAL_MIU_ReadByte(MS_U32 u32RegAddr)
 {
 #if defined(CONFIG_ARM64)
     _gMIU_MapBase = (mstar_pm_base + 0x00200000UL);
@@ -452,7 +459,7 @@ MS_U8 HAL_MIU_ReadByte(MS_U32 u32RegAddr)
 /// @param <RET>        \b MS_U16
 /// @param <GLOBAL>     \b None :
 ////////////////////////////////////////////////////////////////////////////////
-MS_U16 HAL_MIU_Read2Byte(MS_U32 u32RegAddr)
+static MS_U16 HAL_MIU_Read2Byte(MS_U32 u32RegAddr)
 {
 #if defined(CONFIG_ARM64)
     _gMIU_MapBase = (mstar_pm_base + 0x00200000UL);
@@ -480,7 +487,7 @@ MS_U32 HAL_MIU_Read4Byte(MS_U32 u32RegAddr)
 /// @param <RET>        \b TRUE: Ok FALSE: Fail
 /// @param <GLOBAL>     \b None :
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL HAL_MIU_WriteByte(MS_U32 u32RegAddr, MS_U8 u8Val)
+static MS_BOOL HAL_MIU_WriteByte(MS_U32 u32RegAddr, MS_U8 u8Val)
 {
     if (!u32RegAddr)
     {
@@ -504,7 +511,7 @@ MS_BOOL HAL_MIU_WriteByte(MS_U32 u32RegAddr, MS_U8 u8Val)
 /// @param <RET>        \b TRUE: Ok FALSE: Fail
 /// @param <GLOBAL>     \b None :
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL HAL_MIU_Write2Byte(MS_U32 u32RegAddr, MS_U16 u16Val)
+static MS_BOOL HAL_MIU_Write2Byte(MS_U32 u32RegAddr, MS_U16 u16Val)
 {
     if (!u32RegAddr)
     {
@@ -516,6 +523,18 @@ MS_BOOL HAL_MIU_Write2Byte(MS_U32 u32RegAddr, MS_U16 u16Val)
     _gMIU_MapBase = (mstar_pm_base + 0x00200000UL);
 #endif
     ((volatile MS_U16*)(_gMIU_MapBase))[u32RegAddr] = u16Val;
+    return TRUE;
+}
+
+MS_BOOL HAL_MIU_PM_Write2Byte(MS_U32 u32RegAddr, MS_U16 u16Val)
+{
+    if (!u32RegAddr)
+    {
+        MIU_HAL_ERR("%s reg error!\n", __FUNCTION__);
+        return FALSE;
+    }
+
+    ((volatile MS_U16*)(_gPM_MapBase))[u32RegAddr] = u16Val;
     return TRUE;
 }
 
@@ -541,7 +560,20 @@ MS_BOOL HAL_MIU_Write4Byte(MS_U32 u32RegAddr, MS_U32 u32Val)
     return TRUE;
 }
 
-void HAL_MIU_SetProtectID(MS_U32 u32Reg, MS_U8 u8MiuDev, MS_U32 u32ClientID)
+MS_BOOL HAL_MIU_PM_Write4Byte(MS_U32 u32RegAddr, MS_U32 u32Val)
+{
+    if (!u32RegAddr)
+    {
+        MIU_DEBUG_LOG(KERN_ERR, E_MIU_DBGLV_ERR, "%s reg error!\n", __FUNCTION__);
+        return FALSE;
+    }
+
+    HAL_MIU_PM_Write2Byte(u32RegAddr, u32Val & 0x0000FFFF);
+    HAL_MIU_PM_Write2Byte(u32RegAddr+2, u32Val >> 16);
+    return TRUE;
+}
+
+static void HAL_MIU_SetProtectID(MS_U32 u32Reg, MS_U8 u8MiuDev, MS_U32 u32ClientID)
 {
     MS_S16 sVal = HAL_MIU_GetClientInfo(u8MiuDev, (eMIUClientID)u32ClientID);
 
@@ -551,7 +583,7 @@ void HAL_MIU_SetProtectID(MS_U32 u32Reg, MS_U8 u8MiuDev, MS_U32 u32ClientID)
     HAL_MIU_WriteByte(u32Reg, sVal & 0xFF);
 }
 
-MS_BOOL HAL_MIU_WriteRegBit(MS_U32 u32RegAddr, MS_U8 u8Mask, MS_BOOL bEnable)
+static MS_BOOL HAL_MIU_WriteRegBit(MS_U32 u32RegAddr, MS_U8 u8Mask, MS_BOOL bEnable)
 {
     MS_U8 u8Val = HAL_MIU_ReadByte(u32RegAddr);
     if (!u32RegAddr)
@@ -647,13 +679,13 @@ static MS_U8 HAL_MIU_SelIDGroup(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 *pu32Prot
     return E_MIU_ID_GROUP_NONE;
 }
 
-MS_BOOL HAL_MIU_SetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_U32 u32RegAddr, MS_U32 u32RegAddrG1, MS_U32 u32RegAddrIDenable, MS_U32 u32SelIdGroup, MS_BOOL bisKernellist)
+static MS_BOOL HAL_MIU_SetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_U32 u32RegAddr, MS_U32 u32RegAddrG1, MS_U32 u32RegAddrIDenable, MS_U32 u32SelIdGroup, MS_BOOL bisKernellist)
 {
     MS_U8 u8isfound0, u8isfound1;
     MS_U16 u16idenable;
     MS_U32 u32ID, u32RegID;
     MS_U32 u32index0, u32index1;
-    MS_U32 IDs_tmp[MIU_MAX_PROTECT_ID_NUM];
+    static MS_U32 IDs_tmp[MIU_MAX_PROTECT_ID_NUM];
 
     switch(u32SelIdGroup)
     {
@@ -791,7 +823,7 @@ MS_BOOL HAL_MIU_SetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 *pu32ProtectId
     return TRUE;
 }
 
-MS_BOOL HAL_MIU_ResetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 u32RegAddr, MS_U32 u32RegAddrG1, MS_U32 u32RegAddrIDenable, MS_U32 u32MiuProtectGroupSel, MS_U32 u32SelIdGroup)
+static MS_BOOL HAL_MIU_ResetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 u32RegAddr, MS_U32 u32RegAddrG1, MS_U32 u32RegAddrIDenable, MS_U32 u32MiuProtectGroupSel, MS_U32 u32SelIdGroup)
 {
     MS_U8 u8isIDNoUse;
     MS_U8 u8Data;
@@ -855,7 +887,7 @@ MS_BOOL HAL_MIU_ResetGroupID(MS_U8 u8MiuSel, MS_U8 u8Blockx, MS_U32 u32RegAddr, 
     return TRUE;
 }
 
-void HAL_MIU_Write2BytesBit(MS_U32 u32RegOffset, MS_BOOL bEnable, MS_U16 u16Mask)
+static void HAL_MIU_Write2BytesBit(MS_U32 u32RegOffset, MS_BOOL bEnable, MS_U16 u16Mask)
 {
     MS_U16 val = HAL_MIU_Read2Byte(u32RegOffset);
     val = (bEnable) ? (val | u16Mask) : (val & ~u16Mask);
@@ -867,11 +899,11 @@ void HAL_MIU_Write2BytesBit(MS_U32 u32RegOffset, MS_BOOL bEnable, MS_U16 u16Mask
 //-------------------------------------------------------------------------------------------------
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function \b Name: HAL_MIU_GetDefaultClientID_KernelProtect()
+/// @brief \b Function \b Name: HAL_MIU_Kernel_GetDefaultClientID_KernelProtect()
 /// @brief \b Function \b Description:  Get default client id array pointer for protect kernel
 /// @param <RET>           \b     : The pointer of Array of client IDs
 ////////////////////////////////////////////////////////////////////////////////
-MS_U32* HAL_MIU_GetDefaultClientID_KernelProtect(void)
+MS_U32* HAL_MIU_Kernel_GetDefaultClientID_KernelProtect(void)
 {
     if(IDNUM_KERNELPROTECT > 0)
         return  (MS_U32 *)&clientId_KernelProtect[0];
@@ -880,11 +912,11 @@ MS_U32* HAL_MIU_GetDefaultClientID_KernelProtect(void)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function  \b Name: HAL_MIU_ParseOccupiedResource
+/// @brief \b Function  \b Name: HAL_MIU_Kernel_ParseOccupiedResource
 /// @brief \b Function  \b Description: Parse occupied resource to software structure
 /// @return             \b 0: Fail 1: OK
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL HAL_MIU_ParseOccupiedResource(void)
+MS_BOOL HAL_MIU_Kernel_ParseOccupiedResource(void)
 {
     MS_U8  u8MiuSel;
     MS_U8  u8Blockx;
@@ -1055,7 +1087,7 @@ static MS_U64 HAL_MIU_UMAOffset(MS_U32 u32MiuSel)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function \b Name: HAL_MIU_Protect()
+/// @brief \b Function \b Name: HAL_MIU_Kernel_Protect()
 /// @brief \b Function \b Description:  Enable/Disable MIU Protection mode
 /// @param u8Blockx        \b IN     : MIU Block to protect (0 ~ 4)
 /// @param *pu8ProtectId   \b IN     : Allow specified client IDs to write
@@ -1068,7 +1100,7 @@ static MS_U64 HAL_MIU_UMAOffset(MS_U32 u32MiuSel)
 /// @param <RET>           \b None    :
 /// @param <GLOBAL>        \b None    :
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL HAL_MIU_Protect(
+MS_BOOL HAL_MIU_Kernel_Protect(
         MS_U8    u8Blockx,
         MS_U32   *pu32ProtectId,
         MS_PHY   u64BusStart,
@@ -1289,7 +1321,7 @@ MS_BOOL HAL_MIU_Protect(
 
 #define GET_HIT_CLIENT(regval)      (regval >> 8)
 
-MS_BOOL HAL_MIU_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo)
+MS_BOOL HAL_MIU_Kernel_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo)
 {
     MS_U16 ret = 0;
     MS_U16 loaddr = 0;
@@ -1348,57 +1380,81 @@ MS_BOOL HAL_MIU_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo)
     return TRUE;
 }
 
-MS_U16 MIU_PROTECT_EN_T[MIU_MAX_DEVICE];
-MS_U16 MIU_PROTECT_ID_ENABLE_T[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK];
-MS_U16 MIU_PROTECT_START_T[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK][2];
-MS_U16 MIU_PROTECT_END_T[MIU_MAX_DEVICE][MIU_MAX_PROTECT_BLOCK][2];
-MS_U16 MIU_GROUPCLIENT[MIU_MAX_DEVICE][MIU_MAX_PROTECT_ID_GROUP_NUM][MIU_MAX_PROTECT_ID_NUM];
-MS_U16 MIU_GROUP_CLIENT_SELECT[MIU_MAX_DEVICE];
 MS_U8 MIU_DRAMSIZE[MIU_MAX_DEVICE];
 MS_U8 MIU_DRAMSIZE_RESERVED_3F;
+
+MIU_Protect_Info *MIU_PROTECT_INFO;
 
 MS_BOOL HAL_MIU_Save(void)
 {
     MS_U16 u16idx;
     MS_U16 u16idx1;
 
-    //dram size
-    MIU_DRAMSIZE[0] = HAL_MIU_ReadByte(MIU_PROTECT_DDR_SIZE);
-    MIU_DRAMSIZE[1] = HAL_MIU_ReadByte(MIU1_PROTECT_DDR_SIZE);
-    MIU_DRAMSIZE_RESERVED_3F = HAL_MIU_ReadByte(MIU1_REG_RESERVED_3F);
+   if(MIU_PROTECT_INFO == NULL)
+        MIU_PROTECT_INFO = (MIU_Protect_Info*)kmalloc( 2 * sizeof(MIU_Protect_Info), GFP_KERNEL);
+    HAL_MIU_PM_Write4Byte(REG_PM_PROTECT_INFO_ADDR, virt_to_phys(MIU_PROTECT_INFO) );
+
+    MIU_PROTECT_INFO[0].u16CheckMagicNumber = 0x1234;
+    MIU_PROTECT_INFO[1].u16CheckMagicNumber = 0x4321;
 
     // Enable MIU protect
-    MIU_PROTECT_EN_T[0] = HAL_MIU_Read2Byte(MIU_PROTECT_EN);
-    MIU_PROTECT_EN_T[1] = HAL_MIU_Read2Byte(MIU1_PROTECT_EN);
+    MIU_PROTECT_INFO[0].u16ProtectAddressEnable[0] = HAL_MIU_Read2Byte(MIU_PROTECT_EN);
+    MIU_PROTECT_INFO[0].u16ProtectAddressEnable[1] = HAL_MIU_Read2Byte(MIU_PROTECT_EN + 0x2);
+    MIU_PROTECT_INFO[1].u16ProtectAddressEnable[0] = HAL_MIU_Read2Byte(MIU1_PROTECT_EN);
+    MIU_PROTECT_INFO[1].u16ProtectAddressEnable[1] = HAL_MIU_Read2Byte(MIU1_PROTECT_EN + 0x2);
 
-    MIU_GROUP_CLIENT_SELECT[0] = HAL_MIU_ReadByte(MIU_PROTECT_GROUP_SEL);
-    MIU_GROUP_CLIENT_SELECT[1] = HAL_MIU_ReadByte(MIU1_PROTECT_GROUP_SEL);
+    // Protect ID Group Select
+    MIU_PROTECT_INFO[0].u16ProtectIDGroupSelect = HAL_MIU_Read2Byte(MIU_PROTECT_GROUP_SEL);
+    MIU_PROTECT_INFO[1].u16ProtectIDGroupSelect = HAL_MIU_Read2Byte(MIU1_PROTECT_GROUP_SEL);
 
     for(u16idx = 0; u16idx < MIU_MAX_PROTECT_BLOCK ; u16idx++)
     {
         u16idx1 = u16idx * 4;
 
-        MIU_PROTECT_ID_ENABLE_T[0][u16idx] = HAL_MIU_Read2Byte(MIU_PROTECT0_ID_ENABLE+u16idx*2);
-        MIU_PROTECT_ID_ENABLE_T[1][u16idx] = HAL_MIU_Read2Byte(MIU1_PROTECT0_ID_ENABLE+u16idx*2);
+        // Protect ID Enable
+        MIU_PROTECT_INFO[0].u16ProtectIDEnable[u16idx] = HAL_MIU_Read2Byte(MIU_PROTECT0_ID_ENABLE+u16idx*2);
+        MIU_PROTECT_INFO[1].u16ProtectIDEnable[u16idx] = HAL_MIU_Read2Byte(MIU1_PROTECT0_ID_ENABLE+u16idx*2);
 
-        MIU_PROTECT_START_T[0][u16idx][0] = HAL_MIU_Read2Byte(MIU_PROTECT0_START+u16idx1*2);
-        MIU_PROTECT_START_T[0][u16idx][1] = HAL_MIU_Read2Byte(MIU_PROTECT0_START+(u16idx1+1)*2);
-        MIU_PROTECT_START_T[1][u16idx][0] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START+u16idx1*2);
-        MIU_PROTECT_START_T[1][u16idx][1] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START+(u16idx1+1)*2);
+        // MIU0 Protect Address Start
+        MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 0] = HAL_MIU_Read2Byte(MIU_PROTECT0_START + u16idx1 * 2 );
+        MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 1] = HAL_MIU_Read2Byte(MIU_PROTECT0_START + (u16idx1+1)*2 );
+        // MIU0 Protect Address End
+        MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 2] = HAL_MIU_Read2Byte(MIU_PROTECT0_START + (u16idx1+2)*2 );
+        MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 3] = HAL_MIU_Read2Byte(MIU_PROTECT0_START + (u16idx1+3)*2 );
 
-        MIU_PROTECT_END_T[0][u16idx][0] = HAL_MIU_Read2Byte(MIU_PROTECT0_START+(u16idx1+2)*2);
-        MIU_PROTECT_END_T[0][u16idx][1] = HAL_MIU_Read2Byte(MIU_PROTECT0_START+(u16idx1+3)*2);
-        MIU_PROTECT_END_T[1][u16idx][0] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START+(u16idx1+2)*2);
-        MIU_PROTECT_END_T[1][u16idx][1] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START+(u16idx1+3)*2);
-
+        // MIU1 Protect Address Start
+        MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 0] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START + u16idx1 * 2 );
+        MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 1] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START + (u16idx1+1)*2 );
+        // MIU1 Protect Address End
+        MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 2] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START + (u16idx1+2)*2 );
+        MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 3] = HAL_MIU_Read2Byte(MIU1_PROTECT0_START + (u16idx1+3)*2 );
     }
 
-    for(u16idx = 0; u16idx < MIU_MAX_PROTECT_ID_NUM; u16idx++){
-        MIU_GROUPCLIENT[0][0][u16idx] = HAL_MIU_ReadByte(MIU_PROTECT0_ID0 + u16idx);
-        MIU_GROUPCLIENT[1][0][u16idx] = HAL_MIU_ReadByte(MIU1_PROTECT0_ID0 + u16idx);
-        MIU_GROUPCLIENT[0][1][u16idx] = HAL_MIU_ReadByte(MIU_PROTECT0_GROUP1_ID0 + u16idx);
-        MIU_GROUPCLIENT[1][1][u16idx] = HAL_MIU_ReadByte(MIU1_PROTECT0_GROUP1_ID0 + u16idx);
+    for(u16idx = 0; u16idx < MIU_MAX_PROTECT_ID_NUM/2; u16idx++)
+    {
+        // Protect ID MIU0
+        MIU_PROTECT_INFO[0].u16ProtectIDG1[u16idx] = HAL_MIU_Read2Byte(MIU_PROTECT0_GROUP1_ID0+ u16idx * 2);
+        MIU_PROTECT_INFO[0].u16ProtectIDG0[u16idx] = HAL_MIU_Read2Byte(MIU_PROTECT0_ID0 + u16idx * 2);
+        // Protect ID MIU1
+        MIU_PROTECT_INFO[1].u16ProtectIDG1[u16idx] = HAL_MIU_Read2Byte(MIU1_PROTECT0_GROUP1_ID0+ u16idx * 2);
+        MIU_PROTECT_INFO[1].u16ProtectIDG0[u16idx] = HAL_MIU_Read2Byte(MIU1_PROTECT0_ID0 + u16idx * 2);
     }
+
+    for(u16idx = 0; u16idx < 4; u16idx++)
+    {
+        // Protect Dram Size
+        MIU_PROTECT_INFO[0].u16DramSize[u16idx] = HAL_MIU_Read2Byte( MIU_PROTECT_DRAM_SIZE + u16idx * 2);
+        MIU_PROTECT_INFO[1].u16DramSize[u16idx] = HAL_MIU_Read2Byte( MIU1_PROTECT_DRAM_SIZE + u16idx * 2);
+    }
+
+#ifdef CHIP_FLUSH_READ
+    Chip_Flush_Cache_Range((unsigned long)(MIU_PROTECT_INFO), (unsigned long)sizeof(MIU_PROTECT_INFO));
+#endif
+
+    //dram size
+    MIU_DRAMSIZE[0] = HAL_MIU_ReadByte(MIU_PROTECT_DDR_SIZE);
+    MIU_DRAMSIZE[1] = HAL_MIU_ReadByte(MIU1_PROTECT_DDR_SIZE);
+    MIU_DRAMSIZE_RESERVED_3F = HAL_MIU_ReadByte(MIU1_REG_RESERVED_3F);
 
     return TRUE;
 }
@@ -1413,45 +1469,64 @@ MS_BOOL HAL_MIU_Restore(void)
     HAL_MIU_WriteByte(MIU1_PROTECT_DDR_SIZE, MIU_DRAMSIZE[1]);
     HAL_MIU_WriteByte(MIU1_REG_RESERVED_3F, MIU_DRAMSIZE_RESERVED_3F);
 
+    // Disable MIU protect
     HAL_MIU_Write2Byte(MIU_PROTECT_EN, 0x0);
     HAL_MIU_Write2Byte(MIU1_PROTECT_EN, 0x0);
 
-    for( u16idx = 0; u16idx < ( MIU_MAX_PROTECT_BLOCK); u16idx++)
+    for(u16idx = 0; u16idx < 4; u16idx++)
+    {
+        // Protect Dram Size
+        HAL_MIU_Write2Byte( MIU_PROTECT_DRAM_SIZE + u16idx * 2, MIU_PROTECT_INFO[0].u16DramSize[u16idx]);
+        HAL_MIU_Write2Byte( MIU1_PROTECT_DRAM_SIZE + u16idx * 2, MIU_PROTECT_INFO[1].u16DramSize[u16idx]);
+    }
+
+    for(u16idx = 0; u16idx < MIU_MAX_PROTECT_ID_NUM/2; u16idx++)
+    {
+        // Protect ID MIU0
+        HAL_MIU_Write2Byte(MIU_PROTECT0_ID0 + u16idx * 2, MIU_PROTECT_INFO[0].u16ProtectIDG0[u16idx]);
+        HAL_MIU_Write2Byte(MIU_PROTECT0_GROUP1_ID0 + u16idx * 2, MIU_PROTECT_INFO[0].u16ProtectIDG1[u16idx]);
+        // Protect ID MIU1
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_ID0 + u16idx * 2, MIU_PROTECT_INFO[1].u16ProtectIDG0[u16idx]);
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_GROUP1_ID0 + u16idx * 2, MIU_PROTECT_INFO[1].u16ProtectIDG1[u16idx]);
+    }
+
+    // Protect ID Group Select
+    HAL_MIU_Write2Byte(MIU_PROTECT_GROUP_SEL, MIU_PROTECT_INFO[0].u16ProtectIDGroupSelect);
+    HAL_MIU_Write2Byte(MIU1_PROTECT_GROUP_SEL, MIU_PROTECT_INFO[1].u16ProtectIDGroupSelect);
+
+    for( u16idx = 0; u16idx < ( MIU_MAX_PROTECT_BLOCK ); u16idx++)
     {
         u16idx1 = u16idx * 4;
 
-        HAL_MIU_Write2Byte(MIU_PROTECT0_ID_ENABLE+u16idx*2, MIU_PROTECT_ID_ENABLE_T[0][u16idx]);
-        HAL_MIU_Write2Byte(MIU1_PROTECT0_ID_ENABLE+u16idx*2, MIU_PROTECT_ID_ENABLE_T[1][u16idx]);
+        // Protect ID Enable
+        HAL_MIU_Write2Byte(MIU_PROTECT0_ID_ENABLE+u16idx*2, MIU_PROTECT_INFO[0].u16ProtectIDEnable[u16idx]);
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_ID_ENABLE+u16idx*2, MIU_PROTECT_INFO[1].u16ProtectIDEnable[u16idx]);
 
-        HAL_MIU_Write2Byte(MIU_PROTECT0_START+u16idx1*2, MIU_PROTECT_START_T[0][u16idx][0]);
-        HAL_MIU_Write2Byte(MIU_PROTECT0_START+(u16idx1+1)*2, MIU_PROTECT_START_T[0][u16idx][1]);
-        HAL_MIU_Write2Byte(MIU1_PROTECT0_START+u16idx1*2, MIU_PROTECT_START_T[1][u16idx][0]);
-        HAL_MIU_Write2Byte(MIU1_PROTECT0_START+(u16idx1+1)*2, MIU_PROTECT_START_T[1][u16idx][1]);
+        // MIU0 Protect Address Start
+        HAL_MIU_Write2Byte(MIU_PROTECT0_START + u16idx1*2, MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 0]);
+        HAL_MIU_Write2Byte(MIU_PROTECT0_START + (u16idx1+1)*2, MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 1]);
+        // MIU0 Protect Address End
+        HAL_MIU_Write2Byte(MIU_PROTECT0_START + (u16idx1+2)*2, MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 2]);
+        HAL_MIU_Write2Byte(MIU_PROTECT0_START + (u16idx1+3)*2, MIU_PROTECT_INFO[0].u16ProtectAddress[u16idx1 + 3]);
+        // MIU1 Protect Address Start
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_START + u16idx1*2, MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 0]);
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_START + (u16idx1+1)*2, MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 1]);
+        // MIU1 Protect Address End
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_START + (u16idx1+2)*2, MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 2]);
+        HAL_MIU_Write2Byte(MIU1_PROTECT0_START + (u16idx1+3)*2, MIU_PROTECT_INFO[1].u16ProtectAddress[u16idx1 + 3]);
 
-        HAL_MIU_Write2Byte(MIU_PROTECT0_START+(u16idx1+2)*2, MIU_PROTECT_END_T[0][u16idx][0]);
-        HAL_MIU_Write2Byte(MIU_PROTECT0_START+(u16idx1+3)*2, MIU_PROTECT_END_T[0][u16idx][1]);
-        HAL_MIU_Write2Byte(MIU1_PROTECT0_START+(u16idx1+2)*2, MIU_PROTECT_END_T[1][u16idx][0]);
-        HAL_MIU_Write2Byte(MIU1_PROTECT0_START+(u16idx1+3)*2, MIU_PROTECT_END_T[1][u16idx][1]);
-    }
-
-    for(u16idx = 0; u16idx < MIU_MAX_PROTECT_ID_NUM; u16idx++){
-        HAL_MIU_WriteByte(MIU_PROTECT0_ID0 + u16idx,MIU_GROUPCLIENT[0][0][u16idx]);
-        HAL_MIU_WriteByte(MIU1_PROTECT0_ID0 + u16idx,MIU_GROUPCLIENT[1][0][u16idx]);
-        HAL_MIU_WriteByte(MIU_PROTECT0_GROUP1_ID0 + u16idx,MIU_GROUPCLIENT[0][1][u16idx]);
-        HAL_MIU_WriteByte(MIU1_PROTECT0_GROUP1_ID0 + u16idx,MIU_GROUPCLIENT[1][1][u16idx]);
     }
 
     // Enable MIU protect
-    HAL_MIU_Write2Byte(MIU_PROTECT_EN,MIU_PROTECT_EN_T[0]);
-    HAL_MIU_Write2Byte(MIU1_PROTECT_EN,MIU_PROTECT_EN_T[1]);
-
-    HAL_MIU_WriteByte(MIU_PROTECT_GROUP_SEL, MIU_GROUP_CLIENT_SELECT[0]);
-    HAL_MIU_WriteByte(MIU1_PROTECT_GROUP_SEL, MIU_GROUP_CLIENT_SELECT[1]);
+    HAL_MIU_Write2Byte(MIU_PROTECT_EN, MIU_PROTECT_INFO[0].u16ProtectAddressEnable[0]);
+    HAL_MIU_Write2Byte((MIU_PROTECT_EN+0x2), MIU_PROTECT_INFO[0].u16ProtectAddressEnable[1]);
+    HAL_MIU_Write2Byte(MIU1_PROTECT_EN, MIU_PROTECT_INFO[1].u16ProtectAddressEnable[0]);
+    HAL_MIU_Write2Byte((MIU1_PROTECT_EN+0x2), MIU_PROTECT_INFO[1].u16ProtectAddressEnable[1]);
 
     return TRUE;
 }
 
-MS_BOOL HAL_MIU_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize)
+MS_BOOL HAL_MIU_Kernel_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize)
 {
     MS_U32 regAddr;
 
@@ -1528,4 +1603,9 @@ MS_BOOL HAL_MIU_Enable_Hitkernelpanic(MS_U32 bEnablePanic)
 {
     miu_hit_panic = bEnablePanic;
     return TRUE;
+}
+
+MS_U32 HAL_MIU_Get_Hitkernelpanic(void)
+{
+    return miu_hit_panic;
 }

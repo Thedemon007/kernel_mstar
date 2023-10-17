@@ -68,6 +68,8 @@
 #define __DRV_EMAC_H_
 
 #define EMAC_DBG(fmt, args...)              {printk("Mstar_emac: "fmt, ##args);}
+#define EMAC_ERR(fmt, args...)              {printk(KERN_ERR "Mstar_emac: "fmt, ##args);}
+#define EMAC_NOTI(fmt, args...)             {printk(KERN_NOTICE "Mstar_emac: "fmt, ##args);}
 #define EMAC_INFO                           {printk("Line:%u\n", __LINE__);}
 #define EMAC_DRVNAME                        "mstar emac"
 #define EMAC_DRV_VERSION                    "3.0.0"
@@ -187,6 +189,51 @@ struct rx_descriptor
 };
 #endif
 #endif
+
+/* slt-test */
+/* auto-nego */
+#define SIOC_SLT_TEST_AN_RUN (SIOCDEVPRIVATE + 13)
+/* force speed */
+#define SIOC_SLT_TEST_FS_RUN (SIOCDEVPRIVATE + 14)
+/* clear test env */
+#define SIOC_SLT_TEST_CLR (SIOCDEVPRIVATE + 15)
+
+#ifdef EMAC_NEW_WOC
+#define UDP_PROTOCOL 17
+#define TCP_PROTOCOL 6
+#define SIOC_SET_WOP_CMD (SIOCDEVPRIVATE + 11)
+#define SIOC_CLR_WOP_CMD (SIOCDEVPRIVATE + 12)
+
+#define WOC_PATTERN_BYTES_MAX 128
+#define WOC_FILTER_NUM_MAX 20
+#define WOC_PATTERN_CHECK_LEN_MAX 38
+
+#define ETH_PROTOCOL_NUM_OFFSET 23
+#define ETH_PROTOCOL_DEST_PORT_H_OFFSET 36
+#define ETH_PROTOCOL_DEST_PORT_L_OFFSET 37
+
+struct ioctl_woc_para_cmd
+{
+    u8 protocol_type;
+    u8 port_count;
+    u32 *port_array;
+};
+
+#ifdef CONFIG_COMPAT
+struct ioctl_woc_para_cmd32
+{
+    u8 protocol_type;
+    u8 port_count;
+    u32 port_array;
+};
+#endif /* CONFIG_COMPAT */
+#endif /* EMAC_NEW_WOC */
+
+struct ioctl_slt_para_cmd
+{
+    u32 test_count;
+    u32 failed_count;
+};
 
 struct _BasicConfigEMAC
 {
@@ -312,6 +359,9 @@ struct EMAC_private
     spinlock_t tx_lock;                 /* lock for MDI interface */
     spinlock_t rx_lock;
     short phy_media;                    /* media interface type */
+#ifdef CONFIG_EMAC_TR_PN_SWAP
+    bool is_tr_pn_swap;
+#endif /* CONFIG_EMAC_TR_PN_SWAP */
     /* Transmit */
     u32 tx_index;
     u32 tx_ring_entry_number;

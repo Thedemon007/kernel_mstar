@@ -75,5 +75,6 @@ extern  U32  eMMC_PrintDeviceInfo(void);
 extern  U32  eMMC_CompareCISTag(U8 *tag);
 extern  void eMMC_dump_nni(eMMC_NNI_t *peMMCInfo);
 extern  void eMMC_dump_pni(eMMC_PNI_t *pPartInfo);
-extern  void eMMC_dump_WR_Count(void);
+
+
 #endif // __eMMC_UTL_H__

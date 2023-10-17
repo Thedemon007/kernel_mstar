@@ -341,7 +341,7 @@ static int _MDrv_SC_AttachInterrupt(U8 u8SCID)
         }
         else
         {
-            printk("[%s][%d] request_irq SC_IRQ error\n", __FUNCTION__, __LINE__);
+            printk("[%s][%d] request_irq SC_IRQ ok\n", __FUNCTION__, __LINE__);
             return 0;
         }
     }
@@ -355,7 +355,7 @@ static int _MDrv_SC_AttachInterrupt(U8 u8SCID)
         }
         else
         {
-            printk("[%s][%d] request_irq SC_IRQ2 error\n", __FUNCTION__, __LINE__);
+            printk("[%s][%d] request_irq SC_IRQ2 ok\n", __FUNCTION__, __LINE__);
             return 0;
         }
     }
@@ -415,20 +415,16 @@ static ssize_t _MDrv_SC_Write(U8 u8SCID, const char *buf, size_t count)
             get_user(_scInfo[u8SCID].u8FifoTx[_scInfo[u8SCID].u16FifoTxWrite], (char __user *)&buf[idx]);
         else
             _scInfo[u8SCID].u8FifoTx[_scInfo[u8SCID].u16FifoTxWrite] = buf[idx];
-
-        tmp = _scInfo[u8SCID].u16FifoTxWrite + 1;
-        if ((tmp == SC_FIFO_SIZE) && (_scInfo[u8SCID].u16FifoTxRead != 0))
-        {
-            // Not overflow but wrap
-            _scInfo[u8SCID].u16FifoTxWrite = 0;
-        }
-        else if (tmp != _scInfo[u8SCID].u16FifoTxRead)
+        //Fix u16FifoTxWrite out off size when u16FifoTxWrite reach SC_FIFO_SIZE and u16FifoTxRead is zero
+        tmp = (_scInfo[u8SCID].u16FifoTxWrite + 1) % SC_FIFO_SIZE;
+        if (tmp != _scInfo[u8SCID].u16FifoTxRead)
         {
             // Not overflow
             _scInfo[u8SCID].u16FifoTxWrite = tmp;
         }
         else
         {
+            // overflow
             printk("[%s][%d] TX buffer Overflow\n", __FUNCTION__, __LINE__);
             break;
         }
@@ -830,7 +826,7 @@ BOOL MDrv_SC_ISR_Proc(U8 u8SCID)
                     if (u8Reg & UART_LSR_PE)
                     {
                         _scInfo[u8SCID].u32CardStatus |= E_SC_INT_PE_FAIL;
-                        if (_scInfo[u8SCID].u32CardAttr & E_SC_ATTR_T0_PE_KEEP_RCV)
+                        if (_scInfo[u8SCID].u32CardAttr & E_SC_ATTR_T0_PE_KEEP_RCV)//for conax
                         {
                             u8Reg = HAL_SC_GetLsr(u8SCID);
                             continue;
@@ -840,14 +836,9 @@ BOOL MDrv_SC_ISR_Proc(U8 u8SCID)
                             break;
                         }
                     }
-
-                    idx = _scInfo[u8SCID].u16FifoRxWrite + 1;
-                    if ((idx == SC_FIFO_SIZE) && (_scInfo[u8SCID].u16FifoRxRead != 0))
-                    {
-                        // Not overflow but wrap
-                        _scInfo[u8SCID].u16FifoRxWrite = 0;
-                    }
-                    else if (idx != _scInfo[u8SCID].u16FifoRxRead)
+                    //Fix u16FifoRxWrite out off size when u16FifoRxWrite reach SC_FIFO_SIZE and u16FifoRxRead is zero
+                    idx = (_scInfo[u8SCID].u16FifoRxWrite + 1) % SC_FIFO_SIZE;
+                    if (idx != _scInfo[u8SCID].u16FifoRxRead)
                     {
                         // Not overflow
                         _scInfo[u8SCID].u16FifoRxWrite = idx;
@@ -855,7 +846,7 @@ BOOL MDrv_SC_ISR_Proc(U8 u8SCID)
                     else
                     {
                         // overflow
-                        printk("[%s][%d] RX buffer Overflow\n", __FUNCTION__, __LINE__);
+                        printk("[%s][%d] RX buffer Overflow, maybe ATR Failed or not call _SC_Read\n", __FUNCTION__, __LINE__);
                         break;
                     }
                 }
@@ -1348,7 +1339,7 @@ static ssize_t mdb_sc_node_write(struct file *file, const char __user *buffer, s
     char cmd[16];
     int ret = 0;
 
-    if (count > MBD_CMD_SIZE - 1)
+    if (count > (MBD_CMD_SIZE - 1) || count < 1)
     {
         printk("Invalid command\n");
         return -EINVAL;

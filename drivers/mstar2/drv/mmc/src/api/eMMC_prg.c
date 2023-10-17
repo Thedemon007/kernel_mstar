@@ -707,7 +707,7 @@ U32 eMMC_SetGPPartition(U8 u8_PartNo, U32 u32_PartSize, U8 u8_EnAttr, U8 u8_ExtA
 		if(u32_PartSize % u32_HC_WP_Size)
 		{
 			g_eMMCDrv.GP_Part[u8_PartNo].u32_PartSize = ((u32_PartSize / u32_HC_WP_Size) + 1) * u32_HC_WP_Size;
-			eMMC_debug(0, 1, "Warning GP size: 0x%X does not align to 0x%X, adjust to 0x%X\n",
+			eMMC_debug(eMMC_DEBUG_LEVEL, 1, "Warning GP size: 0x%X does not align to 0x%X, adjust to 0x%X\n",
 				u32_PartSize, u32_HC_WP_Size, g_eMMCDrv.GP_Part[u8_PartNo].u32_PartSize);
 		}
 		else
@@ -742,7 +742,7 @@ U32 eMMC_SetEnhanceUserPartition(U32 u32_StartAddr, U32 u32_Size, U8 u8_EnAttr, 
 		{
 
 			g_eMMCDrv.u32_EnUserSize = ((u32_Size / u32_HC_WP_Size) + 1) * u32_HC_WP_Size;
-			eMMC_debug(0, 1, "Warning Enhance Size: 0x%X does not align to 0x%X, adjust to 0x%X\n",
+			eMMC_debug(eMMC_DEBUG_LEVEL, 1, "Warning Enhance Size: 0x%X does not align to 0x%X, adjust to 0x%X\n",
 				u32_Size, u32_HC_WP_Size, g_eMMCDrv.u32_EnUserSize);
 		}
 		else
@@ -1041,7 +1041,7 @@ void eMMC_DumpSpeedStatus(void)
 
 void eMMC_DumpDriverStatus(void)
 {
-	eMMC_debug(0,1,"\n  eMMCDrvExtFlag: %Xh \n\n", gu32_eMMCDrvExtFlag);
+	eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"\n  eMMCDrvExtFlag: %Xh \n\n", gu32_eMMCDrvExtFlag);
 
 	eMMC_debug(eMMC_DEBUG_LEVEL,0,"eMMC Status: 2014/03/25 \n");
 
@@ -1774,35 +1774,5 @@ U32  eMMC_GetCapacity(U32 *pu32_TotalSectorCnt) // 1 sector = 512B
 	return eMMC_ST_SUCCESS;
 }
 
-
-  #if defined(eMMC_FCIE_LINUX_DRIVER) && eMMC_FCIE_LINUX_DRIVER
-U32 eMMC_SearchDevNodeStartSector(void)
-{
-	U32 u32_err;
-	volatile U16 u16_PartIdx;
-	eMMC_PNI_t *pPartInfo = (eMMC_PNI_t*)gau8_eMMC_PartInfoBuf;
-
-	u32_err = eMMC_CheckIfReady();
-	if(eMMC_ST_SUCCESS != u32_err){
-		eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: init fail: %Xh\n", u32_err);
-		return u32_err;
-	}
-
-	u32_err = eMMC_GetPartitionIndex(eMMC_PART_DEV_NODE, 0, &u16_PartIdx);
-	if(eMMC_ST_SUCCESS != u32_err){
-		eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: GetPartitionIndex fail: %Xh\n", u32_err);
-		return u32_err;
-	}
-
-	g_eMMCDrv.u32_PartDevNodeStartSector = pPartInfo->records[u16_PartIdx].u16_StartBlk;
-	g_eMMCDrv.u32_PartDevNodeStartSector *= pPartInfo->u16_BlkPageCnt;
-	g_eMMCDrv.u16_PartDevNodeSectorCnt = pPartInfo->records[u16_PartIdx].u16_BlkCnt;
-	g_eMMCDrv.u16_PartDevNodeSectorCnt *= pPartInfo->u16_BlkPageCnt;
-
-	return eMMC_ST_SUCCESS;
-
-}
-
-  #endif
 #endif
 

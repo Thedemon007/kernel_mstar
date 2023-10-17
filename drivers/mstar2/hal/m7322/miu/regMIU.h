@@ -76,6 +76,7 @@
 #define MIU1_REG_BASE                           (0x0600UL)
 #define MIU2_REG_BASE                           (0x62000UL)
 #define PM_REG_BASE                             (0x1E00UL)
+#define PM_PROTECT_REG_BASE                     (0x0600UL)
 #define MIU_ATOP_BASE                           (0x10D00UL)
 #define MIU1_ATOP_BASE                          (0x61600UL)
 #define MIU2_ATOP_BASE                          (0x62100UL)
@@ -102,6 +103,7 @@
 #define REG_MIU_RQX_HPMASK(x)                   (0x48 + 0x20 * x)
 
 #define MIU_PROTECT_EN                          (MIU_PROTECT_BASE)
+#define MIU_PROTECT_DRAM_SIZE                   (MIU_PROTECT_BASE+0xC2UL)
 #define MIU_PROTECT_DDR_SIZE                    (MIU_REG_BASE + 0xD3)
 //#define MIU_PROTECT_DDR_SIZE_MASK             BITS_RANGE(11:8)
 #define MIU_PROTECT_DDR_32MB                    (0x50)
@@ -145,6 +147,7 @@
 
 //MIU1
 #define MIU1_PROTECT_EN                          (MIU1_PROTECT_BASE)
+#define MIU1_PROTECT_DRAM_SIZE                   (MIU1_PROTECT_BASE+0xC2UL)
 #define MIU1_PROTECT_DDR_SIZE                    (MIU1_REG_BASE+0xD3)
 #define MIU1_REG_RESERVED_3F                     (MIU1_REG_BASE+0x7E)
 #define MIU1_PROTECT0_ID0                        (MIU1_PROTECT_BASE+0xA0)
@@ -176,6 +179,8 @@
 #define REG_MIU_PROTECT_HIT_FALG                (BIT4)
 #define REG_MIU_PROTECT_HIT_ID                  15:8
 #define REG_MIU_PROTECT_HIT_NO                  3:0
+
+#define REG_PM_PROTECT_INFO_ADDR                (PM_PROTECT_REG_BASE + 0xC)
 
 // MIU Scramble
 #define REG_MIU_SCRAMBLE_EN                     (MIU_REG_BASE + 0x06)

@@ -13,6 +13,7 @@ EXTRA_CFLAGS      +=  -Idrivers/mstar2/drv/gpio
 EXTRA_CFLAGS      +=  -Idrivers/mstar2/drv/pm
 EXTRA_CFLAGS      +=  -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/pm
 EXTRA_CFLAGS      +=  -Iinclude/linux
+EXTRA_CFLAGS      +=  -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/gpio
 
 # specific options
 EXTRA_CFLAGS      +=  -DRED_LION

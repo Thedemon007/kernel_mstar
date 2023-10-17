@@ -89,6 +89,8 @@
 #define HWI2C_HAL_FUNC()           	//{printk("%s\n",  __FUNCTION__);}
 #define HWI2C_HAL_INFO(x, args...)	//{printk(x, ##args);}
 #define HWI2C_HAL_ERR(x, args...) 	//{printk(x, ##args);}
+#define HWI2C_STOP_TIMES            (3)
+#define HWI2C_STR_DURATION          (2500)
 
 //-------------------------------------------------------------------------------------------------
 //  Local Structures
@@ -101,7 +103,8 @@ static BOOL g_bLastByte[HAL_HWI2C_PORTS];
 //-------------------------------------------------------------------------------------------------
 //  Local Variables
 //-------------------------------------------------------------------------------------------------
-
+static BOOL _g_bIICStrflag = 0;
+unsigned long _gIICStrTiming = 0;
 
 //-------------------------------------------------------------------------------------------------
 //  Debug Functions
@@ -111,6 +114,24 @@ static BOOL g_bLastByte[HAL_HWI2C_PORTS];
 //-------------------------------------------------------------------------------------------------
 //  Local Functions
 //-------------------------------------------------------------------------------------------------
+static unsigned long getCurMsTiming(void)
+{
+    struct timeval tv;
+    unsigned long curMs;
+
+    do_gettimeofday(&tv);
+    curMs = tv.tv_usec/1000;
+    curMs += tv.tv_sec * 1000;
+    return curMs;
+}
+
+void MHal_IIC_STR_Record(void)
+{
+    unsigned long curMs;
+    _gIICStrTiming = getCurMsTiming();
+    _g_bIICStrflag = 1;
+}
+
 void MHal_HWI2C_ExtraDelay(U32 u32Us)
 {
     /*
@@ -800,7 +821,7 @@ BOOL MHal_HWI2C_SetClk(U32 u32PortBaseReg, U32 eClkSel)
         case 200: //200 KHz
             u16ClkHCnt =  25; u16ClkLCnt =   27; break; 
         case 100: //100 KHz
-            u16ClkHCnt =  55; u16ClkLCnt =   57; break;
+            u16ClkHCnt =  57; u16ClkLCnt =   59; break;
         case 50: //50 KHz
             u16ClkHCnt =  115; u16ClkLCnt = 117; break;
         case 25: //25 KHz
@@ -862,27 +883,53 @@ BOOL MHal_IIC_Start(U32 u32PortBaseReg)
 ////////////////////////////////////////////////////////////////////////////////
 BOOL MHal_IIC_Stop(U32 u32PortBaseReg)
 {
-    U16 u16Count = HWI2C_HAL_WAIT_TIMEOUT;
+    U16 u16Count = HWI2C_STOP_TIMES;
 
+    unsigned long _gI2cCurrTiming;
+
+    _gI2cCurrTiming = 0;
     MHal_HWI2C_WriteRegBit(REG_HWI2C_CMD_STOP + u32PortBaseReg, _CMD_STOP, TRUE);
 
-    while ((!MHal_HWI2C_Is_Idle(u32PortBaseReg)) && (!MHal_HWI2C_Is_INT(u32PortBaseReg)) && (u16Count > 0))
+    if(_g_bIICStrflag)
     {
-        u16Count--;
-        udelay(1);
+          _gI2cCurrTiming = getCurMsTiming();
+         //printk("\033[45;37m  ""I2C Str Duration timing:%d::   \033[0m\n",(_gI2cCurrTiming - _gIICStrTiming));
     }
 
-    MHal_HWI2C_Clear_INT(u32PortBaseReg);
-
-    while(u16Count)
+    if(_g_bIICStrflag)
     {
-        if(MHal_HWI2C_GetState(u32PortBaseReg) == E_HAL_HWI2C_STATE_IDEL)
-            break;
-        udelay(1);
-        u16Count--;
-    }
+        if((_gI2cCurrTiming - _gIICStrTiming) < HWI2C_STR_DURATION)
+        {
+            u16Count = HWI2C_HAL_WAIT_TIMEOUT;
+        }
+        else
+        {
+            _g_bIICStrflag = 0;
+            _gIICStrTiming = 0;
+            _gI2cCurrTiming = 0;
+            u16Count = HWI2C_STOP_TIMES;
+        }
+     }
+     else
+     {
+         u16Count = HWI2C_STOP_TIMES;
+     }
 
-    return (u16Count) ? TRUE : FALSE;
+     while ((!MHal_HWI2C_Is_Idle(u32PortBaseReg)) && (!MHal_HWI2C_Is_INT(u32PortBaseReg)) && (u16Count > 0))
+     {
+         u16Count--;
+         if(_g_bIICStrflag)
+         {
+             udelay(1);
+         }
+         else
+         {
+              msleep(1);
+         }
+     }
+     MHal_HWI2C_Clear_INT(u32PortBaseReg);
+
+     return (u16Count) ? TRUE : FALSE;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

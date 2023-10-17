@@ -11,6 +11,7 @@ endif
 EXTRA_CFLAGS      +=  -Idrivers/mstar2/include
 EXTRA_CFLAGS      +=  -Idrivers/mstar2/drv/mpool
 EXTRA_CFLAGS      +=  -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/mpool
+EXTRA_CFLAGS      +=  -Imm
 
 # specific options
 EXTRA_CFLAGS      +=

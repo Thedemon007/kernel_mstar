@@ -279,6 +279,7 @@
 #define BIT_DATA_SYNC				    BIT5
 #define BIT_SD_DMA_R_CLK_STOP           BIT7
 #define BIT_DIS_WR_BUSY_CHK				BIT8
+#define BIT_JOB_START_CLR_SEL           BIT11
 
 #define BIT_SD_DEFAULT_MODE_REG         (BIT_CLK_EN)
 
@@ -295,6 +296,7 @@
 #define BIT_BUSY_DET_ON                 BIT8
 #define BIT_ERR_DET_ON                  BIT9
 #define BIT_R3R4_RSP_EN                 BIT10
+#define BIT_SYNC_REG_FOR_CMDQ_EN        BIT12
 
 /* FCIE_SD_STATUS 0x0D */
 #define BIT_DAT_RD_CERR                 BIT0

@@ -1,18 +1,56 @@
-///////////////////////////////////////////////////////////////////////////////////////////////////
-//
-// * Copyright (c) 2010 - 2012 MStar Semiconductor, Inc.
-// This program is free software.
-// You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation;
-// either version 2 of the License, or (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
-// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-// See the GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License along with this program;
-// if not, write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
-//
-///////////////////////////////////////////////////////////////////////////////////////////////////
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
 
 #ifndef __UNFD_FCIE3_REG_H__
 #define __UNFD_FCIE3_REG_H__
@@ -155,6 +193,10 @@
 #define NC_NAND_TIMING						GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5A)
 #define NC_SER_DIN_BYTECNT_LW				GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5B)
 #define NC_SER_DIN_BYTECNT_HW				GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5C)
+#define NC_RD_DATA_DMA_ADR_39_32			GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5B)
+#define NC_WR_DATA_DMA_ADR_39_32			GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5B)
+#define NC_RD_SPARE_DMA_ADR_39_32			GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5C)
+#define NC_WR_SPARE_DMA_ADR_39_32			GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5C)
 #define NC_NAND_TIMING1						GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x5D)
 #define NC_MIE_EVENT							GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x60)
 #define NC_MIE_INT_EN							GET_REG_ADDR(FCIE_REG_BASE_ADDR, 0x61)
@@ -228,6 +270,15 @@
 /* NC_BOOT_MODE*/
 #define BIT_NAND_BOOT_EN			BIT0
 #define BIT_BOOT_SRAM_SEL			BIT1
+#define BIT_TEE_REQ               BIT8
+#define BIT_REE_REQ               BIT9
+#define BIT_ARB_FLAG_MASK         (BIT10|BIT11)
+#define BIT_GRANT2TEE             BIT10
+#define BIT_GRANT2REE             BIT11
+#define BIT_TEE_GRANT_INT_EN      BIT12
+#define BIT_REE_GRANT_INT_EN      BIT13
+#define BIT_TEE_GRANT_INT         BIT14
+#define BIT_REE_GRANT_INT         BIT15
 
 /* NC_DEBUG_BUS0 0x38 */
 

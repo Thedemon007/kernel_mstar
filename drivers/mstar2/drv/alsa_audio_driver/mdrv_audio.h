@@ -90,6 +90,7 @@ struct MStar_Monitor_Struct {
 	unsigned int monitor_status;
 	unsigned int expiration_counter;
 	snd_pcm_uframes_t last_appl_ptr;
+	snd_pcm_uframes_t last_hw_ptr;
 };
 
 /* Define a Runtime data structure for MStar Audio DSP */

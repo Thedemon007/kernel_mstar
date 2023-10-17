@@ -24,7 +24,12 @@ mdrv-ir-objs	 += mstar_ir.o \
 					protocols/ir-rc6-decoder.o \
 					protocols/ir-toshiba-decoder.o \
 					protocols/ir-metz-decoder.o \
-                                        protocols/ir-rcmm-decoder.o
+					protocols/ir-rcmm-decoder.o \
+					protocols/ir-konka-decoder.o \
+					protocols/ir-panasonic-decoder.o \
+					protocols/ir-rc311-decoder.o \
+					protocols/ir-beko-rc5-decoder.o \
+					protocols/ir-sharp-decoder.o
 
 ifeq ($(CONFIG_IR_KEYMAP_MSTAR_NEC), y)
 mdrv-ir-objs +=	keymaps/keymap-mstar-tv.o
@@ -63,5 +68,13 @@ ifeq ($(CONFIG_IR_KEYMAP_METZ), y)
 mdrv-ir-objs += keymaps/keymap-metz-rm18-tv.o
 mdrv-ir-objs += keymaps/keymap-metz-rm19-tv.o
 endif
-
+ifeq ($(CONFIG_IR_KEYMAP_SAMPO), y)
+mdrv-ir-objs += keymaps/keymap-rc311-sampo.o
+endif
+ifeq ($(CONFIG_IR_KEYMAP_GOME_NEC), y)
+mdrv-ir-objs += keymaps/keymap-gome-tv.o
+endif
+ifeq ($(CONFIG_IR_KEYMAP_BEKO_RC5), y)
+mdrv-ir-objs += keymaps/keymap-beko-rc5-tv.o
+endif
 obj-$(CONFIG_IR_DYNAMIC_CONFIG) += ir_dynamic_config/

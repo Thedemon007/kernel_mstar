@@ -22,11 +22,11 @@ endif
 EXTRA_CFLAGS      +=
 
 # files
-obj-$(CONFIG_MSTAR_SYSTEM)	+= mdrv-system.o
+obj-$(CONFIG_MSTAR_SYSTEM) += mdrv-system.o
 obj-$(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING) += mdrv_cpu_dvfs_scaling_list.o
-obj-$(CONFIG_MP_BENCHMARK_ACCEL87)    += mdrv_accel87.o
-obj-$(CONFIG_MP_BENCHMARK_LAUNCH_BOOST)         +=mdrv_cpu_dvfs_scaling_list.o
-mdrv-system-objs		+= mdrv_system.o
-mdrv-system-objs		+= mdrv_system_io.o
-mdrv-system-objs		+= ../../hal/$(CONFIG_MSTAR_CHIP_NAME)/system/mhal_system.o
+obj-$(CONFIG_MP_BENCHMARK_ACCEL87) += mdrv_accel87.o
+obj-$(CONFIG_MP_BENCHMARK_LAUNCH_BOOST) += mdrv_cpu_dvfs_scaling_list.o
 
+mdrv-system-y := mdrv_system.o mdrv_system_io.o \
+		../../hal/$(CONFIG_MSTAR_CHIP_NAME)/system/mhal_system.o
+mdrv-system-$(CONFIG_AMZ_MISC) += amazon_util.o

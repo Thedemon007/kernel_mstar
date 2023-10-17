@@ -1244,6 +1244,7 @@ U32 NC_Hynix_16nm64GB_FDie_GetRegDefaultValue(void)
 	U16 i, j, k, l;
 	U8	*pu8_RR, *pu8_InvRR;
 	U32 u32_tmp;
+	U32 u32_Err;
 	int setbitcount;//, chk_tmp;
 
     memset(gau8_Hynix_16nm64GB_FDie_ReadRetryValue, 0, sizeof(gau8_Hynix_16nm64GB_FDie_ReadRetryValue));
@@ -1318,7 +1319,10 @@ U32 NC_Hynix_16nm64GB_FDie_GetRegDefaultValue(void)
 	if(pNandDrv->u8_RequireRandomizer)
 		NC_DisableLFSR();
 
-	NC_ReadSectors(0x200, 0, pu8_DataBuf, pNandDrv->PlatCtx_t.pu8_PageSpareBuf,1);
+	u32_Err = NC_ReadSectors(0x200, 0, pu8_DataBuf, pNandDrv->PlatCtx_t.pu8_PageSpareBuf,1);
+
+	if (UNFD_ST_SUCCESS != u32_Err)
+		return u32_Err;
 
     pNandDrv->u16_Reg48_Spare &=~BIT_NC_HW_AUTO_RANDOM_CMD_DISABLE;
 	pNandDrv->u16_Reg50_EccCtrl &=~BIT_NC_BYPASS_ECC;

@@ -14,7 +14,11 @@ EXTRA_CFLAGS += -Idrivers/mstar2/include
 EXTRA_CFLAGS += -Idrivers/mstar2/drv/dvfs/include
 EXTRA_CFLAGS += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/dvfs
 EXTRA_CFLAGS += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/cpu
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+EXTRA_CFLAGS += -Idrivers/opp
+#else
 EXTRA_CFLAGS += -Idrivers/base/power/opp
+#endif
 #EXTRA_CFLAGS += -Idrivers/mstar/dvfs/hal/$(CONFIG_MSTAR_CHIP_NAME)/include
 
 # files

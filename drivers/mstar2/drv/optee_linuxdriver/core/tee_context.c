@@ -99,9 +99,9 @@ int tee_context_dump(struct tee *tee, char *buff, size_t len)
 					&shm->paddr,
 					shm->kaddr);
 			pos += snprintf(buff + pos, len - pos,
-					" s=%zu(%zu)\n",
-					shm->size_req,
-					shm->size_alloc);
+					" s=%lu(%lu)\n",
+					(unsigned long)shm->size_req,
+					(unsigned long)shm->size_alloc);
 			if ((len - pos) < 80) {
 				pos = 0;
 				goto out;

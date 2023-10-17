@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 #include <linux/fs.h>
 #include <linux/hugetlb.h>
 #include <linux/init.h>
@@ -113,6 +167,7 @@ extern unsigned int get_cpu_midr(int cpu);
 unsigned int over_temperature_mode[CONFIG_NR_CPUS];
 /* str usage */
 atomic_t disable_dvfs = ATOMIC_INIT(0);
+atomic_t disable_dvfs_debug = ATOMIC_INIT(1);
 
 /* reboot usage */
 atomic_t disable_dvfs_reboot = ATOMIC_INIT(0);
@@ -158,6 +213,7 @@ static unsigned int mstar_debug = 0;
 static unsigned int mstar_info = 0;
 
 struct mstar_cpufreq_policy ondemand_timer[CONFIG_NR_CPUS];
+EXPORT_SYMBOL(ondemand_timer);
 #if defined(CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE)
 static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value);
 #if !defined(CONFIG_MP_PLATFORM_T_SENSOR_OBSERVATION)
@@ -273,7 +329,7 @@ void Mdrv_CpuFreq_All_UnLock(char *caller)
 	//printk(DVFS_LOCK_DEBUG "\033[35m[ALL: %s] UnLocking mstar_cpufreq_lock_Big done...\033[m\n", caller);
 }
 
-int get_freq(unsigned int cpu)
+unsigned int get_freq(unsigned int cpu)
 {
 	return MDrvDvfsGetCpuFreq(cpu) * 1000;
 }
@@ -424,14 +480,26 @@ mstar_opp_table mstar_init_opp_table[CONFIG_NR_CPUS];
 static int integrator_cpufreq_init(struct cpufreq_policy *policy)
 {
 	int ret, opp_cnt, opp_err;
-    struct task_struct *t_sensor_tsk;
+	struct task_struct *t_sensor_tsk;
 	int cpu_id;
 	struct device *per_cpu_dev = NULL;
 
 	cpu_id = get_cpu();
 	put_cpu();
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,40)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 19, 0)
+	policy->freq_table = mstar_freq_table[policy->cpu];
+	/*
+	 * the reason why we not use cpufreq_generic_init() is because
+	 * we dont want to set cpumask, this will let policy->cpus be all online cpu
+	*/
+	ret = cpufreq_table_validate_and_sort(policy);
+	if (ret) {
+		pr_err("\033[31m%s(%d): invalid frequency table: %d\033[m\n",
+				__func__, __LINE__, ret);
+		BUG_ON(1);
+	}
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,40)
 	/* the reason why we not use cpufreq_generic_init() is because we dont want to set cpumask, this will let policy->cpus be all online cpu */
 	ret = cpufreq_table_validate_and_show(policy, mstar_freq_table[policy->cpu]);
 	if(ret)
@@ -660,7 +728,7 @@ static int CPU_calibrating_seq_show(struct seq_file *s, void *v)
 
 	if (mstar_debug) {
 		printk("Total %d %s\n", halTotalClusterNumber, (halTotalClusterNumber==1? "cluster": "clusters"));
-		get_online_cpus();
+		//get_online_cpus();
 		for (i = 0; i < halTotalClusterNumber; i ++)
 		{
 			printk("Cluster %d CPU:", i);
@@ -678,7 +746,7 @@ static int CPU_calibrating_seq_show(struct seq_file *s, void *v)
 			}
 			printk("\n");
 		}
-		put_online_cpus();
+		//put_online_cpus();
 	}
 	return 0;
 }
@@ -801,19 +869,15 @@ static void check_boost_duration(int cpu_id)
 	struct boost_client *bc = NULL;
 	struct boost_client **delete_list;
 	int delete_cnt, j;
-	struct list_head *boost_client_head;
+    struct list_head *boost_client_head;
 	int first_print;
-	int m = ondemand_timer[cpu_id].cluster_m;
-
-	delete_list = kmalloc(256 * sizeof(*delete_list), GFP_KERNEL);
-
-	if (!delete_list) {
-		pr_err("%s: allocate memory fail\n", __func__);
-		return;
-	}
-
-	boost_client_head = &(ondemand_timer[m].boost_head);
-
+    int m = ondemand_timer[cpu_id].cluster_m;
+    boost_client_head = &(ondemand_timer[m].boost_head);
+    if ((delete_list =kmalloc(256 * sizeof(struct boost_client *), GFP_KERNEL)) == NULL)
+    {
+        pr_notice_once("[%s][%d] warning: kmalloc fail!!!\n",__FUNCTION__,__LINE__);
+        return;
+    }
 	delete_cnt = 0;
 	first_print = 0;
 	mutex_lock(&boost_client_mutex);
@@ -864,7 +928,6 @@ static void check_boost_duration(int cpu_id)
 	}
 
 	mutex_unlock(&boost_client_mutex);
-
 	kfree(delete_list);
 	return;
 }
@@ -970,6 +1033,7 @@ static void write_echo_calibrating_freq(const unsigned long value, int cpu_id)
 {
     atomic_set(&(ondemand_timer[cpu_id].echo_calibrating_freq), value);
 }
+
 #if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
 extern struct cpu_scaling_list *bench_boost_list;
 extern struct cpu_scaling_list *app_boost_list;
@@ -1036,6 +1100,7 @@ void launch_boost_check(void)
 #endif
 
 #if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+static int ibench_boost_flag = 0;
 void bench_boost_check(void)
 {
     int run;
@@ -1043,7 +1108,6 @@ void bench_boost_check(void)
     struct cpu_scaling_list *zombie_node;
     struct cpu_scaling_list *prev = NULL;
     int i;
-    int ibench_boost_flag = 0;
     struct pid *pid_now;
     struct task_struct *task_now;
     while(1)
@@ -1108,6 +1172,7 @@ void bench_boost_check(void)
     }
 }
 
+static int iapp_boost_flag = 0;
 void app_boost_check(void)
 {
     int run;
@@ -1117,7 +1182,6 @@ void app_boost_check(void)
     struct pid *pid_now;
     struct task_struct *task_now;
     int i;
-    int iapp_boost_flag = 0;
     while (1)
     {
         run = 0;
@@ -1179,6 +1243,24 @@ void app_boost_check(void)
     }
 }
 #endif
+
+int CPU_Calibrating_Boost_IsEnable(void)
+{
+	int bEnable = 0;
+#if defined(CONFIG_MP_BENCHMARK_LAUNCH_BOOST)
+	if (atomic_read(&launch_boost_running) == 1 )
+		bEnable = 1;
+#endif
+
+#if defined(CONFIG_MP_BENCHMARK_CPU_DVFS_SCALING)
+	if (ibench_boost_flag || iapp_boost_flag)
+		bEnable = 1;
+#endif
+	return bEnable;
+}
+EXPORT_SYMBOL(CPU_Calibrating_Boost_IsEnable);
+
+
 int _CPU_calibrating_proc_write(
 		const unsigned long client_id,
 		const unsigned long cpu_freq_in_khz,
@@ -1205,9 +1287,9 @@ int _CPU_calibrating_proc_write(
 		ret = -1;
         goto not_change_cpu_freq;
 	}
-	printk(DVFS_DEBUG "[dvfs_boost] here comes a client id = %lu and cpu_freq_in_khz = %lu cpu:%d\n", client_id, cpu_freq_in_khz, cpu_id);
+	pr_debug("[dvfs_boost] here comes a client id = %lu and cpu_freq_in_khz = %lu cpu:%d\n", client_id, cpu_freq_in_khz, cpu_id);
 
-	get_online_cpus();
+	//get_online_cpus();
 	for_each_online_cpu(i)
 	{
 		policy = cpufreq_cpu_get(i);
@@ -1217,12 +1299,12 @@ int _CPU_calibrating_proc_write(
 			printk("\033[31mFunction = %s, Line = %d, cpu%d do: [cpu%d] policy is NULL\033[m\n",
 						__PRETTY_FUNCTION__, __LINE__, get_cpu(), i);
 			put_cpu();
-			put_online_cpus();
+			//put_online_cpus();
 			goto not_change_cpu_freq;
 		}
 		cpufreq_cpu_put(policy);
 	}
-	put_online_cpus();
+	//put_online_cpus();
 
 	// extend the timer
 	ondemand_timer[cpu_id].jiffies_boost_lasttime = jiffies;
@@ -1232,7 +1314,6 @@ int _CPU_calibrating_proc_write(
 	} else if (cpu_freq_in_khz == 0) {
 		if (is_boost_client_running(client_id, cpu_id) == true) {
 			del_boost_client(client_id, cpu_id);
-
 			if (is_any_boost_client_running(cpu_id) == true) {
 				bc = find_boost_client_with_highest_priority(cpu_id);
 				write_echo_calibrating_freq(bc->cpu_freq_in_khz, cpu_id);
@@ -1310,29 +1391,21 @@ int __CPU_calibrating_proc_write(const unsigned long idx, unsigned int cpu_id)
 	mstar_update_sched_clock();
 #endif // CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE
 
-	get_online_cpus();
+	//get_online_cpus();
 	for_each_online_cpu(i)
 	{
         if (ondemand_timer[i].cluster_m == cpu_id)
         {
-			ondemand_timer[i].policy->max = set_freq;  // Belong this cluster, we set its max frequency to set_freq.
+            // policy->max don't be change
+			//ondemand_timer[i].policy->max = set_freq;  // Belong this cluster, we set its max frequency to set_freq.
 			ondemand_timer[i].cur_freq = set_freq;
 			if (mstar_debug) {
-				printk(DVFS_DEBUG "\033[35m %s %d: cpu_id:%d i:%d policy->max:%d set_freq:%d\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu_id, i, ondemand_timer[i].policy->max, set_freq);
+				pr_debug("\033[35m %s %d: cpu_id:%d i:%d policy->max:%d set_freq:%d\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu_id, i, ondemand_timer[i].policy->max, set_freq);
 			}
         }
 	}
-	put_online_cpus();
-
+	//put_online_cpus();
 	change_cpus_timer((char *)__FUNCTION__, idx, cpu_id);
-
-#if (!defined CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE) && (!defined CONFIG_MP_GLOBAL_TIMER_12MHZ_PATCH)
-	#error "Please fix policy operation in __CPU_calibrating_proc_write. "
-	if(policy->cur != idx)
-	{
-		change_interval(freqs.old, freqs.new);
-	}
-#endif
 
 	return 0;
 }
@@ -1355,7 +1428,7 @@ void MDrvDvfsVoltageSetup(unsigned int dwCpuClock, unsigned int dwVoltage, unsig
 {
 	/* We have to lock a lock here for Multi-Cluster Antutu from Maserati.
 	 * This is to prevent T_sensor and Big_Cluster calling MDrvDvfsVoltageSetup() at the same time, which will cause finished_change_cnt != change_cnt
-	 * You can see abc123 1139537, the case is T_sensor doing MHalDvfsPradoMonitor() from MDrvDvfsQueryCpuClockByTemperature(), and Big_Cluster doing MDrvDvfsVoltageSetup() at the same time
+	 * You can see Mantis 1139537, the case is T_sensor doing MHalDvfsPradoMonitor() from MDrvDvfsQueryCpuClockByTemperature(), and Big_Cluster doing MDrvDvfsVoltageSetup() at the same time
 
 	 * T_sensor can only lock Little_Cluster_Lock, so Little_Cluster will not having any problem.
 	 * The reason of why T_sensor doesnot lock Big_Cluster_Lock is due to Multi-Cluster Antutu will let Big_Cluster too busy to do dvfs_handle, including release Big_Cluster_Lock.
@@ -1372,16 +1445,16 @@ void MDrvDvfsVoltageSetup(unsigned int dwCpuClock, unsigned int dwVoltage, unsig
 		ready_to_change_cluster_id[dwCpu]   = ondemand_timer[dwCpu].cluster;
 		change_cnt[dwCpu]++;
 
-		printk(DVFS_DEBUG "\033[35m[INFO] Data Exchange Count to User Space: %d\033[m\n", change_cnt[dwCpu]);
-		printk(DVFS_DEBUG "\033[35m[INFO] Voltage: %d\033[m\n", dwVoltage);
-		printk(DVFS_DEBUG "\033[35m[INFO] VoltageType: %d\033[m\n", dwVoltageType);
-		printk(DVFS_DEBUG "\033[35m[INFO] CPU: %d Cluster: %d\033[m\n", dwCpu, ondemand_timer[dwCpu].cluster);
+		pr_debug("\033[35m[INFO] Data Exchange Count to User Space: %d\033[m\n", change_cnt[dwCpu]);
+		pr_debug("\033[35m[INFO] Voltage: %d\033[m\n", dwVoltage);
+		pr_debug("\033[35m[INFO] VoltageType: %d\033[m\n", dwVoltageType);
+		pr_debug("\033[35m[INFO] CPU: %d Cluster: %d\033[m\n", dwCpu, ondemand_timer[dwCpu].cluster);
 
 		up(&DVFS_on_demand_event_SEM);
 
                 mutex_unlock(&mstar_voltagesetup);
 		result = wait_event_timeout(DVFS_on_demand_event_waitqueue_userspace_return, finished_change_cnt[dwCpu]==change_cnt[dwCpu] , MAX_SCHEDULE_TIMEOUT);
-		printk(DVFS_DEBUG "\033[35m[INFO] Data Exchange Count from User Space: %d, %d, %d, %d, %lX\033[m\n", dwVoltage, dwVoltageType, change_cnt[dwCpu], finished_change_cnt[dwCpu], result);
+		pr_debug("\033[35m[INFO] Data Exchange Count from User Space: %d, %d, %d, %d, %lX\033[m\n", dwVoltage, dwVoltageType, change_cnt[dwCpu], finished_change_cnt[dwCpu], result);
 	}
 	else
 		printk("\033[35m[Return] Function = %s, start_userspace_ondemand_handshake is %d\033[m\n", __PRETTY_FUNCTION__, start_userspace_ondemand_handshake);
@@ -1417,17 +1490,20 @@ static int integrator_set_target_on_demand(struct cpufreq_policy *policy, unsign
 	Mdrv_CpuFreq_Lock(cpu_id, (char *)__FUNCTION__);
 	if( (!start_userspace_ondemand_handshake) || (atomic_read(&disable_dvfs) == 1) )
 	{
-		printk(DVFS_DEBUG "\033[34mFunction = %s, start_userspace_ondemand_handshake is %d disable_dfvs is %d. Go out, do nothing!!\033[m\n",
-                __PRETTY_FUNCTION__, start_userspace_ondemand_handshake, atomic_read(&disable_dvfs));
+		if (atomic_read(&disable_dvfs_debug))
+			pr_debug("\033[34mFunction = %s, start_userspace_ondemand_handshake is %d disable_dfvs is %d. Go out, do nothing!!\033[m\n",
+                	__PRETTY_FUNCTION__, start_userspace_ondemand_handshake, atomic_read(&disable_dvfs));
+		atomic_set(&disable_dvfs_debug, 0);
 		goto set_target_out;
 	}
 	else
 	{
+		atomic_set(&disable_dvfs_debug, 1);
 		/*
 		 * Save this threads cpus_allowed mask.
 		 */
         if (mstar_debug) {
-            printk(DVFS_DEBUG "\033[35mFunction = %s, Line = %d, cpu:%d set copufreq from %dKHz to %dKHz\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu, policy->cur, target_freq);
+            pr_debug("\033[35mFunction = %s, Line = %d, cpu:%d set copufreq from %dKHz to %dKHz\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu, policy->cur, target_freq);
         }
 		cpus_allowed = current->cpus_allowed;
 
@@ -1440,7 +1516,7 @@ static int integrator_set_target_on_demand(struct cpufreq_policy *policy, unsign
 		// for interactive mode, only cpu0 will go into this set_target driver, so we do not check this
                 if(cpu != smp_processor_id())
                 {
-                        printk(DVFS_DEBUG "\033[35mFunction = %s, Line = %d, cpu:%d, current task running status: smp_processor_id()=%d\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu, smp_processor_id());
+                        pr_debug("\033[35mFunction = %s, Line = %d, cpu:%d, current task running status: smp_processor_id()=%d\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu, smp_processor_id());
                         set_cpus_allowed(current, cpus_allowed);
                         goto set_target_out;
                 }
@@ -1455,7 +1531,8 @@ static int integrator_set_target_on_demand(struct cpufreq_policy *policy, unsign
 
 		if (is_any_boost_client_running(cpu) == true)
 		{
-			target_freq = policy->max;
+			// boost client is running, don't change this.
+            goto set_target_out;
 		}
 
 		/* update timer, cpu_freq(RIU), and scaling_cur_freq for all cpus */
@@ -1560,7 +1637,7 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
      */
     if(cpu_id != ondemand_timer[cpu_id].cluster_m)
     {
-		printk(DVFS_DEBUG "\033[35mFunction = %s, cpu:%d, cluster master cpu:%d. Return, do nothing\033[m\n", __PRETTY_FUNCTION__, cpu_id, ondemand_timer[cpu_id].cluster_m);
+		pr_debug("\033[35mFunction = %s, cpu:%d, cluster master cpu:%d. Return, do nothing\033[m\n", __PRETTY_FUNCTION__, cpu_id, ondemand_timer[cpu_id].cluster_m);
         return;
     }
 #endif
@@ -1578,7 +1655,7 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 	DVFS_LOG_DEBUG( "\033[36mcaller: %s, cluster: %d target_freq: %d KHz\033[m\n", caller, cid, target_freq);
 	ori_target_freq = target_freq;
 
-	get_online_cpus();
+	//get_online_cpus();
 	for_each_online_cpu(i)
 	{
         if (ondemand_timer[i].cluster == cid) // means the same cluster
@@ -1604,7 +1681,7 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 		    cpufreq_cpu_put(other_cpu_policy);
         }
 	}
-	put_online_cpus();
+	//put_online_cpus();
 
     if (ret_value)
     {
@@ -1612,10 +1689,20 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 		 * set all cpus to new cpu_freq(scaling_cur_freq), and set the timer
 		 * always let wait_for_voltage to do voltage_change, adjust target_freq according to Temperature, write adjusted target_freq to RIU, then use new target_freq to set timer, jiffes
 		 */
-
 		/* rise voltage first, wait for voltage change(accroding to target_freq) */
+
 		target_freq = MDrvDvfsProc(target_freq, cpu_id);
 		DVFS_LOG_DEBUG( "\033[33mFunction = %s, Line = %d, cpu %d the target_freq is changed(by MDrvDvfsProc), from %d KHz to %d KHz\033[m\n", __PRETTY_FUNCTION__, __LINE__, cpu_id, ori_target_freq, target_freq);
+
+                if (target_freq == 0)
+                {
+			DVFS_LOG_DEBUG("Function = %s, Line = %d, ori_target_freq = %d, caller = %s\n", __FUNCTION__, __LINE__,ori_target_freq,caller);
+			if ( ori_target_freq == 0 )
+                    		target_freq = get_freq(cpu_id);
+                        else
+				target_freq = ori_target_freq;
+			DVFS_LOG_DEBUG("Function = %s, Line = %d, target_freq = %d\n", __FUNCTION__, __LINE__,target_freq);
+                }
 
 		//if(voltage_change_result[cpu_id] != 1) // pass in userspace voltage change
 		{
@@ -1623,7 +1710,7 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 			mstar_update_sched_clock();
 #endif // CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE
 
-			get_online_cpus();
+			//get_online_cpus();
 			for_each_online_cpu(i)
 			{
 				if(cid == ondemand_timer[i].cluster) // means the same cluster.
@@ -1649,7 +1736,7 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 
 					if (mstar_debug)
 					{
-						printk(DVFS_DEBUG "\033[31mFunction = %s, Line = %d, cpu%d do: [cpu%d] adjust cpufreq from %d KHZ to %d KHZ\033[m\n", __PRETTY_FUNCTION__, __LINE__, get_cpu(), i, freqs.old, freqs.new);
+						pr_debug("\033[31mFunction = %s, Line = %d, cpu%d do: [cpu%d] adjust cpufreq from %d KHZ to %d KHZ\033[m\n", __PRETTY_FUNCTION__, __LINE__, get_cpu(), i, freqs.old, freqs.new);
 						put_cpu();
 					}
 
@@ -1667,15 +1754,8 @@ void change_cpus_timer(char *caller, unsigned int target_freq, unsigned int cpu_
 				}
 
 			}
-			put_online_cpus();
+			//put_online_cpus();
 
-#if (!defined CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE) && (!defined CONFIG_MP_GLOBAL_TIMER_12MHZ_PATCH)
-#error "Please fix policy operation in __CPU_calibrating_proc_write. "
-			if(other_cpu_policy->cur != target_freq)
-			{
-				change_interval(freqs.old, freqs.new);
-			}
-#endif
 		}
 	}
 	//spin_unlock(&set_freq_lock);
@@ -1789,7 +1869,7 @@ ssize_t on_demand_handshake_proc_write(struct file *file, const char __user *buf
 
 		if(mstar_debug)
 		{
-			printk(DVFS_DEBUG "\033[33m%s cluster:%d result is %d, cpu:%d, input:%d, change_cnt:%d wake_up wait_queue for write_down\033[m\n",
+			pr_debug("\033[33m%s cluster:%d result is %d, cpu:%d, input:%d, change_cnt:%d wake_up wait_queue for write_down\033[m\n",
 				__func__, from_user_data.from_userspace_cluster_id, voltage_change_result[i], i, finished_change_cnt[i], change_cnt[i]);
 		}
 		wake_up(&DVFS_on_demand_event_waitqueue_userspace_return);	// to wake_up a wait_queue waiting for voltage change
@@ -1934,7 +2014,7 @@ const struct file_operations proc_t_sensor_operations = {
 #if defined(CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL) || defined(CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE)
 static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 {
-	int i = 0, j = 0;
+	int i = 0,j = 0;
 	int cpu_id;
 	unsigned long echo_calibrating_freq_tmp = 0;
 	unsigned int max_clock;
@@ -1959,7 +2039,7 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 		{
 			if (jiffies_to_msecs(jiffies - ondemand_timer[i].jiffies_boost_lasttime) > BOOST_AGING_TIMEOUT_IN_MS)
 			{
-				printk(DVFS_DEBUG "[dvfs boost] timout happens and delete all of the running clients\n");
+				pr_debug("[dvfs boost] timout happens and delete all of the running clients\n");
 				del_all_boost_client(i);
 #if !defined(CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND) && !defined(CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE) && !defined(CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL)
 				__CPU_calibrating_proc_write(1008000, i);
@@ -1990,7 +2070,7 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 		spin_unlock(&T_sensor_lock);
 #endif
 
-		printk(DVFS_DEBUG "\033[34mFunction = %s, [cpu%d] return Mdrv_CPU_T_sensor_Check_callback, start_userspace_ondemand_handshake is %d\033[m\n",
+		pr_debug("\033[34mFunction = %s, [cpu%d] return Mdrv_CPU_T_sensor_Check_callback, start_userspace_ondemand_handshake is %d\033[m\n",
 			__PRETTY_FUNCTION__, cpu_id, start_userspace_ondemand_handshake);
 		return;
 	}
@@ -2002,13 +2082,14 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 
 		// Mask this for resetting slave cpus' max_freq.
 		// While leaving boost mode, slave cpus' max_freq should be reset here.
-		if (i == ondemand_timer[i].cluster_m)
+		if(i == ondemand_timer[i].cluster_m)
 		{
 			DVFS_LOG_DEBUG( "\033[35mFunction = %s, Line = %d, query MDrvDvfsQueryCpuClockByTemperature for cpu %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, i);
 			ondemand_timer[i].t_sensor_max_freq = MDrvDvfsQueryCpuClockByTemperature(i);
 			DVFS_LOG_DEBUG( "\033[35mFunction = %s, Line = %d, query MDrvDvfsQueryCpuClockByTemperature for cpu %d done\033[m\n", __PRETTY_FUNCTION__, __LINE__, i);
-			for_each_online_cpu(j) {
-				if ((ondemand_timer[j].cluster_m == i) && (i != j))
+			for_each_online_cpu(j)
+			{
+				if ( (ondemand_timer[j].cluster_m == i) && (i != j) )
 					ondemand_timer[j].t_sensor_max_freq = ondemand_timer[i].t_sensor_max_freq;
 			}
 		}
@@ -2029,7 +2110,7 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 			echo_calibrating_freq_tmp = read_echo_calibrating_freq(i);
 			if(ondemand_timer[i].t_sensor_max_freq > echo_calibrating_freq_tmp)
 			{
-				printk(DVFS_DEBUG "\033[35mFunction = %s, Line = %d, due to boost, change t_sensor_max_freq from %lu to %lu\033[m\n",
+				pr_debug("\033[35mFunction = %s, Line = %d, due to boost, change t_sensor_max_freq from %lu to %lu\033[m\n",
 					__PRETTY_FUNCTION__, __LINE__, ondemand_timer[i].t_sensor_max_freq, echo_calibrating_freq_tmp);
 				ondemand_timer[i].t_sensor_max_freq = echo_calibrating_freq_tmp;
 			}
@@ -2042,7 +2123,7 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 		}
 	}
 
-	get_online_cpus();
+	//get_online_cpus();
 	for_each_online_cpu(i)
 	{
 		if(ondemand_timer[i].t_sensor_max_freq == 0)
@@ -2056,8 +2137,13 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 		else
 		{
 			ondemand_timer[i].policy->max = ondemand_timer[i].t_sensor_max_freq;
+			struct boost_client *bc = NULL;
+			if (is_any_boost_client_running(i) == true) {
+				bc = find_boost_client_with_highest_priority(i);
+				change_cpus_timer((char *)__FUNCTION__,bc->cpu_freq_in_khz,i);
+			}
 
-			if(ondemand_timer[i].t_sensor_max_freq < ondemand_timer[i].policy->cur)		// this is an over-temperature case
+			if(ondemand_timer[i].t_sensor_max_freq == CONFIG_DVFS_CPU_CLOCK_PROTECT(i)*1000 )		// this is an over-temperature case
 			{
 				forcibly_set_target_flag[i] = 20;
 				DVFS_LOG_DEBUG("\033[31mFunction = %s, Line = %d, T_sensor_max_freq:%lu < [%d] current freq:%d, forcibly_set_target_flag[%d]:%d\033[m\n",
@@ -2105,7 +2191,7 @@ static void Mdrv_CPU_T_sensor_Check_callback(unsigned long value)
 			}
 		}
 	}
-	put_online_cpus();
+	//put_online_cpus();
 #endif
 
 #if !defined(CONFIG_MP_PLATFORM_T_SENSOR_OBSERVATION)
@@ -2137,7 +2223,7 @@ static void Mdrv_CPU_Freq_Check_callback(unsigned long value)
 #if (!defined CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE) && (!defined CONFIG_MP_GLOBAL_TIMER_12MHZ_PATCH)
 			mstar_update_sched_clock();
 #endif // CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE
-			printk(DVFS_DEBUG "\033[36m\nFunction = %s, Line = %d, (freq = %d KHZ) != (current_frequency = %d KHZ)\033[m\n", __PRETTY_FUNCTION__, __LINE__, freq, current_frequency);
+			pr_debug("\033[36m\nFunction = %s, Line = %d, (freq = %d KHZ) != (current_frequency = %d KHZ)\033[m\n", __PRETTY_FUNCTION__, __LINE__, freq, current_frequency);
 			if(freq < min_clock)
 			{
 					printk(KERN_WARNING "\033[36m\n freq %d KHZ < MIN_CPU_FREQ %d KHZ ,not allowed\033[m\n", freq, min_clock);
@@ -2152,7 +2238,7 @@ static void Mdrv_CPU_Freq_Check_callback(unsigned long value)
 
 			register_frequency = freq;
 
-			get_online_cpus();
+			//get_online_cpus();
 			for_each_online_cpu(i)
 	        {
 				policy = cpufreq_cpu_get(i);
@@ -2168,7 +2254,7 @@ static void Mdrv_CPU_Freq_Check_callback(unsigned long value)
 #endif
             	cpufreq_cpu_put(policy);
             }
-			put_online_cpus();
+			//put_online_cpus();
 
 			current_frequency = freq;
 #if (!defined CONFIG_MP_STATIC_TIMER_CLOCK_SOURCE) && (!defined CONFIG_MP_GLOBAL_TIMER_12MHZ_PATCH)
@@ -2191,15 +2277,15 @@ static int __init init_procfs_msg(void)
 
     memset(&ondemand_timer, 0, sizeof(ondemand_timer));
 
-    get_online_cpus();
-    for_each_online_cpu(i)
+    //get_online_cpus();
+    for_each_possible_cpu(i)
     {
         ondemand_timer[i].cur_freq = get_freq(i);
         ondemand_timer[i].sys_max_freq = CONFIG_DVFS_CPU_CLOCK_MAX(i);
         size = MDrvDvfsGetFreqTable(i,&freq_table);
         if (!freq_table) {
             printk("\033[35m%s: Unable to allocate frequency table \033[m\n", __PRETTY_FUNCTION__);
-            put_online_cpus();
+            //put_online_cpus();
             return -ENOMEM;
         }
         for (j = 0,k = 0; j < size; j++)
@@ -2227,18 +2313,18 @@ static int __init init_procfs_msg(void)
         mstar_freq_table[i] = freq_table;
 #else
         cpufreq_frequency_table_get_attr(&freq_table[0], i);
-        printk(DVFS_DEBUG "\033[35mFunction = %s, [cpu %d] set cpu_%d current freq = %d\033[m\n", __PRETTY_FUNCTION__, cpu, i, ondemand_timer[i].cur_freq);
+        pr_debug("\033[35mFunction = %s, [cpu %d] set cpu_%d current freq = %d\033[m\n", __PRETTY_FUNCTION__, cpu, i, ondemand_timer[i].cur_freq);
 #endif
     }
-    put_online_cpus();
+    //put_online_cpus();
 
     cpufreq_register_driver(&integrator_driver);
-    proc_create("CPU_calibrating", 0666, NULL, &proc_CPU_calibrating_operations);
+    proc_create("CPU_calibrating", S_IRUSR | S_IWUSR, NULL, &proc_CPU_calibrating_operations);
     proc_create("on_demand_ctl"  , S_IRUSR | S_IWUSR, NULL, &proc_on_demand_handshake_operations);
     proc_create("t_sensor", S_IRUSR | S_IWUSR, NULL, &proc_t_sensor_operations);
 #ifdef CONFIG_MSTAR_DVFS_DEBUG
     if (!dvfs_debug_init())
-        printk(DVFS_DEBUG "\033[35mFunction = %s, dvfs debug node create fail\033[m\n", __PRETTY_FUNCTION__);
+        pr_debug("\033[35mFunction = %s, dvfs debug node create fail\033[m\n", __PRETTY_FUNCTION__);
 #endif
     sema_init(&DVFS_on_demand_event_SEM, 0);
 
@@ -2291,7 +2377,7 @@ static int __init CPU_calibrating_init(void)
 #if CONFIG_PM_OPP
     for_each_online_cpu(i)
     {
-        MDrvDvfsGetDvfsTable(i, mstar_init_opp_table);
+        MDrvDvfsGetDvfsTable(i, (dvfs_opp_table *)mstar_init_opp_table);
         per_cpu_dev = get_cpu_device(i);
         opp_cnt = 0;
         if (!per_cpu_dev) {

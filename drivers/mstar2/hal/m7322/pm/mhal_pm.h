@@ -59,6 +59,8 @@
 //-------------------------------------------------------------------------------------------------
 #define PM51_SRAM_SIZE      (0x00006000UL)
 
+
+
 //-------------------------------------------------------------------------------------------------
 //  Structure and Enum
 //-------------------------------------------------------------------------------------------------
@@ -66,6 +68,7 @@
 //  Function and Variable
 //-------------------------------------------------------------------------------------------------
 u8 MHal_PM_GetPowerOnKey(void);
+void MHal_PM_CleanPowerOnKey(void);
 void MHal_PM_Disable_8051(void);
 PM_Result MHal_PM_SetSRAMOffsetForMCU(void);
 PM_Result MHal_PM_CopyBin2Sram(u32 u32SrcAddr);
@@ -73,6 +76,6 @@ void MHal_PM_SetDram2Register(u32 u32DramAddr);
 void MHal_PM_RunTimePM_Disable_PassWord(void);
 PM_Result MHal_PM_SetSRAMOffsetForMCU_DC(void);
 void MHal_PM_SetDRAMOffsetForMCU(u32 u32Offset);
-void MHal_PM_WriteReg16(u32 reg, u16 val);
+u8 MHal_PM_GetWakeupSource(void);
 void MHal_PM_WakeIrqMask(u8 mask);
 #endif // _HAL_PM_H_

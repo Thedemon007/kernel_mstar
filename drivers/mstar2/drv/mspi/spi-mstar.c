@@ -1,25 +1,57 @@
-/*
- * Driver for MSTAR SPI Controllers
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
  *
- * Copyright (C) 2016 MSTAR vick.sun@mstarsemi.com
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
  *
- * This driver is inspired by:
- * spi-bcm2835.c
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
  *
  * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- */
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 /* dts example for maxim 107B */
 /* 
 	    spi@0x153A {
@@ -95,6 +127,14 @@
 #define MSPI_CHIP_SELECT                0x5f
 #define MSPI_CHIP_SELECT_BIT            BIT(0)
 
+#define WB16_INDEX                     0x4
+#define WB8_INDEX                      0x3
+#define MSPI_WRITE_BUF_OFFSET          0x40
+#define MSPI_WRITE_EXT_BUF_OFFSET      0x00
+#define MAX_TX_BUF_SIZE                0x20
+#define MSPI_READ_EXT_BUF_OFFSET       0x10
+#define MSPI_READ_BUF_OFFSET           0x44
+
 
 #define MSTAR_SPI_TIMEOUT_MS	1000
 #define MSTAR_SPI_MODE_BITS	(SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_NO_CS | SPI_LSB_FIRST)
@@ -118,14 +158,10 @@ struct mstar_spi_data {
 	u32 irq;
     u32 mspi_channel;
 };
-#if defined(CONFIG_ARM64)
 extern ptrdiff_t mstar_pm_base;
 #define REG_ADDR(addr)  (*((volatile u16 *)((mstar_pm_base + (addr )))))
 #define BASEREG_ADDR(addr)  ((mstar_pm_base + (addr )))
-#else
-#define REG_ADDR(addr)  (*((volatile u16 *)((REG_RIU_BASE + (addr )))))
-#define BASEREG_ADDR(addr)  (REG_RIU_BASE + (addr ))
-#endif
+
 // read 2 byte
 #define MSPI_READ(_reg_)          (REG_ADDR(bs->regs + ((_reg_)<<2)))
 
@@ -266,8 +302,10 @@ static inline void mstar_hw_enable(struct mstar_spi *bs,bool enable)
     val = mstar_rdl(bs,MSPI_CTRL_CLOCK_RATE);
     if (enable){
         val |= MSPI_ENABLE_BIT;
+        val |= MSPI_RESET_BIT;
     }else{
         val &= ~MSPI_ENABLE_BIT;
+        val &= ~MSPI_RESET_BIT;
     }
     mstar_wrl(bs,MSPI_CTRL_CLOCK_RATE,val);
 }
@@ -341,6 +379,126 @@ static void mstar_spi_hw_transfer(struct mstar_spi *bs)
     mstar_hw_transfer_trigger(bs);
 }
 
+static void mstar_spi_hw_rx_ext(struct mstar_spi *bs)
+{
+    int  u8Index = 0;
+    int  u16TempBuf = 0;
+    int  addr_tmp = 0;
+    int  j = 0;
+
+    j =  bs->current_trans_len;
+    if (bs->rx_buf != NULL)
+    {
+        for(u8Index = 0; u8Index < j; u8Index++)
+        {
+            if(u8Index & 1)
+            {
+                u16TempBuf = ((bs->tx_buf)[u8Index] << 8) | ((bs->tx_buf)[u8Index-1]);
+                if(u8Index >>WB16_INDEX)
+                {
+                   addr_tmp = MSPI_READ_EXT_BUF_OFFSET+WB16_INDEX+((u8Index&(~(1<<WB16_INDEX)))>> 1);
+                }
+                else if(u8Index >>WB8_INDEX)
+                {
+                   addr_tmp = MSPI_READ_EXT_BUF_OFFSET+((u8Index&(~(1<<WB8_INDEX)))>> 1);
+                }
+                else
+                {
+                   addr_tmp = (MSPI_READ_BUF_OFFSET + (u8Index >> 1));
+                }
+                u16TempBuf =  mstar_rd(bs,addr_tmp);
+                (bs->rx_buf)[u8Index] = u16TempBuf >> 8;
+                (bs->rx_buf)[u8Index-1] = u16TempBuf & 0xFF;
+            }
+            else if(u8Index == (j -1))
+            {
+                if(u8Index >>WB16_INDEX)
+                {
+                   addr_tmp = MSPI_READ_EXT_BUF_OFFSET+WB16_INDEX+((u8Index&(~(1<<WB16_INDEX)))>> 1);
+                }
+                else if(u8Index >>WB8_INDEX)
+                {
+                   addr_tmp = MSPI_READ_EXT_BUF_OFFSET+((u8Index&(~(1<<WB8_INDEX)))>> 1);
+                }
+                else
+                {
+                   addr_tmp = (MSPI_READ_BUF_OFFSET + (u8Index >> 1));
+                }
+                u16TempBuf =  mstar_rd(bs,addr_tmp);
+                (bs->rx_buf)[u8Index] = u16TempBuf >> 8;
+            }
+        }
+        (bs->rx_buf) += j;
+    }
+}
+
+static void mstar_spi_hw_xfer_ext(struct mstar_spi *bs)
+{
+    int  u8Index = 0;
+    int  u16TempBuf = 0;
+    int  addr_tmp = 0;
+    int  j = 0;
+
+    j = bs->len;
+    if (j >= MAX_TX_BUF_SIZE){
+        j = MAX_TX_BUF_SIZE;
+    }
+
+    if (bs->tx_buf != NULL)
+    {
+        for(u8Index = 0; u8Index < j; u8Index++)
+        {
+            if(u8Index & 1)
+            {
+                u16TempBuf = ((bs->tx_buf)[u8Index] << 8) | ((bs->tx_buf)[u8Index-1]);
+                if(u8Index >>WB16_INDEX)
+                {
+                   addr_tmp = MSPI_WRITE_EXT_BUF_OFFSET+WB16_INDEX+((u8Index&(~(1<<WB16_INDEX)))>> 1);
+                }
+                else if(u8Index >>WB8_INDEX)
+                {
+                   addr_tmp = MSPI_WRITE_EXT_BUF_OFFSET+((u8Index&(~(1<<WB8_INDEX)))>> 1);
+                }
+                else
+                {
+                   addr_tmp = (MSPI_WRITE_BUF_OFFSET + (u8Index >> 1));
+                }
+                mstar_wr(bs,addr_tmp,u16TempBuf);
+            }
+            else if(u8Index == (j -1))
+            {
+                if(u8Index >>WB16_INDEX)
+                {
+                   addr_tmp = MSPI_WRITE_EXT_BUF_OFFSET+WB16_INDEX+((u8Index&(~(1<<WB16_INDEX)))>> 1);
+                }
+                else if(u8Index >>WB8_INDEX)
+                {
+                   addr_tmp = MSPI_WRITE_EXT_BUF_OFFSET+((u8Index&(~(1<<WB8_INDEX)))>> 1);
+                }
+                else
+                {
+                   addr_tmp = (MSPI_WRITE_BUF_OFFSET + (u8Index >> 1));
+                }
+                mstar_wr(bs,addr_tmp,(bs->tx_buf)[u8Index]);
+            }
+        }
+        (bs->tx_buf) += j;
+        mstar_wrl(bs,MSPI_WBF_RBF_SIZE,j);
+        mstar_wrh(bs,MSPI_WBF_RBF_SIZE,0);
+    }
+    else
+    {
+        if (bs->rx_buf != NULL)
+        {
+           mstar_wrh(bs,MSPI_WBF_RBF_SIZE,(j));
+           mstar_wrl(bs,MSPI_WBF_RBF_SIZE,0);
+        }
+    }
+    bs->len -= j;
+    bs->current_trans_len = j;
+    mstar_hw_transfer_trigger(bs);
+}
+
 static irqreturn_t mstar_spi_interrupt(int irq, void *dev_id)
 {
 	struct spi_master *master = dev_id;
@@ -348,12 +506,20 @@ static irqreturn_t mstar_spi_interrupt(int irq, void *dev_id)
     if(mstar_rd(bs,MSPI_DONE_FLAG)){
         mstar_hw_clear_done(bs);
         if (bs->current_trans_len != 0){
+#if 0
             mstar_spi_hw_receive(bs);
+#else
+            mstar_spi_hw_rx_ext(bs);
+#endif
         }else{
             return IRQ_NONE;
         }
         if (bs->len != 0){
+#if 0
            mstar_spi_hw_transfer(bs);
+#else
+            mstar_spi_hw_xfer_ext(bs);
+#endif
         }
         else{
             bs->current_trans_len = 0;
@@ -410,7 +576,11 @@ static int mstar_spi_start_transfer(struct spi_device *spi,
    /*
     *   Start transfer loop. 
     */ 
+#if 0
     mstar_spi_hw_transfer(bs);
+#else
+    mstar_spi_hw_xfer_ext(bs);
+#endif
 
 	return 0;
 }

@@ -357,6 +357,24 @@ const char* get_key_value(IniSectionNode *node, const char *name)
     return NULL;
 }
 EXPORT_SYMBOL_GPL(get_key_value);
+const char* get_key_value_by_len(IniSectionNode *node, const char *name, char len)
+{
+    IniKeyNode *current_key;
+    if (node && node->keys)
+    {
+        current_key = node->keys;
+        while (current_key != NULL)
+        {
+            if (!strncmp(current_key->name,name, len))
+            {
+                return current_key->value;
+            }
+            current_key = current_key->next;
+        }
+    }
+    return NULL;
+}
+EXPORT_SYMBOL_GPL(get_key_value_by_len);
 size_t get_key_num(IniSectionNode *node)
 {
     size_t i = 0;

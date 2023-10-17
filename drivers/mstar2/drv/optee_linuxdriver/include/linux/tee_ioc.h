@@ -81,5 +81,7 @@ struct tee_shm_io {
 #define TEE_GET_FD_FOR_RPC_SHM_IOC	_IOWR('t', 167, struct tee_shm_io)
 #define TEE_SET_LOG_LEVEL	_IOWR('t', 180, uint32_t)
 #define TEE_PM51CTL_IOC	_IOWR('t', 190, uint32_t)
+#define TEE_XTEST_SUPPLICANT_CNT_IOC	_IOWR('t', 200, uint32_t)
+#define TEE_XTEST_CHECK_SMP_IOC		_IOWR('t', 201, uint32_t)
 
 #endif /* _TEE_IOC_H */

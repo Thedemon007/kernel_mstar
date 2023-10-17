@@ -52,7 +52,6 @@
  *
  *****************************************************************************/
 
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///
 /// @file   Mdrv_mtlb.h
@@ -285,13 +284,13 @@ typedef enum
     MIU_CLIENT_SECMFDEC_R,
     MIU_CLIENT_MIUTEST_R,
     MIU_CLIENT_GOP3_PDW0_RW,
-    MIU_CLIENT_SC1_OPMAIN_RW, 
-    MIU_CLIENT_SC2_IPSUB_RW, 
-    MIU_CLIENT_SC_IPMAIN2_RW, 
-    MIU_CLIENT_SC2_OPMAIN_RW, 
+    MIU_CLIENT_SC1_OPMAIN_RW,
+    MIU_CLIENT_SC2_IPSUB_RW,
+    MIU_CLIENT_SC_IPMAIN2_RW,
+    MIU_CLIENT_SC2_OPMAIN_RW,
     MIU_CLIENT_SC_ODL_RW,
     MIU_CLIENT_SC_ODR_RW,
-    MIU_CLIENT_SC1_IPSUB_RW, 
+    MIU_CLIENT_SC1_IPSUB_RW,
     MIU_CLIENT_EVD_BBU_R,
     MIU_CLIENT_SC_DWIN_W,
     MIU_CLIENT_ZDEC_RW,
@@ -303,12 +302,12 @@ typedef enum
     MIU_CLIENT_FRC_R,
     MIU_CLIENT_FRCM_W,
     MIU_CLIENT_SC_OD_RW,
-    MIU_CLIENT_SC_OPSUB_W, 
+    MIU_CLIENT_SC_OPSUB_W,
     MIU_CLIENT_FRCS_W,
     MIU_CLIENT_EVD_MTFC_W,
     MIU_CLIENT_EVD_MTFY_W,
     MIU_CLIENT_ZDEC2_RW,
-    MIU_CLIENT_SC2_IPMAIN_RW, 
+    MIU_CLIENT_SC2_IPMAIN_RW,
     MIU_CLIENT_MTF_W,
     MIU_CLIENT_DBG_R,
     MIU_CLIENT_DS_R,
@@ -402,7 +401,7 @@ typedef enum
     MIU_CLIENT_TSO_RX_RW,
     MIU_CLIENT_SC_DIP_RW,
     MIU_CLIENT_SC_DIP_DI_RW,
-    MIU_CLIENT_ADL_RW, 
+    MIU_CLIENT_ADL_RW,
     MIU_CLIENT_DSP_CACHE_RW,
     MIU_CLIENT_R2_I_RW,
     MIU_CLIENT_R2_D_RW,
@@ -537,12 +536,37 @@ typedef enum
     MIU_CLIENT_SC2_OP_R,
     MIU_CLIENT_SC_DS_RW,
     MIU_CLIENT_SC_DIPR_R,
+    MIU_CLIENT_MONITOR_GROUP0,
+    MIU_CLIENT_MONITOR_GROUP1,
+    MIU_CLIENT_MONITOR_GROUP2,
+    MIU_CLIENT_MONITOR_GROUP3,
+    MIU_CLIENT_MONITOR_GROUP4,
+    MIU_CLIENT_MONITOR_GROUP5,
+    MIU_CLIENT_MONITOR_GROUP6,
+    MIU_CLIENT_MONITOR_GROUP7,
+    MIU_CLIENT_MONITOR_GROUP8,
     MIU_CLIENT_MHEG_5_RW,
     MIU_CLIENT_R2_BBU_RW,
     MIU_CLIENT_MFDEC0_0_R,
     MIU_CLIENT_MFDEC1_0_R,
     MIU_CLIENT_SC_ODW_R,
+    MIU_CLIENT_FRC_HR23_R,
+    MIU_CLIENT_FRC_OPME0_F4_R,
+    MIU_CLIENT_FRC_BE_ME_R,
+    MIU_CLIENT_FRC_HR23_W,
+    MIU_CLIENT_DDI_R,
+    MIU_CLIENT_HSE_R,
+    MIU_CLIENT_DDI_W,
+    MIU_CLIENT_HSE_W,
+    MIU_CLIENT_VBDMA_RW,
+    MIU_CLIENT_AIA_R_RW,
+    MIU_CLIENT_AIA_W_RW,
+    MIU_CLIENT_MIIC2_RW,
+    MIU_CLIENT_TSP_VQ_RW,
+    MIU_CLIENT_TSP_SVQ_RW,
+    MIU_CLIENT_AIE_RW,
     //Add new after here
+    MIU_CLIENT_MAX_NUMBER,
 }eMIUClientID;
 
 typedef enum
@@ -617,14 +641,16 @@ typedef enum
 //-------------------------------------------------------------------------------------------------
 //  Function and Variable
 //-------------------------------------------------------------------------------------------------
-MS_BOOL MDrv_MIU_Init(void);
-MS_U32* MDrv_MIU_GetDefaultClientID_KernelProtect(void);
-MS_BOOL MDrv_MIU_Protect(MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY u64Start, MS_PHY u64End, MS_BOOL bSetFlag);
+MS_BOOL MDrv_MIU_Kernel_Init(void);
+MS_U32* MDrv_MIU_Kernel_GetDefaultClientID_KernelProtect(void);
+MS_BOOL MDrv_MIU_Kernel_Protect(MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY u64Start, MS_PHY u64End, MS_BOOL bSetFlag);
 MS_BOOL MDrv_MIU_Save(void);
 MS_BOOL MDrv_MIU_Restore(void);
-MS_BOOL MDrv_MIU_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize);
-
-MS_BOOL MDrv_MIU_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo);
+MS_BOOL MDrv_MIU_Kernel_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo);
 MS_BOOL MDrv_MIU_Slits(MS_U8 u8Blockx, MS_PHY u64SlitsStart, MS_PHY u65SlitsEnd, MS_BOOL bSetFlag);
+
+#ifndef CONFIG_MSTAR_UTOPIA2K_BUILTIN
+MS_BOOL MDrv_MIU_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize);
+#endif
 #endif
 

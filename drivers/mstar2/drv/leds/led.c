@@ -52,7 +52,6 @@
  *
  *****************************************************************************/
 
-
 #if defined(CONFIG_HAS_LED)
 
 
@@ -60,8 +59,8 @@
 #include <linux/fs.h>
 #include <linux/io.h>
 
+#include "mdrv_led.h"
 #include "mdrv_mstypes.h"
-
 #include "mdrv_mbx.h"
 
 #include <linux/slab.h>
@@ -93,6 +92,7 @@ typedef enum{
 	LED_KEEP_BLINK_1,
 	LED_ON_PERCENTAGE_1,
 	LED_BLINK_ONCE_AND_ON_1,
+	LED_INVERT_1,
 	LED_ON_2,
 	LED_OFF_2,
 	LED_BREATH_2,
@@ -100,6 +100,7 @@ typedef enum{
 	LED_KEEP_BLINK_2,
 	LED_ON_PERCENTAGE_2,
 	LED_BLINK_ONCE_AND_ON_2,
+	LED_INVERT_2,
 } LED_CONTROL;
 
 
@@ -109,6 +110,7 @@ typedef enum{
 #define PM_CMDIDX_LED       0x42
 
 /* Message from SN to decide LED status */
+#define LED_PWMGPIO_INVERT_1             0xB9 /* Set LED 1 invert flag */
 #define LED_PWMGPIO_LIGHT_PERCENTAGE_1   0xBA            /* Turn on LED 1 with 0~100% */
 #define LED_PWMGPIO_LIGHT_1   0xBB            /* Turn on LED 1		*/
 #define LED_PWMGPIO_DARK_1    0xBC            /* Turn off LED 1		*/
@@ -117,6 +119,7 @@ typedef enum{
 #define LED_PWMGPIO_FLICKER_POWERON_1 0xBF    /* LED 1 keep blinking	*/
 
 
+#define LED_PWMGPIO_INVERT_2           0xC9 /* Set LED 2 invert flag */
 #define LED_PWMGPIO_LIGHT_PERCENTAGE_2 0xCA			/* Turn on LED 2 0~100% */
 #define LED_PWMGPIO_LIGHT_2 0xCB			/* Turn LED 2			*/
 #define LED_PWMGPIO_DARK_2 0xCC				/* Turn off LED 2		*/
@@ -197,7 +200,7 @@ static int MDrv_LED_RecHandler(void)
 	enMbxResult = MDrv_MBX_RecvMsg(E_MBX_CLASS_PM_NOWAIT, &stMbxCommand, \
 		MBX_CHECK_NORMAL_MSG, 0);
 	spin_unlock_irq(&spinlock_ld);
-	LEDS_DRV_DEBUG("   rec enMbxResult:%d \n", enMbxResult);
+	printk("   rec enMbxResult:%d \n", enMbxResult);
 
    /*check result */
 	if (enMbxResult == E_MBX_SUCCESS) {
@@ -214,9 +217,9 @@ static int MDrv_LED_RecHandler(void)
 			break;
 		}
 	} else if (E_MBX_ERR_TIME_OUT == enMbxResult) {
-		pr_err("LED Ctrl Handler receive timeout! nMbxResult:%d \n", enMbxResult);
+		pr_err("Handler receive timeout! nMbxResult:%d \n", enMbxResult);
 	} else {
-		pr_err("LED Ctrl Handler receive error nMbxResult:%d \n", enMbxResult);
+		pr_err("Handler receive error nMbxResult:%d \n", enMbxResult);
 	}
 
 	return enMbxResult;
@@ -229,7 +232,7 @@ static MS_S8 MDrv_LD_SetupMbx(void)
 
 	enMbxResult = MDrv_MBX_Init(E_MBX_CPU_MIPS, E_MBX_ROLE_HK, PM_MBX_TIMEOUT);
 	if (E_MBX_SUCCESS != enMbxResult) {
-		pr_err("LED Ctrl!! MDrv_MBX_Init fail nMbxResult:%d \n", enMbxResult);
+		pr_err("!! MDrv_MBX_Init fail nMbxResult:%d \n", enMbxResult);
 		return -1;
 	} else {
 		extern int MDrv_MBX_NotifyMsgRecCbFunc(void *);
@@ -238,7 +241,7 @@ static MS_S8 MDrv_LD_SetupMbx(void)
 
 		enMbxResult = MDrv_MBX_RegisterMSG(E_MBX_CLASS_PM_NOWAIT, PM_MBX_QUEUESIZE);
 		if (E_MBX_SUCCESS != enMbxResult) {
-			pr_err("LED Ctrl !!MDrv_MBX_RegisterMSG fail nMbxResult:%d \n", enMbxResult);
+			pr_err("!!MDrv_MBX_RegisterMSG fail nMbxResult:%d \n", enMbxResult);
 		}
 
 		return enMbxResult;
@@ -253,7 +256,7 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 	MBX_Msg stMbxCommand;
 	MS_U16 command;
 	MBX_Result enMbxResult = E_MBX_UNKNOW_ERROR;
-	LEDS_DRV_DEBUG("LED_DRV_Ctrl var(%d) parameter(%d)\n", var, parameter);
+	printk("LED_DRV_Ctrl var(%d) parameter(%d)\n", var, parameter);
 	if (led_init_status == 0) {
 		if (MDrv_LD_SetupMbx() != E_MBX_SUCCESS) {
 			pr_err("MDrv_LD_SetupMbx failed\n");
@@ -283,19 +286,19 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 	case LED_ON_1:
 		command = LED_PWMGPIO_LIGHT_1;
 		led_1_status = 1;
-		LEDS_DRV_DEBUG("Turn on LED 1\n");
+		printk("Turn on LED 1\n");
 		break;
 	case LED_OFF_1:
 		command = LED_PWMGPIO_DARK_1;
 		led_1_status = 0;
-		LEDS_DRV_DEBUG("Turn off LED 1\n");
+		printk("Turn off LED 1\n");
 		break;
 	case LED_BREATH_1:
 		command = LED_PWMGPIO_BREATH_1;
 		if (led_1_status == 0) {
 			command |= LED_1_CTRL_FLAG;
 		}
-		LEDS_DRV_DEBUG("Set LED 1 to breath mode \n");
+		printk("Set LED 1 to breath mode \n");
 		break;
 
 	case LED_BLINK_ONCE_1:
@@ -303,7 +306,7 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 		if (led_1_status == 0) {
 			command |= LED_1_CTRL_FLAG;
 		}
-		LEDS_DRV_DEBUG("LED 1 blink once 0x%x \n", command);
+		printk("LED 1 blink once 0x%x \n", command);
 		break;
 	case LED_KEEP_BLINK_1:
 		command = LED_PWMGPIO_FLICKER_POWERON_1;
@@ -311,7 +314,7 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 			command |= LED_1_CTRL_FLAG;
 		}
 		stMbxCommand.u8Parameters[0] = (MS_U8)(parameter);
-		LEDS_DRV_DEBUG("LED 1 keep blinking parameter=%d\n", parameter);
+		printk("LED 1 keep blinking parameter=%d\n", parameter);
 		break;
 
 	case LED_ON_PERCENTAGE_1:
@@ -321,39 +324,45 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 		}
 		stMbxCommand.u8Parameters[0] = (MS_U8)(parameter);
 		led_1_status = 1;
-		LEDS_DRV_DEBUG("Turn on LED 1 percentage=%d%%\n", parameter);
+		printk("Turn on LED 1 percentage=%d%%\n", parameter);
+		break;
+
+	case LED_PWMGPIO_INVERT_1:
+		command = LED_PWMGPIO_INVERT_1;
+		stMbxCommand.u8Parameters[0] = (MS_U8)(parameter);
+		pr_info("Turn on LED 1 invert=%d\n", parameter);
 		break;
 
 	case LED_ON_2:
 		command = LED_PWMGPIO_LIGHT_2;
 		led_2_status = 1;
-		LEDS_DRV_DEBUG("Turn on LED 2\n");
+		printk("Turn on LED 2\n");
 		break;
 	case LED_OFF_2:
 		command = LED_PWMGPIO_DARK_2;
 		led_2_status = 0;
-		LEDS_DRV_DEBUG("Turn off  LED 2 \n");
+		printk("Turn off  LED 2 \n");
 		break;
 	case LED_BREATH_2:
 		command = LED_PWMGPIO_BREATH_2;
 		if (led_2_status == 0) {
 			command |= LED_2_CTRL_FLAG;
 		}
-		LEDS_DRV_DEBUG("LED 2 breath \n");
+		printk("LED 2 breath \n");
 		break;
 	case LED_BLINK_ONCE_2:
 		command = LED_PWMGPIO_FLICKER_2;
 		if (led_2_status == 0) {
 			command |= LED_2_CTRL_FLAG;
 		}
-		LEDS_DRV_DEBUG("LED 2 blink once \n");
+		printk("LED 2 blink once \n");
 		break;
 	case LED_KEEP_BLINK_2:
 		command = LED_PWMGPIO_FLICKER_POWERON_2;
 		if (led_2_status == 0) {
 			command |= LED_2_CTRL_FLAG;
 		}
-		LEDS_DRV_DEBUG("LED 2 keep blinkig \n");
+		printk("LED 2 keep blinkig \n");
 		break;
 	case LED_ON_PERCENTAGE_2:
 		command = LED_PWMGPIO_LIGHT_PERCENTAGE_2;
@@ -362,8 +371,15 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 		}
 		stMbxCommand.u8Parameters[0] = (MS_U8)(parameter);
 		led_2_status = 1;
-		LEDS_DRV_DEBUG("Turn on LED 2 percentage=%d%%\n", parameter);
+		printk("Turn on LED 2 percentage=%d%%\n", parameter);
 		break;
+
+	case LED_PWMGPIO_INVERT_2:
+		command = LED_PWMGPIO_INVERT_2;
+		stMbxCommand.u8Parameters[0] = (MS_U8)(parameter);
+		pr_info("Turn on LED 2 invert=%d\n", parameter);
+		break;
+
 	default:
 		pr_err("Wrong LED control command \n");
 		return 0;
@@ -372,14 +388,14 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 	if (command & LED_1_CTRL_FLAG) {
 		stMbxCommand.u8Index = LED_PWMGPIO_LIGHT_1;
 		enMbxResult = MDrv_MBX_SendMsg(&stMbxCommand);
-		LEDS_DRV_DEBUG("LED_DRV_Ctrl, Turn on led 1 firstly, result is 0x%x\n", enMbxResult);
+		printk("LED_DRV_Ctrl, Turn on led 1 firstly, result is 0x%x\n", enMbxResult);
 		led_1_status = 1;
 		udelay(5);
 	}
 	if (command & LED_2_CTRL_FLAG) {
 		stMbxCommand.u8Index = LED_PWMGPIO_LIGHT_2;
 		enMbxResult = MDrv_MBX_SendMsg(&stMbxCommand);
-		LEDS_DRV_DEBUG("LED_DRV_Ctrl, Turn on led 2 firstly, result is 0x%x\n", enMbxResult);
+		printk("LED_DRV_Ctrl, Turn on led 2 firstly, result is 0x%x\n", enMbxResult);
 		led_2_status = 1;
 		udelay(5);
 	}
@@ -388,16 +404,28 @@ MBX_Result LED_DRV_Ctrl(MS_U16 var, const unsigned int parameter)
 	return enMbxResult;
 }
 
+int MDrv_LED_Resume(void)
+{
+#if defined(CONFIG_IDME)
+    if (strstr(saved_command_line, "product_name=brandenburg") != NULL) {
+        /* Set the led inverse for brandenburg board */
+        LED_DRV_Ctrl(LED_INVERT_1, 1);
+        pr_info("[%s:%d] Set led 1 inverse\n", __FUNCTION__, __LINE__);
+    }
+#endif
+    return 0;
+}
+
 /****************************************************************************
  * driver functions
  ***************************************************************************/
 
-struct abc123_led {
+struct margo_led {
 	struct led_classdev cdev;
 	const char *name;
 
 };
-static struct abc123_led leds[] = {
+static struct margo_led leds[] = {
 	{
 		.name = "tv_led",
 	},
@@ -417,9 +445,8 @@ static ssize_t led_set(struct device *dev, struct device_attribute *attr,
 	int ret = 0;
 	mutex_lock(&lock);
 	if (buf != NULL && size != 0) {
-		LEDS_DRV_DEBUG("[led action] buf is %s and size is %zd\n", buf, size);
+		printk("[led action] buf is %s and size is %zd\n", buf, size);
 		readCount = sscanf(buf, "%d", &action);
-		pr_info("LED Ctrl, led_set action = %d\n", action);
 		if (readCount != 1) {
 			ret = -EINVAL;
 			goto led_set_end;
@@ -443,7 +470,7 @@ static ssize_t led_set(struct device *dev, struct device_attribute *attr,
 			LED_DRV_Ctrl(LED_OFF_1, 0);
 			msleep(400);
 
-			parameter = 20;
+			parameter = 15;
 			LED_DRV_Ctrl(LED_ON_PERCENTAGE_1, parameter);
 			goto led_set_end;
 		}
@@ -456,7 +483,7 @@ static ssize_t led_set(struct device *dev, struct device_attribute *attr,
 
 		if (action == LED_BLINK_ONCE_AND_ON_2) {
 			LED_DRV_Ctrl(LED_BLINK_ONCE_2, parameter);
-			parameter = 20;
+			parameter = 15;
 			LED_DRV_Ctrl(LED_ON_PERCENTAGE_2, parameter);
 			goto led_set_end;
 		}
@@ -485,7 +512,7 @@ static ssize_t dummy_light_set(struct device *dev, struct device_attribute *attr
 	unsigned int action = 0;
 	int ret = 0;
 	if (buf != NULL && size != 0) {
-		LEDS_DRV_DEBUG("[dummy light action] buf is %s and size is %zd\n", buf, size);
+		printk("[dummy light action] buf is %s and size is %zd\n", buf, size);
 		ret = sscanf(buf, "%d", &action);
 		if (ret != 1)
 			return -EINVAL;
@@ -518,7 +545,7 @@ static int mstar_leds_probe(struct platform_device *pdev)
 	info.suspend_time = current_kernel_time();
 #endif
 
-	LEDS_DRV_DEBUG("[LED]%s\n", __func__);
+	printk("[LED]%s\n", __func__);
 	for (i = 0; i < ARRAY_SIZE(leds); i++) {
 
 		leds[i].cdev.name = leds[i].name;
@@ -579,7 +606,7 @@ static int __init mstar_leds_init(void)
 {
 	int ret;
 
-	LEDS_DRV_DEBUG("[LED]%s\n", __func__);
+	printk("[LED]%s\n", __func__);
 	ret = platform_device_register(&mstar_leds_device);
 	if (ret)
 		pr_info("[LED]mstar_leds_init:dev:E%d\n", ret);

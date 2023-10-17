@@ -58,7 +58,6 @@
 /// @brief  Memory Pool Control Interface
 /// @author MStar Semiconductor Inc.
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
 //-------------------------------------------------------------------------------------------------
 //  Include Files
 //-------------------------------------------------------------------------------------------------
@@ -89,6 +88,7 @@
 #include <asm/io.h>
 #include <asm/types.h>
 #include <asm/cacheflush.h>
+#include <linux/backlight.h>
 
 #if defined(CONFIG_COMPAT)
 #include <linux/compat.h>
@@ -97,124 +97,266 @@
 #include "power.h"
 
 #include "mdrv_mstypes.h"
+#include "mdrv_mpm.h"
 #include "mdrv_pm.h"
 #include "mhal_pm.h"
 #include "mdrv_system.h"
 #include "mdrv_gpio.h"
-#include "PM.h"
-#include "RT_PM.h"
-
-extern void SerPrintf(char *fmt, ...);
-extern char *idme_get_product_name(void);
+#include "mhal_gpio_reg.h"
+#include "mhal_gpio.h"
 
 //--------------------------------------------------------------------------------------------------
-//  Forward deabc123tion
+//  Forward declaration
 //--------------------------------------------------------------------------------------------------
-#define MDRV_PM_DEBUG(fmt, args...)  printk(KERN_ERR "[%s][%d] " fmt, __func__, __LINE__, ## args)
-
-#define RTPM_BUFF_SZ 128
-
-#define INVALID_GPIO_NUM        (0xFF)
-#define DEFAULT_BT_GPIO_NUM     (0x05)
-
 /* MMAP lay out. */
+#define PM_OFFSET_DEFAULT       (0x0000)
 #define PM_OFFSET_BT            (0x0070)
+#define PM_OFFSET_USB           (0x0073)
 #define PM_OFFSET_EWBS          (0x0075)
+#define PM_OFFSET_BTW           (0x0078)
+#define PM_OFFSET_VAD           (0x007A)
 #define PM_OFFSET_POWER_DOWN    (0x00A0)
 #define PM_OFFSET_SAR0          (0x00C0)
 #define PM_OFFSET_SAR1          (0x00E0)
 #define PM_OFFSET_LED           (0x0140)
 #define PM_OFFSET_IR_VER        (0x0150)
+#define PM_OFFSET_IR_NORMAL     (0x0160) //data_size + data(4* irkey_number)
+#define PM_OFFSET_IR_EXTEND     (0x0200) //data_size + data(7* irkey_number)
+
+/* MMAP Align. */
+#define MMAP_DATA_ALIGN         (0x1000UL)
+#define MMAP_DATA_SIZE          (0x1000UL)
+#define MMAP_DRAM_ALIGN         (0x10000UL)
+#define MMAP_DRAM_SIZE          (0x10000UL)
 
 #define PM_SUPPORT_SAR_KEYS_MAX     5
 
-//--------------------------------------------------------------------------------------------------
-//  Local variable
-//--------------------------------------------------------------------------------------------------
-
-//-------------------------------------------------------------------------------------------------
-//  Golbal variable
-//-------------------------------------------------------------------------------------------------
-unsigned long gPM_DramAddr = 0x10000;
-unsigned long gPM_DramSize = DRAM_MMAP_SZ;
-unsigned long gPM_DataAddr = 0;
-unsigned long gPM_DataSize = 0x1000;
-static char pm_path[CORENAME_MAX_SIZE]={0};
-static char pm_path_exist = 0;
-static char gPM_Buf[0x10000];
-static atomic_t PM_WOL_EN = ATOMIC_INIT(0);
-
-static unsigned int     gRTPM_Enable = 0;
-static unsigned int     gRTPM_Live = 1;
-static unsigned long    gRTPM_Addr = 0;
-static char             gRTPM_Path[RTPM_BUFF_SZ] = {0};
-
-static PM_Cfg_t gstPMCfg;
-static PM_WoBT_WakeCfg      gstWoBTCfg = {0};
-static PM_WoEWBS_WakeCfg    gstWoEWBSCfg = {0};
-static SAR_RegCfg gstSARCfg;
-static SAR_RegCfg gstSARCfg1;
-static u8 u8LedPara[10];
-static u8 u8PowerOffLed = 0xFF;
-static u8 u8IRVersion = IR_NO_INI_VERSION_NUM;
-static u8 u8IRCfg[32] = {0};
-static u8 u8IR2Cfg[16] = {0};
-static phys_addr_t *remap_PM_addr;
-static phys_addr_t *remap_config_addr;
-
+/* Debug. */
+#define DBG_CMD_SIZE            (15)
+#define DBG_CMD_CAE             (0xF1)
+#define DBG_CMD_PW              (0xF2)
+#define DBG_CMD_STR             (0xF3)
+#define DBG_CMD_DVI013          (PM_WAKEUPSRC_DVI)
+#define DBG_CMD_DVI2            (PM_WAKEUPSRC_DVI2)
+#define DBG_CMD_LAN             (PM_WAKEUPSRC_WOL)
+#define DBG_CMD_VOC             (PM_WAKEUPSRC_VOICE)
+#define DBG_CMD_USB             (PM_WAKEUPSRC_USB)
+#define DBG_CMD_VAD             (PM_WAKEUPSRC_VAD)
+#define DBG_CMD_CEC             (PM_WAKEUPSRC_CEC)
+#define DBG_CMD_BTW             (0xF4)
+#define DBG_CMD_WIFI            (PM_WAKEUPSRC_GPIO_WOWLAN)
+#define DBG_CMD_BT              (PM_WAKEUPSRC_GPIO_WOBT)
+#define DBG_CMD_EWBS            (PM_WAKEUPSRC_GPIO_WOEWBS)
 
 //-------------------------------------------------------------------------------------------------
 //  Data structure
 //-------------------------------------------------------------------------------------------------
+typedef enum
+{
+    E_FROM_PART_TO_LOCAL,
+    E_FROM_LOCAL_TO_DRAM,
+} MDRV_COPY_TYPE;
+
+typedef struct
+{
+    void *  pvLocal;
+    void *  pvDram;
+    size_t  tSize;
+    bool    bMagic;
+} MDRV_BUFF_INFO;
+
+//--------------------------------------------------------------------------------------------------
+//  Local variable
+//--------------------------------------------------------------------------------------------------
+#define LED_PIN_NUM  PAD_PWM0_PM
+//-------------------------------------------------------------------------------------------------
+//  Golbal variable
+//-------------------------------------------------------------------------------------------------
+/* PM paramter data. */
+static PM_WakeCfg_t         gstCfgDef = {0};
+static PM_PowerDownCfg_t    gstCfgPowerDown = {0};
+static PM_IrInfoCfg_t       gstCfgIr = {0};
+static SAR_RegCfg           gstCfgSar0 = {0};
+static SAR_RegCfg           gstCfgSar1 = {0};
+static u8                   gu8CfgLed[10] = {0};
+static PM_WoBT_WakeCfg      gstCfgBt = {0};
+static u8                   gu8CfgBtw = PM_SOURCE_DISABLE;
+static PM_WoEWBS_WakeCfg    gstCfgEwbs = {0};
+static u8                   gu8CfgUsb = PM_SOURCE_DISABLE;
+static u8                   gu8CfgVad = PM_SOURCE_DISABLE;
+
+/* PM paramter buffer. */
+static phys_addr_t *        gPM_DataVa = NULL;
+static unsigned long long   gPM_DataAddr = 0;
+static unsigned long long   gPM_DataSize = MMAP_DATA_SIZE;
+/* PM firmware buffer. */
+static char                 gPM_Path[CORENAME_MAX_SIZE] = {0};
+static phys_addr_t *        gPM_DramTemp = NULL;
+static phys_addr_t *        gPM_DramVa = NULL;
+static unsigned long long   gPM_DramAddr = MMAP_DRAM_ALIGN;
+static unsigned long long   gPM_DramSize = MMAP_DRAM_SIZE;
+
+/* RTPM control. */
+static unsigned int         gRTPM_Enable = 0;
+/* RTPM firmware buffer. */
+static char                 gRTPM_Path[CORENAME_MAX_SIZE] = {0};
+static phys_addr_t *        gRTPM_DramTemp = NULL;
+static phys_addr_t *        gRTPM_DramVa = NULL;
+static unsigned long long   gRTPM_DramAddr = 0;
+static unsigned long long   gRTPM_DramSize = MMAP_DRAM_SIZE;
+
+/* Panic firmare buffer. */
+static uint8_t              gPanic[] = {
+#ifdef CONFIG_MTK_PSTORE
+                                            #include "panic.dat"
+#endif
+                                        };
+
+/* Other: Remove...? */
+static u8                   gu8PmIr[32] = {0};
+static u8                   gu8PmLed = PM_SOURCE_DISABLE;
+static char                 gSlot_Suffix[3] = {0};
+
+#ifdef CONFIG_AMAZON_WOL
+static atomic_t PM_WOL_EN = ATOMIC_INIT(0);
+#endif
+
+/* Debug. */
+static bool                 gbDebug = FALSE;
 
 //-------------------------------------------------------------------------------------------------
 //  Local function
 //-------------------------------------------------------------------------------------------------
-static unsigned long _MDrv_PM_Ba2Pa(unsigned long ba)
+static unsigned long long _MDrv_PM_Ba2Pa(unsigned long long ba)
 {
-    unsigned long pa = 0;
+    unsigned long long pa = 0;
 
-    if ((ba > ARM_MIU0_BUS_BASE) && (ba <= ARM_MIU1_BUS_BASE))
+    if ((ba >= ARM_MIU0_BUS_BASE) && (ba <= ARM_MIU1_BUS_BASE))
         pa = ba - ARM_MIU0_BUS_BASE + ARM_MIU0_BASE_ADDR;
     else if ((ba > ARM_MIU1_BUS_BASE) && (ba <= ARM_MIU2_BUS_BASE))
         pa = ba - ARM_MIU1_BUS_BASE + ARM_MIU1_BASE_ADDR;
     else
-        MDRV_PM_DEBUG("ba=0x%tX, pa=0x%tX.\n", (size_t)ba, (size_t)pa);
+        MDRV_PM_ERR("ba=0x%llX, pa=0x%llX.\n", ba, pa);
 
     return pa;
 }
 
-static unsigned long _MDrv_PM_Pa2Ba(unsigned long pa)
+static unsigned long long _MDrv_PM_Pa2Ba(unsigned long long pa)
 {
-    unsigned long ba = 0;
+    unsigned long long ba = 0;
 
-    if ((pa > ARM_MIU0_BASE_ADDR) && (pa <= ARM_MIU1_BASE_ADDR))
+    if ((pa >= ARM_MIU0_BASE_ADDR) && (pa <= ARM_MIU1_BASE_ADDR))
         ba = pa + ARM_MIU0_BUS_BASE - ARM_MIU0_BASE_ADDR;
     else if ((pa > ARM_MIU1_BASE_ADDR) && (pa <= ARM_MIU2_BASE_ADDR))
         ba = pa + ARM_MIU1_BUS_BASE - ARM_MIU1_BASE_ADDR;
     else
-        MDRV_PM_DEBUG("pa=0x%tX, ba=0x%tX.\n", (size_t)pa, (size_t)ba);
+        MDRV_PM_ERR("pa=0x%llX, ba=0x%llX.\n", pa, ba);
 
     return ba;
 }
 
-static PM_Result _MDrv_PM_Get_RTPM_Path(char *path)
+static void _MDrv_RTPM_Mapping(void)
+{
+    /* Check parameter. */
+    if ((gRTPM_DramAddr % MMAP_DRAM_ALIGN) || (gRTPM_DramSize % MMAP_DATA_SIZE))
+    {
+        MDRV_PM_ERR("Paramter error: Addr=0x%tX Size=0x%tX\n",
+                    (size_t)gRTPM_DramAddr, (size_t)gRTPM_DramSize);
+        WARN_ON(1);
+    }
+
+    /* Mapping fw buffer. */
+    if (gRTPM_DramVa == NULL)
+    {
+        gRTPM_DramVa = ioremap_wc(gRTPM_DramAddr, gRTPM_DramSize);
+        MDRV_PM_ERR("[DRAM] 0x%tX = ioremap_wc(0x%tX, 0x%tX).\n",
+                    (size_t)gRTPM_DramVa,
+                    (size_t)gRTPM_DramAddr, (size_t)gRTPM_DramSize);
+    }
+}
+
+static void _MDrv_RTPM_Unmapping(void)
+{
+    if (gRTPM_DramVa != NULL)
+    {
+        iounmap(gRTPM_DramVa);
+        gRTPM_DramVa = NULL;
+    }
+}
+
+static bool _MDrv_PM_Check_Path(char *output, char *input)
+{
+    struct file *fp = NULL;
+
+    if ((strlen(input) == 0) || (!output))
+        return FALSE;
+
+    fp = filp_open(input, O_RDONLY, 0);
+    if (IS_ERR(fp))
+        return FALSE;
+    filp_close(fp, NULL);
+    strncpy(output, input, CORENAME_MAX_SIZE);
+    return TRUE;
+}
+
+static PM_Result _MDrv_PM_Get_Path(char *path)
+{
+    if ((_MDrv_PM_Check_Path(path, gPM_Path)) ||    /* Default from bootarg. */
+        (_MDrv_PM_Check_Path(path, "/tvconfig/config/PM.bin")) ||
+        (_MDrv_PM_Check_Path(path, "/config/PM.bin")) ||
+        (_MDrv_PM_Check_Path(path, "/mnt/vendor/tvservice/glibc/bin/PM.bin")) ||
+        (_MDrv_PM_Check_Path(path, "/mnt/vendor/tvconfig/config/PM.bin")))
+        return E_PM_OK;
+
+    MDRV_PM_ERR("Can't get PM.bin path.\n");
+    return E_PM_FAIL;
+}
+
+static PM_Result _MDrv_RTPM_Get_Path(char *path)
 {
     int ret = E_PM_OK;
     struct file *fp = NULL;
     mm_segment_t fs;
     loff_t pos = 0;
     int blk = 1;
-    char buff[RTPM_BUFF_SZ] = {0};
+    char buff[CORENAME_MAX_SIZE] = {0};
 
-    /* Find /dev/block/platform/mstar_mci.0/by-name/RTPM exist. */
-    snprintf(buff, RTPM_BUFF_SZ, "/dev/block/platform/mstar_mci.0/by-name/RTPM");
-    fp = filp_open(buff, O_RDONLY, 0);
+    /* Already init. */
+    if (strlen(path) != 0)
+    {
+        fp = filp_open(path, O_RDONLY, 0);
+        if (!IS_ERR(fp))
+        {
+            filp_close(fp, NULL);
+            return E_PM_OK;
+        }
+    }
+
+    /* Find /config/RT_PM.bin. */
+    fp = filp_open("/config/RT_PM.bin", O_RDONLY, 0);
     if (!IS_ERR(fp))
     {
-        strncpy(path, buff, RTPM_BUFF_SZ);
+        strncpy(path, "/config/RT_PM.bin", CORENAME_MAX_SIZE);
         filp_close(fp, NULL);
         return E_PM_OK;
+    }
+
+    /* Find /dev/block/platform/mstar_mci.0/by-name/RTPM exist. */
+    MDRV_PM_ERR("Ray Open slot %s.\n", gSlot_Suffix);
+    snprintf(buff, CORENAME_MAX_SIZE, "/dev/block/platform/mstar_mci.0/by-name/RTPM%s", gSlot_Suffix);
+    fp = filp_open(buff, O_RDONLY, 0);
+    if ((!IS_ERR(fp)) || (PTR_ERR(fp) == -EACCES))
+    {
+        MDRV_PM_ERR("Try non-A path.\n");
+        snprintf(buff, CORENAME_MAX_SIZE, "/dev/block/platform/mstar_mci.0/by-name/RTPM%s", gSlot_Suffix);
+        fp = filp_open(buff, O_RDONLY, 0);
+        if ((!IS_ERR(fp)) || (PTR_ERR(fp) == -EACCES))
+        {
+            strncpy(path, buff, CORENAME_MAX_SIZE);
+            if (!IS_ERR(fp))
+                filp_close(fp, NULL);
+            return E_PM_OK;
+	    }
     }
 
     /* Store fs. */
@@ -224,33 +366,33 @@ static PM_Result _MDrv_PM_Get_RTPM_Path(char *path)
     /* Find /dev/mmcblk0p#. */
     do
     {
-        memset(buff, '\0', RTPM_BUFF_SZ);
-        snprintf(buff, RTPM_BUFF_SZ, "/sys/block/mmcblk0/mmcblk0p%d/uevent", blk);
+        memset(buff, '\0', CORENAME_MAX_SIZE);
+        snprintf(buff, CORENAME_MAX_SIZE, "/sys/block/mmcblk0/mmcblk0p%d/uevent", blk);
         fp = filp_open(buff, O_RDONLY, 0);
         if (IS_ERR(fp))
         {
-            MDRV_PM_DEBUG("RTPM path not found.\n");
+            MDRV_PM_ERR("RTPM path not found.\n");
             ret = E_PM_FAIL;
-            goto _MDrv_PM_Get_RTPM_Path_End;
+            goto _MDrv_RTPM_Get_Path_End;
         }
-        memset(buff, '\0', RTPM_BUFF_SZ);
-        vfs_read(fp, buff, RTPM_BUFF_SZ, &pos);
+        memset(buff, '\0', CORENAME_MAX_SIZE);
+        vfs_read(fp, buff, CORENAME_MAX_SIZE, &pos);
         filp_close(fp, NULL);
 
         /* Check found. */
-        if (strnstr(buff, "PARTNAME=RTPM", RTPM_BUFF_SZ))
+        if (strnstr(buff, "PARTNAME=RTPM", CORENAME_MAX_SIZE))
         {
-            memset(buff, '\0', RTPM_BUFF_SZ);
-            snprintf(buff, RTPM_BUFF_SZ, "/dev/mmcblk0p%d", blk);
+            memset(buff, '\0', CORENAME_MAX_SIZE);
+            snprintf(buff, CORENAME_MAX_SIZE, "/dev/mmcblk0p%d", blk);
             fp = filp_open(buff, O_RDONLY, 0);
             if (!IS_ERR(fp))
             {
-                snprintf(path, RTPM_BUFF_SZ, "/dev/mmcblk0p%d", blk);
+                snprintf(path, CORENAME_MAX_SIZE, "/dev/mmcblk0p%d", blk);
                 filp_close(fp, NULL);
             }
             else
             {
-                snprintf(path, RTPM_BUFF_SZ, "/dev/mmcblk%d", blk);
+                snprintf(path, CORENAME_MAX_SIZE, "/dev/mmcblk%d", blk);
             }
             break;
         }
@@ -261,237 +403,905 @@ static PM_Result _MDrv_PM_Get_RTPM_Path(char *path)
         }
     } while (1);
 
-_MDrv_PM_Get_RTPM_Path_End:
+_MDrv_RTPM_Get_Path_End:
     /* Restore fs. */
     set_fs(fs);
 
     return ret;
 }
 
-static PM_Result _MDrv_PM_Copy_RTPM_Bin(unsigned long dst_addr, char *src_path)
+static PM_Result _MDrv_PM_Copy_Bin(MDRV_COPY_TYPE eType, int size, void *src, void *dst)
 {
-#if 0 // SOPHIA-3836: Use RT_PM.h instead of RT_PM.bin
+    PM_Result eRet = E_PM_OK;
     struct file *fp = NULL;
     mm_segment_t fs;
     loff_t pos = 0;
-    phys_addr_t *va = 0;
 
-    /* Check data init. */
-    if ((strlen(src_path) == 0) || (dst_addr == 0))
+    switch (eType)
     {
-        MDRV_PM_DEBUG("RTPM data error: path=%s, addr=0x%lX.\n", src_path, dst_addr);
-        return E_PM_FAIL;
-    }
-
-    /*
-     * Prepare flow:
-     * 1. open fd.
-     * 2. ioremap_wc address.
-     * 3. store fs.
-     */
-    fp = filp_open(src_path, O_RDONLY, 0);
-    if (IS_ERR(fp))
-    {
-        MDRV_PM_DEBUG("filp_open() fail.\n");
-        return E_PM_FAIL;
-    }
-    va = ioremap_wc(dst_addr, DRAM_MMAP_SZ);
-    if (va == NULL)
-    {
-		MDRV_PM_DEBUG("ioremap_wc() fail.\n");
-        return E_PM_FAIL;
-    }
-    fs = get_fs();
-    set_fs(KERNEL_DS);
-
-    /* Copy form RTPM partition to DRAM address. */
-    vfs_read(fp, (char *)va, DRAM_MMAP_SZ, &pos);
-
-    /*
-     * Complete to do:
-     * 1. restore fs.
-     * 2. un-ioremap_wc address.
-     * 3. close fd.
-     */
-    set_fs(fs);
-    iounmap(va);
-    filp_close(fp, NULL);
-#else
-	phys_addr_t *va = 0;
-
-	/* Check data init. */
-	if (dst_addr == 0) {
-		MDRV_PM_DEBUG("RTPM data error: addr=0x%lX.\n", dst_addr);
-		return E_PM_FAIL;
-	}
-
-	va = ioremap_wc (dst_addr, DRAM_MMAP_SZ);
-	if (va == NULL) {
-		MDRV_PM_DEBUG("ioremap_wc() fail.\n");
-		return E_PM_FAIL;
-	}
-
-	if (RT_PM_bin_len <= 0) {
-		MDRV_PM_DEBUG("RTPM lenth abnormal. Len: %d\n", RT_PM_bin_len);
-		return E_PM_FAIL;
-	}
-
-	if (RT_PM_bin_len > DRAM_MMAP_SZ) {
-		MDRV_PM_DEBUG("RTPM later than buffer. Len: %d\n", RT_PM_bin_len);
-		return E_PM_FAIL;
-	}
-
-	/* Copy form RTPM partition to DRAM address. */
-	memcpy((void *)va, RT_PM_bin, DRAM_MMAP_SZ);
-
-	/*
-	* Complete to do:
-	*/
-	iounmap(va);
-#endif
-	return E_PM_OK;
-}
-
-static PM_Result _MDrv_PM_Set_Data(u16 u16Key, void *pSrc, u8 u8Size)
-{
-    PM_Result eRet = E_PM_OK;
-    phys_addr_t *pVa = NULL;
-
-    /*
-     * [byte-0]      : Command index for check.
-     * [byte-1 ~ ...]: Original info.
-     */
-    switch (u16Key)
-    {
-        case PM_KEY_BT:
-			pVa = (remap_config_addr + PM_OFFSET_BT);
+        case E_FROM_PART_TO_LOCAL:
+            if ((strlen((char *)src) == 0) || (dst == NULL))
+            {
+                MDRV_PM_ERR("Data error: src=%s, dst=0x%tX.\n", (char *)src, (size_t)dst);
+                return E_PM_FAIL;
+            }
+            fp = filp_open((char *)src, O_RDONLY, 0);
+            if (IS_ERR(fp))
+            {
+                MDRV_PM_ERR("filp_open(%s) fail = %td.\n", (char *)src, (size_t)PTR_ERR(fp));
+                BUG_ON(1);
+                return E_PM_FAIL;
+            }
+            fs = get_fs();
+            set_fs(KERNEL_DS);
+            vfs_read(fp, (char *)dst, size, &pos);
+            set_fs(fs);
+            filp_close(fp, NULL);
             break;
 
-        case PM_KEY_EWBS:
-			pVa = (remap_config_addr + PM_OFFSET_EWBS);
+        case E_FROM_LOCAL_TO_DRAM:
+            if ((src == NULL) || (dst == NULL))
+            {
+                MDRV_PM_ERR("Data error: src=%tX, dst=0x%tX.\n", (size_t)src, (size_t)dst);
+                return E_PM_FAIL;
+            }
+            memcpy(dst, src, size);
             break;
 
         default:
-            MDRV_PM_DEBUG("u16Key=0x%X not support.\n", u16Key);
             eRet = E_PM_FAIL;
             break;
-    }
-
-    /* Check mapping result. */
-    if (eRet == E_PM_OK)
-    {
-		if (pVa == NULL)
-        {
-            MDRV_PM_DEBUG("ioremap_wc() fail.\n");
-            eRet = E_PM_FAIL;
-        }
-        else
-        {
-			*((u8 *)pVa + 0) = (u8)u16Key;
-			memcpy((void *)((u8 *)pVa + 1), pSrc, u8Size);
-			//iounmap(pVa);
-        }
     }
 
     return eRet;
 }
 
+static PM_Result _MDrv_PM_Store_Fw(void)
+{
+    if (gPM_DramTemp == NULL)
+    {
+        if ((gPM_DramTemp = vzalloc(gPM_DramSize)) == NULL)
+        {
+            MDRV_PM_ERR("Buffer vzalloc(0x%tX) fail.\n", (size_t)gPM_DramSize);
+            return E_PM_FAIL;
+        }
+
+        if ((_MDrv_PM_Get_Path(gPM_Path) != E_PM_OK) ||
+            (_MDrv_PM_Copy_Bin(E_FROM_PART_TO_LOCAL, (int)gPM_DramSize,
+                               (void *)gPM_Path, (void *)gPM_DramTemp) != E_PM_OK))
+        {
+            return E_PM_FAIL;
+        }
+    }
+    return E_PM_OK;
+}
+
+static PM_Result _MDrv_RTPM_Store_Fw(void)
+{
+    if (gRTPM_DramTemp == NULL)
+    {
+        if ((gRTPM_DramTemp = vzalloc(gRTPM_DramSize)) == NULL)
+        {
+            MDRV_PM_ERR("Buffer vzalloc(0x%tX) fail.\n", (size_t)gRTPM_DramSize);
+            return E_PM_FAIL;
+        }
+
+        if ((_MDrv_RTPM_Get_Path(gRTPM_Path) != E_PM_OK) ||
+            (_MDrv_PM_Copy_Bin(E_FROM_PART_TO_LOCAL, (int)gRTPM_DramSize,
+                               (void *)gRTPM_Path, (void *)gRTPM_DramTemp) != E_PM_OK))
+        {
+            return E_PM_FAIL;
+        }
+    }
+    return E_PM_OK;
+}
+
+static void _MDrv_PM_Freed_Fw(void)
+{
+    if (gPM_DramTemp != NULL)
+    {
+        vfree(gPM_DramTemp);
+        gPM_DramTemp = NULL;
+    }
+}
+
+static void _MDrv_RTPM_Freed_Fw(void)
+{
+    if (gRTPM_DramTemp != NULL)
+    {
+        vfree(gRTPM_DramTemp);
+        gRTPM_DramTemp = NULL;
+    }
+}
+
+static void _MDrv_PM_Get_Buff(u16 u16Key, MDRV_BUFF_INFO *pstInfo)
+{
+    if (pstInfo == NULL)
+    {
+        MDRV_PM_ERR("pstInfo=NULL.\n");
+        return;
+    }
+
+    switch (u16Key)
+    {
+        case PM_KEY_DEFAULT:
+            pstInfo->pvLocal = &gstCfgDef;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_DEFAULT + 0x00);
+            pstInfo->tSize = sizeof(PM_WakeCfg_t);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_POWER_DOWN:
+            pstInfo->pvLocal = &gstCfgPowerDown;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_POWER_DOWN + 0x00);
+            pstInfo->tSize = sizeof(PM_PowerDownCfg_t);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_IR:
+            pstInfo->pvLocal = &gstCfgIr;
+            pstInfo->pvDram = NULL;
+            pstInfo->tSize = sizeof(PM_IrInfoCfg_t);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_IR_VERSION:
+            pstInfo->pvLocal = &gstCfgIr.u8IrVersion;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_IR_VER + 0x00);
+            pstInfo->tSize = sizeof(gstCfgIr.u8IrVersion);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_IR_NORMAL:
+            pstInfo->pvLocal = &gstCfgIr.u8NormalKeyNumber;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_IR_NORMAL + 0x00);
+            pstInfo->tSize = (IR_POWER_KEY_NORMAL_SIZE_MAX+1);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_IR_EXT:
+            pstInfo->pvLocal = &gstCfgIr.u8ExtendKeyNumber;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_IR_EXTEND + 0x00);
+            pstInfo->tSize = (IR_POWER_KEY_EXTEND_SIZE_MAX+1);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_SAR0:
+            pstInfo->pvLocal = &gstCfgSar0;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_SAR0 + 0x00);
+            pstInfo->tSize = sizeof(SAR_RegCfg);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_SAR1:
+            pstInfo->pvLocal = &gstCfgSar1;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_SAR1 + 0x00);
+            pstInfo->tSize = sizeof(SAR_RegCfg);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_LED:
+            pstInfo->pvLocal = &gu8CfgLed;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_LED + 0x00);
+            pstInfo->tSize = sizeof(gu8CfgLed);
+            pstInfo->bMagic = FALSE;
+            break;
+
+        case PM_KEY_BT:
+            pstInfo->pvLocal = &gstCfgBt;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_BT + 0x01);
+            pstInfo->tSize = sizeof(PM_WoBT_WakeCfg);
+            pstInfo->bMagic = TRUE;
+            break;
+
+        case PM_KEY_BTW:
+            pstInfo->pvLocal = &gu8CfgBtw;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_BTW + 0x01);
+            pstInfo->tSize = sizeof(gu8CfgBtw);
+            pstInfo->bMagic = TRUE;
+            break;
+
+        case PM_KEY_EWBS:
+            pstInfo->pvLocal = &gstCfgEwbs;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_EWBS + 0x01);
+            pstInfo->tSize = sizeof(PM_WoEWBS_WakeCfg);
+            pstInfo->bMagic = TRUE;
+            break;
+
+        case PM_KEY_USB:
+            pstInfo->pvLocal = &gu8CfgUsb;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_USB + 0x01);
+            pstInfo->tSize = sizeof(gu8CfgUsb);
+            pstInfo->bMagic = TRUE;
+            break;
+
+        case PM_KEY_VAD:
+            pstInfo->pvLocal = &gu8CfgVad;
+            pstInfo->pvDram = (void *)((u8 *)gPM_DataVa + PM_OFFSET_VAD + 0x01);
+            pstInfo->tSize = sizeof(gu8CfgVad);
+            pstInfo->bMagic = TRUE;
+            break;
+
+        default:
+            break;
+    }
+
+    /* This stage can't copy to DRAM. */
+    if (gPM_DataVa == NULL)
+    {
+        pstInfo->pvDram = NULL;
+    }
+}
+
+static void _MDrv_PM_Set_Mode(u8 u8Mode)
+{
+    PM_WakeCfg_t    stCfgDef = {0};
+
+    MDrv_PM_Read_Key(PM_KEY_DEFAULT, (void *)&stCfgDef);
+    stCfgDef.u8PmStrMode = u8Mode;
+    MDrv_PM_Write_Key(PM_KEY_DEFAULT, (void *)&stCfgDef, sizeof(stCfgDef));
+}
+
+static void _MDrv_PM_Set_To_Dram(u16 u16Key, void *pData)
+{
+    MDRV_BUFF_INFO stInfo = {0};
+
+    _MDrv_PM_Get_Buff(u16Key, &stInfo);
+
+    /* Check result. */
+    if (stInfo.tSize == 0)
+        MDRV_PM_ERR("Data(0x%X) command fail.\n", u16Key);
+    else if (stInfo.pvDram == NULL)
+        MDRV_PM_ERR("Data(0x%X) mapping fail.\n", u16Key);
+    else
+        memcpy((void *)stInfo.pvDram, (const void *)pData, stInfo.tSize);
+
+    /* Write magic number for PM51 check. */
+    if (TRUE == stInfo.bMagic)
+    {
+        *((u8 *)stInfo.pvDram - 0x01) = (u8)u16Key;
+    }
+}
+
+static void _MDrv_PM_Flush_Config(void)
+{
+    /* Flush all of local config to dram. */
+    _MDrv_PM_Set_To_Dram(PM_KEY_DEFAULT,    (void *)&gstCfgDef);
+    _MDrv_PM_Set_To_Dram(PM_KEY_POWER_DOWN, (void *)&gstCfgPowerDown);
+    _MDrv_PM_Set_To_Dram(PM_KEY_IR_VERSION, (void *)&gstCfgIr.u8IrVersion);
+    _MDrv_PM_Set_To_Dram(PM_KEY_IR_NORMAL,  (void *)&gstCfgIr.u8NormalKeyNumber);
+    _MDrv_PM_Set_To_Dram(PM_KEY_IR_EXT,     (void *)&gstCfgIr.u8ExtendKeyNumber);
+    _MDrv_PM_Set_To_Dram(PM_KEY_SAR0,       (void *)&gstCfgSar0);
+    _MDrv_PM_Set_To_Dram(PM_KEY_SAR1,       (void *)&gstCfgSar1);
+    _MDrv_PM_Set_To_Dram(PM_KEY_LED,        (void *)&gu8CfgLed);
+    _MDrv_PM_Set_To_Dram(PM_KEY_BT,         (void *)&gstCfgBt);
+    _MDrv_PM_Set_To_Dram(PM_KEY_BTW,        (void *)&gu8CfgBtw);
+    _MDrv_PM_Set_To_Dram(PM_KEY_EWBS,       (void *)&gstCfgEwbs);
+    _MDrv_PM_Set_To_Dram(PM_KEY_USB,        (void *)&gu8CfgUsb);
+    _MDrv_PM_Set_To_Dram(PM_KEY_VAD,        (void *)&gu8CfgVad);
+    // Add debug: MDrv_PM_Show_Config(XXX);
+}
+
+static PM_Result _MDrv_PM_BringUp(void *fw_buf)
+{
+     int ret=0;
+    /* Disable RTPM. */
+    MHal_PM_RunTimePM_Disable_PassWord();
+
+    /* Copy FW Backup -> DRAM. */
+    if (_MDrv_PM_Copy_Bin(E_FROM_LOCAL_TO_DRAM, (int)gPM_DramSize,
+                          fw_buf, (void *)gPM_DramVa) != E_PM_OK)
+    {
+        MDRV_PM_ERR("Copy FW from Backup to DRAM fail.\n");
+        BUG_ON(1);
+    }
+
+    /* Check data. */
+    if (strncmp((char *)gPM_DramVa, (char *)fw_buf, gPM_DramSize) != 0)
+    {
+        MDRV_PM_ERR("Copy FW to DRAM fail, maybe PA=0x%tX SZ=0x%tX can't access.\n",
+                    (size_t)gPM_DramAddr, (size_t)gPM_DramSize);
+        BUG_ON(1);
+    }
+
+    //add begin
+    /* set led on when poweroff into standby mode
+    */
+    ret=MHal_GPIO_Set_Pin_Status(LED_PIN_NUM,0,1);
+    if(ret<0)
+    {
+         printk(KERN_ERR "poweron led MHal_GPIO_Set_Pin_Status \n");
+    }
+    // end
+    
+    /* Copy FW DRAM -> SRAM. */
+    if (MHal_PM_CopyBin2Sram(gPM_DramAddr) != E_PM_OK)
+    {
+        MDRV_PM_ERR("Copy FW from DRAM to SRAM fail.\n");
+        BUG_ON(1);
+    }
+
+    /* Write config address to 8051. */
+    MHal_PM_SetDram2Register(gPM_DataAddr);
+
+    /* Setting 8051 REG. */
+    return MHal_PM_SetSRAMOffsetForMCU();
+}
+
+static PM_Result _MDrv_RTPM_BringUp(void)
+{
+    /* Disable 8051. */
+    MHal_PM_Disable_8051();
+
+    /* Copy FW Backup -> DRAM. */
+    if (_MDrv_PM_Copy_Bin(E_FROM_LOCAL_TO_DRAM, (int)gRTPM_DramSize,
+                          (void *)gRTPM_DramTemp, (void *)gRTPM_DramVa) != E_PM_OK)
+    {
+        MDRV_PM_ERR("Copy FW from Backup to DRAM fail.\n");
+        return E_PM_FAIL;
+    }
+
+    /* Check data. */
+    if (strncmp((char *)gRTPM_DramVa, (char *)gRTPM_DramTemp, gRTPM_DramSize) != 0)
+    {
+        MDRV_PM_ERR("Copy FW to DRAM fail, maybe PA=0x%tX SZ=0x%tX can't access.\n",
+                    (size_t)gRTPM_DramAddr, (size_t)gRTPM_DramSize);
+        BUG_ON(1);
+    }
+
+    /* Setting 8051 REG. */
+    MHal_PM_SetDRAMOffsetForMCU(_MDrv_PM_Ba2Pa(gRTPM_DramAddr));
+
+    return E_PM_OK;
+}
+
+//TODO: Remove.
+static void _MDrv_PM_Set_Ir(void)
+{
+    PM_WakeCfg_t    stCfgDef = {0};
+    PM_IrInfoCfg_t  stCfgIr = {0};
+
+    /* Change local config. */
+    MDrv_PM_Read_Key(PM_KEY_IR, (void *)&stCfgIr);
+    if (stCfgIr.u8IrVersion == IR_INI_VERSION_NUM)
+    {
+        MDRV_PM_INFO("IRVersion = 0x20,copy gu8PmIr to u8PmWakeIR!\n");
+        MDrv_PM_Read_Key(PM_KEY_DEFAULT, (void *)&stCfgDef);
+        memcpy((void *)&stCfgDef.u8PmWakeIR[PM_SUPPORT_SAR_KEYS_MAX],
+               (void *)&gu8PmIr[PM_SUPPORT_SAR_KEYS_MAX],
+               (sizeof(gu8PmIr) - PM_SUPPORT_SAR_KEYS_MAX));
+        MDrv_PM_Write_Key(PM_KEY_DEFAULT, (void *)&stCfgDef, sizeof(stCfgDef));
+    }
+    else
+    {
+        MDRV_PM_INFO("IRVersion = 0x10,use origin IRCfg!\n");
+    }
+}
+
+/* TODO: Remove. */
+#ifdef CONFIG_AMAZON_WOL
+static void _MDrv_PM_Set_Lan(u8 u8Mode)
+{
+    PM_WakeCfg_t    stCfgDef = {0};
+
+    MDRV_PM_INFO("Azamon change WOL flag = %d.\n", stCfgDef.bPmWakeEnableWOL);
+    MDrv_PM_Read_Key(PM_KEY_DEFAULT, (void *)&stCfgDef);
+    stCfgDef.bPmWakeEnableWOL = (u8)atomic_read(&PM_WOL_EN);
+    MDrv_PM_Write_Key(PM_KEY_DEFAULT, (void *)&stCfgDef, sizeof(stCfgDef));
+}
+#endif
+
+/* TODO: Remove. */
+#if (CONFIG_MSTAR_GPIO)
+static void _MDrv_PM_Set_Led(void)
+{
+    u8 u8LedPad = 0;
+
+    u8LedPad = MDrv_PM_Get_PowerOffLed();
+    MDRV_PM_INFO("Get LedPadNum = %d.\n", u8LedPad);
+    if (u8LedPad != PM_SOURCE_DISABLE)
+    {
+        MDrv_GPIO_Set_Low(u8LedPad);
+        MDRV_PM_INFO("======= set red led on ========\n");
+    }
+}
+#endif
+
+static void _MDrv_PM_Patch_Mapping(void)
+{
+    /* Check patch. */
+    if ((gPM_DataVa != NULL) && (gPM_DramVa != NULL))
+        return;
+
+    MDRV_PM_ERR("Patch for buffer can't mapping with mmap.\n");
+
+    /* Write data address to kernel. */
+    MDrv_PM_Mapping(PM_MMAP_DATA, gPM_DataAddr, gPM_DataSize);
+
+    /* Write fw address to kernel. */
+    MDrv_PM_Mapping(PM_MMAP_DRAM, gPM_DramAddr, gPM_DramSize);
+}
+
 //-------------------------------------------------------------------------------------------------
 //  Golbal function
 //-------------------------------------------------------------------------------------------------
-ssize_t MDrv_PM_Read_Key(u16 u16Key, const char *buf)
+void MDrv_PM_Mapping(u16 u16Buf, unsigned long long ullAddr, unsigned long long ullSize)
 {
-    ssize_t tSize = 0;
-    void *pPtr = NULL;
-    u32 u32Idx = 0;
-
-    switch (u16Key)
+    switch (u16Buf)
     {
-        case PM_KEY_BT:
-            tSize = sizeof(PM_WoBT_WakeCfg);
-            pPtr = &gstWoBTCfg;
+        case PM_MMAP_DATA:
+            /* Check parameter. */
+            if ((ullAddr % MMAP_DATA_ALIGN) || (ullSize != MMAP_DATA_SIZE))
+            {
+                MDRV_PM_ERR("Paramter error: Addr=0x%tX Size=0x%tX\n",
+                            (size_t)ullAddr, (size_t)ullSize);
+                WARN_ON(1);
+            }
+            else
+            {
+                gPM_DataAddr = ullAddr;
+                gPM_DataSize = ullSize;
+            }
+
+            /* Mapping data buffer. */
+            if (gPM_DataVa == NULL)
+            {
+                gPM_DataVa = ioremap_wc(_MDrv_PM_Pa2Ba(gPM_DataAddr), gPM_DataSize);
+                MDRV_PM_ERR("[DATA] 0x%tX = ioremap_wc(0x%tX, 0x%tX).\n",
+                            (size_t)gPM_DataVa,
+                            (size_t)_MDrv_PM_Pa2Ba(gPM_DataAddr), (size_t)gPM_DataSize);
+            }
             break;
 
-        case PM_KEY_POWER_DOWN:
-            tSize = sizeof(PM_PowerDownCfg_t);
-            pPtr = &gstPMCfg.stPMPowerDownCfg;
-            break;
+        case PM_MMAP_DRAM:
+            /* Check parameter. */
+            if ((ullAddr % MMAP_DRAM_ALIGN) || (ullSize != MMAP_DRAM_SIZE))
+            {
+                MDRV_PM_ERR("Paramter error: Addr=0x%tX Size=0x%tX\n",
+                            (size_t)ullAddr, (size_t)ullSize);
+                WARN_ON(1);
+            }
+            else
+            {
+                gPM_DramAddr = ullAddr;
+                gPM_DramSize = ullSize;
+            }
 
-        case PM_KEY_SAR:
-            tSize = sizeof(SAR_RegCfg);
-            pPtr = &gstSARCfg;
-            break;
-
-        case PM_KEY_LED:
-            tSize = sizeof(u8LedPara);
-            pPtr = &u8LedPara;
-            break;
-
-        case PM_KEY_IR:
-            tSize += scnprintf((char *)buf, 31, "IR Version: 0x%02x\nIR Data(Hex):", u8IRVersion);
-            for (u32Idx = 0; u32Idx < sizeof(u8IRCfg); u32Idx++)
-                tSize += scnprintf((char *)(buf + tSize), 5, "  %02x", u8IRCfg[u32Idx]);
-            tSize += scnprintf((char *)(buf + tSize), 2, "\n");
-            goto MDrv_PM_Read_Key_End;
+            /* Mapping fw buffer. */
+            if (gPM_DramVa == NULL)
+            {
+                gPM_DramVa = ioremap_wc(_MDrv_PM_Pa2Ba(gPM_DramAddr), gPM_DramSize);
+                MDRV_PM_ERR("[DRAM] 0x%tX = ioremap_wc(0x%tX, 0x%tX).\n",
+                            (size_t)gPM_DramVa,
+                            (size_t)_MDrv_PM_Pa2Ba(gPM_DramAddr), (size_t)gPM_DramSize);
+            }
             break;
 
         default:
-            tSize = sizeof(PM_WakeCfg_t);
-            pPtr = &gstPMCfg.stPMWakeCfg;
             break;
     }
-
-    memcpy((void *)buf, (const void *)pPtr, tSize);
-
-MDrv_PM_Read_Key_End:
-    return tSize;
 }
+EXPORT_SYMBOL(MDrv_PM_Mapping);
+
+void MDrv_PM_Unmapping(u16 u16Buf)
+{
+    switch (u16Buf)
+    {
+        case PM_MMAP_DATA:
+            if (gPM_DataVa != NULL)
+            {
+                iounmap(gPM_DataVa);
+                gPM_DataVa = NULL;
+            }
+            break;
+
+        case PM_MMAP_DRAM:
+            if (gPM_DramVa != NULL)
+            {
+                iounmap(gPM_DramVa);
+                gPM_DramVa = NULL;
+            }
+            break;
+
+        default:
+            break;
+    }
+}
+EXPORT_SYMBOL(MDrv_PM_Unmapping);
+
+void MDrv_PM_Reset_Key(u16 u16Key)
+{
+    u8 idx = 0;
+
+    switch (u16Key)
+    {
+        case PM_KEY_DEFAULT:
+            memset(&gstCfgDef, 0, sizeof(PM_WakeCfg_t));
+            gstCfgDef.bPmWakeEnableIR = 1;
+            gstCfgDef.bPmWakeEnableSAR = 1;
+            gstCfgDef.bPmWakeEnableGPIO0 = 1;
+            gstCfgDef.bPmWakeEnableRTC0 = 1;
+            gstCfgDef.bPmWakeEnableRTC1 = 1;
+            gstCfgDef.bPmWakeEnableCEC = 1;
+
+            gstCfgDef.u8PmWakeIR[0] = 0x46;
+            for (idx = 1; idx < MAX_BUF_WAKE_IR; idx++)
+                gstCfgDef.u8PmWakeIR[idx] = PM_SOURCE_DISABLE;
+            gstCfgDef.u8PmWakeIR2[0] = 0x46;
+            for (idx = 1; idx < MAX_BUF_WAKE_IR2; idx++)
+                gstCfgDef.u8PmWakeIR2[idx] = PM_SOURCE_DISABLE;
+
+            gstCfgDef.u8PmStrMode = PM_DC_MODE;
+
+            gstCfgDef.u8PmWakeEnableWOWLAN = PM_SOURCE_DISABLE;
+
+            break;
+
+        case PM_KEY_POWER_DOWN:
+            memset(&gstCfgPowerDown, 0, sizeof(PM_PowerDownCfg_t));
+            gstCfgPowerDown.u8PowerDownMode = E_PM_STANDBY;
+            gstCfgPowerDown.u8WakeAddress = E_PM_LAST_TWOSTAGE_POWERDOWN;
+            break;
+
+        case PM_KEY_SAR0:
+            memset(&gstCfgSar0, 0, sizeof(SAR_RegCfg));
+            gstCfgSar0.u8SARChID = 0x00;
+            gstCfgSar0.tSARChBnd.u8UpBnd = 0xFF;
+            gstCfgSar0.tSARChBnd.u8LoBnd = 0xF0;
+            gstCfgSar0.u8KeyLevelNum = 0x08;
+
+            gstCfgSar0.u8KeyThreshold[0] = 0x10;
+            gstCfgSar0.u8KeyThreshold[1] = 0x2F;
+            gstCfgSar0.u8KeyThreshold[2] = 0x4D;
+            gstCfgSar0.u8KeyThreshold[3] = 0x71;
+            gstCfgSar0.u8KeyThreshold[4] = 0x92;
+            gstCfgSar0.u8KeyThreshold[5] = 0xAB;
+            gstCfgSar0.u8KeyThreshold[6] = 0xC3;
+            gstCfgSar0.u8KeyThreshold[7] = 0xE7;
+
+            gstCfgSar0.u8KeyCode[0] = 0x46;
+            gstCfgSar0.u8KeyCode[1] = 0xA8;
+            gstCfgSar0.u8KeyCode[2] = 0xA4;
+            gstCfgSar0.u8KeyCode[3] = 0xA2;
+            break;
+
+        case PM_KEY_SAR1:
+            memset(&gstCfgSar1, 0, sizeof(SAR_RegCfg));
+            break;
+
+        case PM_KEY_LED:
+            memset(&gu8CfgLed, 0, sizeof(gu8CfgLed));
+            break;
+
+        case PM_KEY_BT:
+            memset(&gstCfgBt, 0, sizeof(PM_WoBT_WakeCfg));
+            gstCfgBt.u8GpioNum = PM_SOURCE_DISABLE;
+            break;
+
+        case PM_KEY_EWBS:
+            memset(&gstCfgEwbs, 0, sizeof(PM_WoEWBS_WakeCfg));
+            gstCfgEwbs.u8GpioNum = PM_SOURCE_DISABLE;
+            break;
+
+        case PM_KEY_USB:
+            gu8CfgUsb = PM_SOURCE_DISABLE;
+            break;
+
+        case PM_KEY_VAD:
+            gu8CfgVad = PM_SOURCE_DISABLE;
+            break;
+
+        case PM_KEY_BTW:
+            gu8CfgBtw = PM_SOURCE_DISABLE;
+            break;
+
+        default:
+            break;
+    }
+}
+
+ssize_t MDrv_PM_Read_Key(u16 u16Key, const char *buf)
+{
+    MDRV_BUFF_INFO stInfo = {0};
+
+    _MDrv_PM_Get_Buff(u16Key, &stInfo);
+
+    /* Check result. */
+    if ((stInfo.pvLocal == NULL) || (stInfo.tSize == 0))
+        MDRV_PM_ERR("Data(0x%X) command fail.\n", u16Key);
+    else
+        memcpy((void *)buf, (const void *)stInfo.pvLocal, stInfo.tSize);
+
+    return stInfo.tSize;
+}
+EXPORT_SYMBOL(MDrv_PM_Read_Key);
 
 ssize_t MDrv_PM_Write_Key(u16 u16Key, const char *buf, size_t size)
 {
-    ssize_t tSize = 0;
-    void *pPtr = NULL;
+    MDRV_BUFF_INFO stInfo = {0};
 
+    /* Only for debug. */
+    if (gbDebug == TRUE)
+        return size;
+
+    _MDrv_PM_Get_Buff(u16Key, &stInfo);
+
+    /* Check result and align size. */
+    if ((stInfo.pvLocal == NULL) || (stInfo.tSize == 0))
+        MDRV_PM_ERR("Data(0x%X) command fail.\n", u16Key);
+    else if (size != stInfo.tSize)
+        MDRV_PM_ERR("Data(0x%X) un-align: input_size=0x%zX, internal_size=0x%zX\n", u16Key, size, stInfo.tSize);
+    else
+        memcpy((void *)stInfo.pvLocal, (const void *)buf, stInfo.tSize);
+
+    return stInfo.tSize;
+}
+EXPORT_SYMBOL(MDrv_PM_Write_Key);
+
+void MDrv_PM_Show_Config(u16 u16Key)
+{
+    u8 i = 0;
+
+    pr_info("==========================\n");
     switch (u16Key)
     {
-        case PM_KEY_BT:
-            tSize = sizeof(PM_WoBT_WakeCfg);
-            pPtr = &gstWoBTCfg;
+        case PM_KEY_DEFAULT:
+            pr_info("EnableIR      = %X.\n",       gstCfgDef.bPmWakeEnableIR);
+            pr_info("EnableSAR     = %X.\n",       gstCfgDef.bPmWakeEnableSAR);
+            pr_info("EnableGPIO0   = %X.\n",       gstCfgDef.bPmWakeEnableGPIO0);
+            pr_info("EnableGPIO1   = %X.\n",       gstCfgDef.bPmWakeEnableGPIO1);
+            pr_info("EnableUART1   = %X.\n",       gstCfgDef.bPmWakeEnableUART1);
+            pr_info("EnableSYNC    = %X.\n",       gstCfgDef.bPmWakeEnableSYNC);
+            pr_info("EnableRTC0    = %X.\n",       gstCfgDef.bPmWakeEnableRTC0);
+            pr_info("EnableRTC1    = %X.\n",       gstCfgDef.bPmWakeEnableRTC1);
+            pr_info("EnableDVI0    = %X.\n",       gstCfgDef.bPmWakeEnableDVI0);
+            pr_info("EnableDVI2    = %X.\n",       gstCfgDef.bPmWakeEnableDVI2);
+            pr_info("EnableCEC     = %X.\n",       gstCfgDef.bPmWakeEnableCEC);
+            pr_info("EnableAVLINK  = %X.\n",       gstCfgDef.bPmWakeEnableAVLINK);
+            pr_info("EnableMHL     = %X.\n",       gstCfgDef.bPmWakeEnableMHL);
+            pr_info("EnableWOL     = %X.\n",       gstCfgDef.bPmWakeEnableWOL);
+            pr_info("EnableCM4     = %X.\n",       gstCfgDef.bPmWakeEnableCM4);
+            pr_info("==========================\n");
+            pr_info("WIFI GPIO NUM = 0x%02X.\n",   gstCfgDef.u8PmWakeEnableWOWLAN);
+            pr_info("WIFI GPIO POL = 0x%02X.\n",   gstCfgDef.u8PmWakeWOWLANPol);
+            pr_info("==========================\n");
+            pr_info("PmStrMode     = 0x%X.\n",     gstCfgDef.u8PmStrMode);
+            pr_info("==========================\n");
+            for (i = 0; i < MAX_BUF_WAKE_MAC_ADDRESS; i++)
+                pr_info("MAC           = 0x%02X.\n",   gstCfgDef.u8PmWakeMACAddress[i]);
             break;
 
         case PM_KEY_POWER_DOWN:
-            tSize = sizeof(PM_PowerDownCfg_t);
-            pPtr = &gstPMCfg.stPMPowerDownCfg;
-            break;
-
-        case PM_KEY_SAR:
-            tSize = sizeof(SAR_RegCfg);
-            pPtr = &gstSARCfg;
-            break;
-
-        case PM_KEY_LED:
-            tSize = sizeof(u8LedPara);
-            pPtr = &u8LedPara;
+            pr_info("PowerDownMode = 0x%X.\n",     gstCfgPowerDown.u8PowerDownMode);
+            pr_info("WakeAddress   = 0x%X.\n",     gstCfgPowerDown.u8WakeAddress);
             break;
 
         case PM_KEY_IR:
-            tSize = sizeof(u8IRVersion);
-            pPtr = &u8IRVersion;
+            for (i = 0; i < MAX_BUF_WAKE_IR; i++)
+                pr_info("IR List       = 0x%02X.\n",   gstCfgDef.u8PmWakeIR[i]);
+            for (i = 0; i < MAX_BUF_WAKE_IR2; i++)
+                pr_info("IR List2      = 0x%02X.\n",   gstCfgDef.u8PmWakeIR2[i]);
+            break;
+
+        case PM_KEY_IR_VERSION:
+            pr_info("IR version    = 0x%X.\n",     gstCfgIr.u8IrVersion);
+            break;
+
+        case PM_KEY_IR_NORMAL:
+            pr_info("IR Normal Num = %d.\n",       gstCfgIr.u8NormalKeyNumber);
+            for (i = 0; i <= gstCfgIr.u8NormalKeyNumber; i++)
+                pr_info("NormalKey[%d]  = 0x%02X.\n",i , gstCfgIr.au8IrNormalKey[i]);
+            break;
+
+        case PM_KEY_IR_EXT:
+            pr_info("IR Extend Num = %d.\n",       gstCfgIr.u8ExtendKeyNumber);
+            for (i = 0; i <= gstCfgIr.u8ExtendKeyNumber; i++)
+                pr_info("ExtendKey[%d]  = 0x%02X.\n",i , gstCfgIr.au8IrExtendKey[i]);
+            break;
+
+        case PM_KEY_SAR0:
+            pr_info("SAR0 ChID     = 0x%02X.\n",   gstCfgSar0.u8SARChID);
+            pr_info("SAR0 UpBnd    = 0x%02X.\n",   gstCfgSar0.tSARChBnd.u8UpBnd);
+            pr_info("SAR0 LoBnd    = 0x%02X.\n",   gstCfgSar0.tSARChBnd.u8LoBnd);
+            pr_info("SAR0 KeyLVNum = 0x%02X.\n",   gstCfgSar0.u8KeyLevelNum);
+            for (i = 0; i < gstCfgSar0.u8KeyLevelNum; i++)
+                pr_info("Threshold[%d]  = 0x%02X.\n", i, gstCfgSar0.u8KeyThreshold[i]);
+            for (i = 0; i < gstCfgSar0.u8KeyLevelNum; i++)
+                pr_info("KeyCode[%d]    = 0x%02X.\n", i, gstCfgSar0.u8KeyCode[i]);
+            break;
+
+        case PM_KEY_SAR1:
+            pr_info("SAR1 ChID     = 0x%02X.\n",   gstCfgSar1.u8SARChID);
+            pr_info("SAR1 UpBnd    = 0x%02X.\n",   gstCfgSar1.tSARChBnd.u8UpBnd);
+            pr_info("SAR1 LoBnd    = 0x%02X.\n",   gstCfgSar1.tSARChBnd.u8LoBnd);
+            pr_info("SAR1 KeyLVNum = 0x%02X.\n",   gstCfgSar1.u8KeyLevelNum);
+            for (i = 0; i < gstCfgSar1.u8KeyLevelNum; i++)
+                pr_info("Threshold[%d]  = 0x%02X.\n", i, gstCfgSar1.u8KeyThreshold[i]);
+            for (i = 0; i < gstCfgSar1.u8KeyLevelNum; i++)
+                pr_info("KeyCode[%d]    = 0x%02X.\n", i, gstCfgSar1.u8KeyCode[i]);
+            break;
+
+        case PM_KEY_LED:
+           for (i = 0; i < 10; i++)
+                pr_info("gu8CfgLed[%d] = 0x%02X.\n",i, gu8CfgLed[i]);
+            break;
+
+        case PM_KEY_BT:
+            pr_info("BT   GPIO NUM = 0x%02X.\n",   gstCfgBt.u8GpioNum);
+            pr_info("BT   GPIO POL = 0x%02X.\n",   gstCfgBt.u8Polarity);
+            break;
+
+        case PM_KEY_BTW:
+            pr_info("BT   Wave     = 0x%02X.\n",   gu8CfgBtw);
+            break;
+
+        case PM_KEY_EWBS:
+            pr_info("EWBS GPIO NUM = 0x%02X.\n",   gstCfgEwbs.u8GpioNum);
+            pr_info("EWBS GPIO POL = 0x%02X.\n",   gstCfgEwbs.u8Polarity);
+            break;
+
+        case PM_KEY_USB:
+            pr_info("EnableUSB     = 0x%02X.\n",   gu8CfgUsb);
+            break;
+
+        case PM_KEY_VAD:
+            pr_info("EnableVAD     = 0x%02X.\n",   gu8CfgVad);
             break;
 
         default:
-            tSize = sizeof(PM_WakeCfg_t);
-            pPtr = &gstPMCfg.stPMWakeCfg;
+            break;
+    }
+}
+
+PM_Result MDrv_PM_Suspend(PM_STATE eState)
+{
+    PM_Result eRet = E_PM_OK;
+    PM_WakeCfg_t stCfgDef = {0};
+
+    switch (eState)
+    {
+        case E_PM_STATE_SUSPEND_PRE:
+            if (!is_mstar_str())
+            {
+                // MDrv_PM_Mapping() via mi notify callback.
+                eRet &= _MDrv_PM_Store_Fw();
+            }
+            if (gRTPM_Enable == 1)
+            {
+                _MDrv_RTPM_Mapping();
+                // Need to check (eRet &= XXX), but AN, MI not sync.
+                _MDrv_RTPM_Store_Fw();
+            }
+            break;
+
+        case E_PM_STATE_SUSPEND_NOIRQ:
+            if (!is_mstar_str())
+            {
+                /* TODO: Remove. */
+                _MDrv_PM_Set_Ir();
+                #ifdef CONFIG_AMAZON_WOL
+                _MDrv_PM_Set_Lan();
+                #endif
+
+                #if (CONFIG_MSTAR_GPIO)
+                _MDrv_PM_Set_Led();
+                #endif
+
+                /* Check /sys/power/str_max_cnt trigger. */
+                _MDrv_PM_Set_Mode(MDrv_MPM_Check_DC() ? PM_DC_MODE : PM_STR_MODE);
+                /* TODO: Support quie boot. */
+                if (MDrv_MPM_Check_DC() && disable_background_wakeup)
+                {
+                    MDrv_PM_Read_Key(PM_KEY_DEFAULT, (void *)&stCfgDef);
+                    stCfgDef.u8PmWakeEnableWOWLAN = PM_SOURCE_DISABLE;
+                    stCfgDef.bPmWakeEnableRTC0 = 0;
+                    MDrv_PM_Write_Key(PM_KEY_DEFAULT, (void *)&stCfgDef, sizeof(stCfgDef));
+                }
+                _MDrv_PM_Flush_Config();
+                eRet &= _MDrv_PM_BringUp((void *)gPM_DramTemp);
+            }
+            break;
+
+        default:
+            eRet = E_PM_FAIL;
             break;
     }
 
-    /* Check data size align. */
-    if (size != tSize)
-        MDRV_PM_DEBUG("Data(0x%X) un-align: input_size=0x%X, internal_size=0x%X\n", u16Key, size, tSize);
-    else
-        memcpy((void *)pPtr, (const void *)buf, tSize);
+    return eRet;
+}
 
-    return tSize;
+PM_Result MDrv_PM_Resume(PM_STATE eState)
+{
+    PM_Result eRet = E_PM_OK;
+
+    switch (eState)
+    {
+        case E_PM_STATE_RESUME_NOIRQ:
+            if (gRTPM_Enable == 1)
+            {
+                eRet &= _MDrv_RTPM_BringUp();
+            }
+            break;
+
+        case E_PM_STATE_RESUME_COMPLETE:
+            if (!is_mstar_str())
+            {
+                // MDrv_PM_Unmapping() via mi notify callback.
+                _MDrv_PM_Freed_Fw();
+            }
+            if (gRTPM_Enable == 1)
+            {
+                _MDrv_RTPM_Unmapping();
+                _MDrv_RTPM_Freed_Fw();
+            }
+            break;
+
+        default:
+            eRet = E_PM_FAIL;
+            break;
+    }
+
+    return eRet;
+}
+
+PM_Result MDrv_PM_Reboot(PM_STATE eState)
+{
+    PM_Result eRet = E_PM_OK;
+
+    switch (eState)
+    {
+        case E_PM_STATE_REBOOT_NOTIFY:
+            if (!is_mstar_str())
+            {
+                // MDrv_PM_Mapping() via mi notify callback.
+                eRet &= _MDrv_PM_Store_Fw();
+            }
+            break;
+
+        case E_PM_STATE_POWER_OFF_PRE:
+            if (!is_mstar_str())
+            {
+                /* TODO: Remove. */
+                _MDrv_PM_Set_Ir();
+                #ifdef CONFIG_MSTAR_SYSFS_BACKLIGHT
+                MDrv_PM_TurnoffBacklight();
+                #endif
+
+                #if (CONFIG_MSTAR_GPIO)
+                _MDrv_PM_Set_Led();
+                #endif
+
+                // TODO: Remove patch for reboot recovery case.
+                _MDrv_PM_Patch_Mapping();
+
+                _MDrv_PM_Set_Mode(PM_DC_MODE);
+                _MDrv_PM_Flush_Config();
+                eRet &= _MDrv_PM_BringUp((void *)gPM_DramTemp);
+            }
+            break;
+
+        default:
+            eRet = E_PM_FAIL;
+            break;
+    }
+
+    return eRet;
+}
+
+PM_Result MDrv_PM_Panic(void)
+{
+    _MDrv_PM_Patch_Mapping();
+    _MDrv_PM_Set_Mode(PM_STR_MODE);
+    _MDrv_PM_Flush_Config();
+    return _MDrv_PM_BringUp((void *)gPanic);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Other
+//--------------------------------------------------------------------------------------------------
+u8 MDrv_PM_GetWakeupSource(void)
+{
+    return MHal_PM_GetWakeupSource();
 }
 
 u8 MDrv_PM_GetPowerOnKey(void)
@@ -499,628 +1309,283 @@ u8 MDrv_PM_GetPowerOnKey(void)
     return MHal_PM_GetPowerOnKey();
 }
 
-void MDrv_PM_Set_PowerOffLed(u8 u8LedPad)
+void MDrv_PM_CleanPowerOnKey(void)
 {
-    MDRV_PM_DEBUG("LedPadNum = %d\n",u8LedPad);
-    u8PowerOffLed = u8LedPad;
-    return;
+    MHal_PM_CleanPowerOnKey();
 }
 
-u8 MDrv_PM_Get_PowerOffLed(void)
-{
-    return u8PowerOffLed;
-}
-
+/* TODO: Remove to ir driver. */
 ssize_t MDrv_PM_Set_IRCfg(const u8 *buf, size_t size)
 {
-    u8IRVersion = IR_INI_VERSION_NUM;
-    memcpy((void *)u8IRCfg, buf, sizeof(u8IRCfg));
+    memcpy((void *)gu8PmIr, buf, sizeof(gu8PmIr));
 
-    return sizeof(u8IRCfg);
+    return sizeof(gu8PmIr);
 }
-
 EXPORT_SYMBOL(MDrv_PM_Set_IRCfg);
 
-ssize_t MDrv_PM_Set_IR2Cfg(const u8 *buf, size_t size)
+void MDrv_PM_WakeIrqMask(u8 mask)
 {
-	u8IRVersion = IR_INI_VERSION_NUM;
-	memcpy((void *)u8IR2Cfg, buf, sizeof(u8IR2Cfg));
+    #ifdef CONFIG_KEYBOARD_MTK
+    MHal_PM_WakeIrqMask(mask);
+    #endif
+}
+EXPORT_SYMBOL(MDrv_PM_WakeIrqMask);
 
-	return sizeof(u8IR2Cfg);
+void MDrv_PM_WDT_RST(void)
+{
+    #ifdef CONFIG_KEYBOARD_MTK
+    MHAL_PM_WdtRst();
+    #endif
+}
+EXPORT_SYMBOL(MDrv_PM_WDT_RST);
+
+/* TODO: Remove to led framework. */
+u8 MDrv_PM_Get_PowerOffLed(void)
+{
+    return gu8PmLed;
 }
 
-
-EXPORT_SYMBOL(MDrv_PM_Set_IR2Cfg);
-
-static u8 MDrv_PM_Get_IRVersion(void)
+void MDrv_PM_Set_PowerOffLed(u8 u8LedPad)
 {
-    return u8IRVersion;
+    MDRV_PM_INFO("LedPadNum = %d.\n", u8LedPad);
+    gu8PmLed = u8LedPad;
 }
 
-static void MDrv_PM_Copy_IRCfg(PM_Cfg_t* pstPMCfg)
+#ifdef CONFIG_AMAZON_WOL
+void MDrv_PM_Show_PM_WOL_EN(void)
 {
-#if  0//for debug used
-    u8 i = 0;
-#endif
-    if (MDrv_PM_Get_IRVersion() == IR_INI_VERSION_NUM)
-    {
-        MDRV_PM_DEBUG("IRVersion = 0x20,copy u8IRCfg to u8PmWakeIR!\n");
-        memcpy((void*)&(pstPMCfg->stPMWakeCfg.u8PmWakeIR[PM_SUPPORT_SAR_KEYS_MAX]), \
-        (void*)&(u8IRCfg[PM_SUPPORT_SAR_KEYS_MAX]), (sizeof(u8IRCfg) -PM_SUPPORT_SAR_KEYS_MAX));
-	memcpy((void *)&(pstPMCfg->stPMWakeCfg.u8PmWakeIR2[0]), \
-	(void *)&(u8IR2Cfg[0]), (sizeof(u8IR2Cfg)));
-#if 0 // for debug used
-        for(i=0;i<MAX_BUF_WAKE_IR;i++)
-        {
-            printk( "[Kernel_pm]   IR List  = 0x%x\n", pstPMCfg->stPMWakeCfg.u8PmWakeIR[i]);
-        }
-	for (i = 0; i < 16; i++) {
-		MDRV_PM_DEBUG("[Kernel_pm]   IR2 List  = 0x%x\n", pstPMCfg->stPMWakeCfg.u8PmWakeIR2[i]);
-	}
-#endif
-    }
-    else
-    {
-        MDRV_PM_DEBUG("IRVersion = 0x10,use origin IRCfg!\n");
-    }
-}
-
-void MDrv_PM_Show_PM_Info(void)
-{
-    u8 i = 0;
-
-    // stPMWakeCfg
-    printk("======== stPMWakeCfg start ========\n");
-    printk("EnableIR     = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableIR);
-    printk("EnableSAR    = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableSAR);
-    printk("EnableGPIO0  = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableGPIO0);
-    printk("EnableGPIO1  = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableGPIO1);
-    printk("EnableUART1  = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableUART1);
-    printk("EnableSYNC   = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableSYNC);
-    printk("EnableRTC0   = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableRTC0);
-    printk("EnableRTC1   = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableRTC1);
-    printk("EnableDVI0   = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableDVI0);
-    printk("EnableDVI2   = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableDVI2);
-    printk("EnableCEC    = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableCEC);
-    printk("EnableAVLINK = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableAVLINK);
-    printk("EnableMHL    = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableMHL);
-    printk("EnableWOL    = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableWOL);
-    printk("EnableCM4    = %x\n", gstPMCfg.stPMWakeCfg.bPmWakeEnableCM4);
-
-    printk("PmStrMode = %x\n", gstPMCfg.stPMWakeCfg.u8PmStrMode);
-
-    for(i = 0; i<8; i++)
-        printk("IR List =  0x%x\n", gstPMCfg.stPMWakeCfg.u8PmWakeIR[i]);
-
-    for(i = 0; i<8; i++)
-        printk("IR List2 =  0x%x\n", gstPMCfg.stPMWakeCfg.u8PmWakeIR2[i]);
-
-    for(i = 0; i<MAX_BUF_WAKE_MAC_ADDRESS; i++)
-        printk("MAC = 0x%x\n", gstPMCfg.stPMWakeCfg.u8PmWakeMACAddress[i]);
-    printk("======== stPMWakeCfg end   ========\n");
-
-    // stPMPowerDownCfg
-    printk("======== stPMPowerDownCfg start ======== \n");
-    printk("PowerDownMode = 0x%x\n", gstPMCfg.stPMPowerDownCfg.u8PowerDownMode);
-    printk("WakeAddress = 0x%x\n", gstPMCfg.stPMPowerDownCfg.u8WakeAddress);
-    printk("======== stPMPowerDownCfg end   ======== \n");
-
-    //SAR_RegCfg1
-    printk("======== MDrv_SAR_CfgChInfo start ========= \n");
-    printk("u8SARChID=0x%02X\n", gstSARCfg.u8SARChID);
-    printk("tSARChBnd.u8UpBnd=0x%02x\n", gstSARCfg.tSARChBnd.u8UpBnd);
-    printk("tSARChBnd.u8LoBnd=0x%02x\n", gstSARCfg.tSARChBnd.u8LoBnd);
-    printk("u8KeyLevelNum=0x%02x\n", gstSARCfg.u8KeyLevelNum);
-    for(i=0; i < gstSARCfg.u8KeyLevelNum; i++)
-        printk("u8KeyThreshold[%d]=0x%02x\n", i, gstSARCfg.u8KeyThreshold[i]);
-    for(i=0; i < gstSARCfg.u8KeyLevelNum; i++)
-        printk("u8KeyCode[%d]=0x%02x\n", i, gstSARCfg.u8KeyCode[i]);
-
-    printk("======== MDrv_SAR_CfgChInfo end   ========= \n");
-
-    //LED_RegCfg
-    printk("======== MDrv_LED_CfgChInfo start ========= \n");
-    for(i=0; i < 10; i++)
-        printk("u8LedPara[%d]=0x%02x\n",i,u8LedPara[i]);
-    printk("======== MDrv_LED_CfgChInfo end   ========= \n");
-}
-
-ssize_t MDrv_PM_Show_PM_WOL_EN(const char *buf)
-{
-	char WOL_EN_VALUE = 0;
-	WOL_EN_VALUE = atomic_read(&PM_WOL_EN);
-	printk("Current Parameter of WOL_EN=%d \n", WOL_EN_VALUE);
-	return scnprintf((char *)buf, 32, "%d\n", WOL_EN_VALUE);
+    MDRV_PM_INFO("Current Parameter of WOL_EN=%d \n", atomic_read(&PM_WOL_EN));
 }
 
 void MDrv_PM_SetPM_WOL_EN(const char *buf)
 {
-	unsigned int WOL_EN = 0;
-	int readCount = 0;
+    unsigned int WOL_EN = 0;
+    int readCount = 0;
 
-	readCount = sscanf(buf, "%d", &WOL_EN);
-	if (readCount != 1) {
-		printk("ERROR cannot read WOL_EN from [%s] \n", buf);
-		return;
-	}
-	if (WOL_EN > 0x01) {
-		printk("ERROR Parameter WOL_EN=%d \n", WOL_EN);
-		return;
-	}
+    readCount = sscanf(buf, "%d", &WOL_EN);
+    if (readCount != 1) {
+        MDRV_PM_ERR("ERROR cannot read WOL_EN from [%s] \n", buf);
+        return;
+    }
+    if (WOL_EN > 0x01) {
+        MDRV_PM_ERR("ERROR Parameter WOL_EN=%d \n", WOL_EN);
+        return;
+    }
 
-	printk("Set Parameter WOL_EN=%d success\n", WOL_EN);
-	atomic_set(&PM_WOL_EN, WOL_EN);
+    MDRV_PM_INFO("Set Parameter WOL_EN=%d success\n", WOL_EN);
+    atomic_set(&PM_WOL_EN, WOL_EN);
 }
-PM_Result MDrv_PM_SetSRAMOffsetForMCU(void)
-{
-    PM_Result result;
-    u8 u8LedPad = 0;
-
-    result = MHal_PM_CopyBin2Sram(gPM_DramAddr);
-    if (result != E_PM_OK)
-    {
-        return result;
-    }
-
-    MHal_PM_SetDram2Register(gPM_DataAddr);
-
-    #if(CONFIG_MSTAR_GPIO)
-    u8LedPad = MDrv_PM_Get_PowerOffLed();
-    MDRV_PM_DEBUG("Get LedPadNum = %d\n",u8LedPad);
-    if(u8LedPad != 0xFF)
-    {
-        MDRV_PM_DEBUG("======= set red led on ========\n");
-        // set red gpio on
-        MDrv_GPIO_Set_Low(u8LedPad);
-    }
-    #endif
-
-    result = MHal_PM_SetSRAMOffsetForMCU();
-
-    return result;
-}
-
-PM_Result MDrv_PM_SetSRAMOffsetForMCU_DC(void)
-{
-    PM_Result result;
-    u8 u8LedPad = 0;
-
-    MDRV_PM_DEBUG("start MDrv_PM_SetSRAMOffsetForMCU_DC \n");
-    result = MHal_PM_CopyBin2Sram(gPM_DramAddr);
-    if (result != E_PM_OK)
-    {
-        return result;
-    }
-
-    MHal_PM_SetDram2Register(gPM_DataAddr);
-
-    #if(CONFIG_MSTAR_GPIO)
-    u8LedPad = MDrv_PM_Get_PowerOffLed();
-    MDRV_PM_DEBUG("Get LedPadNum = %d\n",u8LedPad);
-    if(u8LedPad != 0xFF)
-    {
-        MDRV_PM_DEBUG("======= set red led on ========\n");
-        // set red gpio on
-        MDrv_GPIO_Set_Low(u8LedPad);
-    }
-    #endif
-
-    result = MHal_PM_SetSRAMOffsetForMCU_DC();
-    MDRV_PM_DEBUG("finish MDrv_PM_SetSRAMOffsetForMCU_DC \n");
-
-    return result;
-}
-
-PM_Result MDrv_PM_CopyBin2Sram(void)
-{
-    MHal_PM_RunTimePM_Disable_PassWord();
-
-    pr_info("start MDrv_PM_CopyBin2Sram \n");
-	SerPrintf("start MDrv_PM_CopyBin2Sram \n");
-    if (remap_PM_addr == NULL)
-    {
-		pr_err("ioremap_nocache failed\n");
-        return E_PM_FAIL;
-    }
-
-    memcpy(remap_PM_addr, gPM_Buf, gPM_DramSize);
-
-    //iounmap(remap_PM_addr);
-
-    return E_PM_OK;
-}
-
-PM_Result MDrv_PM_CopyBin2Dram(void)
-{
-#if 0  // SOPHIA-3836: Use PM.h instead of PM.bin
-    struct file *fp = NULL;
-    mm_segment_t fs;
-    loff_t pos;
-
-    pr_info("start MDrv_PM_CopyBin2Dram \n");
-
-    if (pm_path_exist) {
-        fp = filp_open(pm_path, O_RDONLY, 0);
-        if (IS_ERR(fp)) {
-		pr_err("Only for Fusion Project: power off and recovery!!!\n");
-            fp = filp_open("/mnt/vendor/tvservice/glibc/bin/PM.bin", O_RDONLY, 0);
-        }
-    }
-    else
-        fp = filp_open("/config/PM.bin", O_RDONLY, 0);
-
-    if (IS_ERR(fp)){
-		pr_err("MDrv_PM_CopyBin2Dram filp_open failed\n");
-        return E_PM_FAIL;
-    }
-    fs = get_fs();
-    set_fs(KERNEL_DS);
-    pos = 0;
-    memset(gPM_Buf, 0, gPM_DramSize);
-    vfs_read(fp, gPM_Buf, gPM_DramSize, &pos);
-
-    filp_close(fp, NULL);
-    set_fs(fs);
-#else
-	pr_info("[S] start MDrv_PM_CopyBin2Dram\n");
-	if (gPM_Buf == NULL || PM_bin == NULL) {
-		pr_err("address is NULL\n");
-		return E_PM_FAIL;
-	}
-
-	if (PM_bin_len <= 0) {
-		pr_err("PM len abnormal! Len: %d\n", PM_bin_len);
-		return E_PM_FAIL;
-	}
-
-	if (PM_bin_len > gPM_DramSize) {
-		pr_err("PM len large than buffer size! Len: %d\n", PM_bin_len);
-		return E_PM_FAIL;
-	}
-
-	memset(gPM_Buf, 0, gPM_DramSize);
-	memcpy(gPM_Buf, PM_bin, gPM_DramSize);
 #endif
-	return E_PM_OK;
-}
-
-PM_Result MDrv_PM_Suspend(PM_STATE state)
-{
-    PM_Result result = E_PM_OK;
-    PM_Cfg_t stPMCfg;
-
-    switch (state)
-    {
-        /* System can read mmc partition, but can be wake up (can't disable). */
-        case E_PM_STATE_STORE_INFO:
-            /* Get RTPM bin path. */
-            if (gRTPM_Enable == 1)
-            {
-                /* Check path exist. */
-                if (strlen(gRTPM_Path) == 0)
-                {
-                    result = _MDrv_PM_Get_RTPM_Path(gRTPM_Path);
-                }
-
-		if (result != E_PM_OK) {
-			pr_err("_MDrv_PM_Get_RTPM_Path error \n");
-			return result;
-		}
-            }
-
-            /* Copy PM bin from mmc partition to DRAM. */
-            if (!is_mstar_str())
-            {
-                result = MDrv_PM_CopyBin2Dram();
-            }
-            break;
-
-        /* System can't be wake up, but also can't read mmc partition. */
-        case E_PM_STATE_SUSPEND_PREPARE:
-            /* Copy PM bin from DRAM to SRAM (copy bin after disable). */
-            if (!is_mstar_str())
-            {
-			result = MDrv_PM_CopyBin2Sram();
-			if (result != E_PM_OK) {
-				pr_err("MDrv_PM_CopyBin2Sram error \n");
-				return result;
-			}
-		}
-            gRTPM_Live = 0;
-            break;
-
-        /* System IP can't work. */
-        case E_PM_STATE_POWER_OFF_AC:
-            memset(&stPMCfg, 0, sizeof(stPMCfg));
-            MDrv_PM_GetCfg(&stPMCfg);
-            stPMCfg.stPMWakeCfg.u8PmStrMode = 1;
-            MDrv_PM_SetCfg(&stPMCfg);
-        case E_PM_STATE_POWER_OFF_DC:
-            memset(&stPMCfg, 0, sizeof(stPMCfg));
-		result = MDrv_PM_GetCfg(&stPMCfg);
-		if (result != E_PM_OK) {
-			pr_err("MDrv_PM_GetCfg Error \n");
-			break;
-		}
-		stPMCfg.stPMWakeCfg.bPmWakeEnableCM4 = gstPMCfg.stPMWakeCfg.bPmWakeEnableCM4;
-		MDrv_PM_Copy_IRCfg(&stPMCfg);
-		stPMCfg.stPMWakeCfg.bPmWakeEnableWOL = (u8) atomic_read(&PM_WOL_EN); // The WOL_EN value is controlled by device node.
-		result = MDrv_PM_SetCfg(&stPMCfg);
-		if (result != E_PM_OK) {
-			pr_err("MDrv_PM_SetCfg Error \n");
-			break;
-		}
-		if (!strcmp(idme_get_product_name(), "sophia") || !strcmp(idme_get_product_name(), "abc123")) {
-			MDRV_PM_DEBUG("Product is %s\n", idme_get_product_name());
-			MHal_PM_WriteReg16(0x1040, 0x01);//Sophia, abc123 IR Header
-		} else if (!strcmp(idme_get_product_name(), "greta") || !strcmp(idme_get_product_name(), "abc123")) {
-			MDRV_PM_DEBUG("Product is %s\n", idme_get_product_name());
-			MHal_PM_WriteReg16(0x1040, 0x00);//Greta, abc123 IR Header
-		} else {
-			MDRV_PM_DEBUG("Unknown Product\n");
-		}
-
-		result = _MDrv_PM_Set_Data(PM_KEY_BT,    (void *)&gstWoBTCfg, sizeof(PM_WoBT_WakeCfg));
-		result = _MDrv_PM_Set_Data(PM_KEY_EWBS,  (void *)&gstWoEWBSCfg, sizeof(PM_WoEWBS_WakeCfg));
-		if (result != E_PM_OK) {
-			pr_err("_MDrv_PM_Set_Data Error \n");
-			break;
-		}
-			result = MDrv_PM_SetSRAMOffsetForMCU();
-            break;
-
-        default:
-            result = E_PM_FAIL;
-            break;
-    }
-
-    return result;
-}
-
-PM_Result MDrv_PM_Resume(PM_STATE state)
-{
-    PM_Result result = E_PM_OK;
-
-    switch (state)
-    {
-        case E_PM_STATE_POWER_ON_DC:
-            /* Copy RTPM bin and Enable RTPM. */
-            if (gRTPM_Enable == 1)
-            {
-                /* Check data. */
-                if ((strlen(gRTPM_Path) == 0) || (gRTPM_Addr == 0))
-                {
-                    result = E_PM_FAIL;
-                    break;
-                }
-
-                /* Check PM live. */
-                if (gRTPM_Live == 0)
-                {
-                    MHal_PM_Disable_8051();
-                    result = _MDrv_PM_Copy_RTPM_Bin(gRTPM_Addr, gRTPM_Path);
-                    MHal_PM_SetDRAMOffsetForMCU(_MDrv_PM_Ba2Pa(gRTPM_Addr));
-                    gRTPM_Live = 1;
-                }
-            }
-            break;
-        default:
-            result = E_PM_FAIL;
-            break;
-    }
-
-    return result;
-}
-
-PM_Result MDrv_PM_SetPMCfg(u8 u8PmStrMode)
-{
-    if (remap_config_addr == NULL)
-    {
-		pr_err("ioremap_wc failed\n");
-        return E_PM_FAIL;
-    }
-    printk("gPM_DramAddr = 0x%x, gPM_DramSize = 0x%x\n",gPM_DramAddr,gPM_DramSize);
-    printk("gPM_DataAddr = 0x%x, gPM_DataSize = 0x%x\n",gPM_DataAddr,gPM_DataSize);
-    MDrv_PM_Copy_IRCfg(&gstPMCfg);
-    gstPMCfg.stPMWakeCfg.u8PmStrMode = u8PmStrMode;
-    memcpy((void *)remap_config_addr, (void *)&(gstPMCfg.stPMWakeCfg), sizeof(PM_WakeCfg_t));
-    memcpy((void *)remap_config_addr + PM_OFFSET_POWER_DOWN, (void *)&(gstPMCfg.stPMPowerDownCfg), sizeof(PM_PowerDownCfg_t));
-    memcpy((void *)remap_config_addr + PM_OFFSET_SAR0, (void *)&(gstSARCfg), sizeof(SAR_RegCfg));
-    memcpy((void *)remap_config_addr + PM_OFFSET_SAR1, (void *)&(gstSARCfg1), sizeof(SAR_RegCfg));
-    memcpy((void *)remap_config_addr + PM_OFFSET_LED, (void *)u8LedPara, sizeof(u8LedPara));
-    memcpy((void *)remap_config_addr + PM_OFFSET_IR_VER, (void *)&u8IRVersion, sizeof(u8IRVersion));
-
-    //iounmap(remap_config_addr);
-    _MDrv_PM_Set_Data(PM_KEY_BT,    (void *)&gstWoBTCfg, sizeof(PM_WoBT_WakeCfg));
-    _MDrv_PM_Set_Data(PM_KEY_EWBS,  (void *)&gstWoEWBSCfg, sizeof(PM_WoEWBS_WakeCfg));
-    return E_PM_OK;
-}
-
-PM_Result MDrv_PM_PMCfg_Init(void)
-{
-    u8 idx = 0;
-
-    MDRV_PM_DEBUG("start MDrv_PM_PMCfg_Init \n");
-
-
-    memset(&gstPMCfg, 0, sizeof(gstPMCfg));
-    gstPMCfg.stPMWakeCfg.u8PmWakeEnableWOWLAN = INVALID_GPIO_NUM;
-    memset(&gstWoBTCfg, 0, sizeof(gstWoBTCfg));
-    gstWoBTCfg.u8GpioNum = DEFAULT_BT_GPIO_NUM;
-    memset(&gstWoEWBSCfg, 0, sizeof(gstWoEWBSCfg));
-    gstWoEWBSCfg.u8GpioNum = INVALID_GPIO_NUM;
-    memset(&gstSARCfg, 0, sizeof(gstSARCfg));
-    memset(&gstSARCfg1, 0, sizeof(gstSARCfg1));
-
-    //WakeUpCfg
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableIR = 1;
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableSAR = 1;
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableRTC0 = 1;
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableRTC1 = 1;
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableCEC = 1;
-    gstPMCfg.stPMWakeCfg.bPmWakeEnableGPIO0 = 1;
-
-    for(idx=0; idx<MAX_BUF_WAKE_IR; idx++)
-    {
-        gstPMCfg.stPMWakeCfg.u8PmWakeIR[idx] = 0xff;
-    }
-    gstPMCfg.stPMWakeCfg.u8PmWakeIR[0] = 0x46;
-
-    for(idx=0; idx<MAX_BUF_WAKE_IR2; idx++)
-    {
-        gstPMCfg.stPMWakeCfg.u8PmWakeIR2[idx] = 0xff;
-    }
-    gstPMCfg.stPMWakeCfg.u8PmWakeIR2[0] = 0x46;
-    gstPMCfg.stPMWakeCfg.u8PmStrMode = PM_STANDBY_MODE; //standby
-
-    //PowerDownCfg
-    gstPMCfg.stPMPowerDownCfg.u8PowerDownMode = E_PM_SLEEP;
-    gstPMCfg.stPMPowerDownCfg.u8WakeAddress = E_PM_LAST_TWOSTAGE_POWERDOWN; //two stage
-
-    //SarCfg
-    gstSARCfg.u8SARChID = 0x00;
-    gstSARCfg.tSARChBnd.u8UpBnd = 0xff;
-    gstSARCfg.tSARChBnd.u8LoBnd = 0xf0;
-    gstSARCfg.u8KeyLevelNum = 0x08;
-
-    gstSARCfg.u8KeyThreshold[0] = 0x10;
-    gstSARCfg.u8KeyThreshold[1] = 0x2f;
-    gstSARCfg.u8KeyThreshold[2] = 0x4d;
-    gstSARCfg.u8KeyThreshold[3] = 0x71;
-    gstSARCfg.u8KeyThreshold[4] = 0x92;
-    gstSARCfg.u8KeyThreshold[5] = 0xab;
-    gstSARCfg.u8KeyThreshold[6] = 0xc3;
-    gstSARCfg.u8KeyThreshold[7] = 0xe7;
-
-    gstSARCfg.u8KeyCode[0] = 0x46;
-    gstSARCfg.u8KeyCode[1] = 0xa8;
-    gstSARCfg.u8KeyCode[2] = 0xa4;
-    gstSARCfg.u8KeyCode[3] = 0xa2;
-
-    MDRV_PM_DEBUG("finish MDrv_PM_PMCfg_Init \n");
-    return E_PM_OK;
-}
-
-void MDrv_PM_WakeIrqMask(u8 mask)
-{
-#ifdef CONFIG_KEYBOARD_MTK
-    MHal_PM_WakeIrqMask(mask);
-#endif
-}
-EXPORT_SYMBOL(MDrv_PM_WakeIrqMask);
-
-//-------------------------------------------------------------------------------------------------
-void MDrv_SetDram(u32 u32Addr, u32 u32Size)
-{
-    gPM_DramAddr = u32Addr;
-    gPM_DramSize = u32Size;
-	if (remap_PM_addr != NULL) {
-		iounmap(remap_PM_addr);
-	}
-	remap_PM_addr = (phys_addr_t *)ioremap_wc(gPM_DramAddr + ARM_MIU0_BUS_BASE, gPM_DramSize);
-}
-EXPORT_SYMBOL(MDrv_SetDram);
-//-------------------------------------------------------------------------------------------------
-void MDrv_SetData(u32 u32Addr, u32 u32Size)
-{
-    gPM_DataAddr = u32Addr;
-    gPM_DataSize = u32Size;
-	if (remap_config_addr != NULL) {
-		iounmap(remap_config_addr);
-	}
-	remap_config_addr = (phys_addr_t *)ioremap_wc(gPM_DataAddr + ARM_MIU0_BUS_BASE, gPM_DataSize);
-}
-EXPORT_SYMBOL(MDrv_SetData);
-PM_Result MDrv_PM_GetCfg(PM_Cfg_t* pstPMCfg)
-{
-    if (remap_config_addr == NULL)
-    {
-		pr_err("ioremap_wc failed\n");
-        return E_PM_FAIL;
-    }
-
-    memcpy((void *)&(pstPMCfg->stPMWakeCfg), (void *)remap_config_addr, sizeof(PM_WakeCfg_t));
-    memcpy((void *)&(pstPMCfg->stPMPowerDownCfg), (void *)remap_config_addr + PM_OFFSET_POWER_DOWN, sizeof(PM_PowerDownCfg_t));
-
-    //iounmap(remap_addr);
-    return E_PM_OK;
-}
-
-PM_Result MDrv_PM_SetCfg(PM_Cfg_t* pstPMCfg)
-{
-    if (remap_config_addr == NULL)
-    {
-		pr_err("ioremap_wc failed\n");
-        return E_PM_FAIL;
-    }
-
-    memcpy((void *)remap_config_addr, (void *)&(pstPMCfg->stPMWakeCfg), sizeof(PM_WakeCfg_t));
-    memcpy((void *)remap_config_addr + PM_OFFSET_POWER_DOWN, (void *)&(pstPMCfg->stPMPowerDownCfg), sizeof(PM_PowerDownCfg_t));
-    memcpy((void *)remap_config_addr + PM_OFFSET_IR_VER, (void *)&u8IRVersion, sizeof(u8IRVersion));
-
-    //iounmap(remap_config_addr);
-    return E_PM_OK;
-}
 
 #ifdef CONFIG_MSTAR_SYSFS_BACKLIGHT
 PM_Result MDrv_PM_TurnoffBacklight(void)
 {
-    struct file *fp = NULL;
-    char BACKLIGHT_BUFFER[] = "0";
-    mm_segment_t fs;
-    loff_t pos;
+    struct backlight_device *bd;
 
-    MDRV_PM_DEBUG("start MDrv_PM_TurnoffBacklight\n");
-
-    fp = filp_open("/sys/class/backlight/backlight/brightness", O_RDWR, 0);
-
-    if (IS_ERR(fp)) {
-        MDRV_PM_DEBUG("filp_open failed\n");
-        return E_PM_FAIL;
+    bd = backlight_device_get_by_type(BACKLIGHT_RAW);
+    if (!bd) {
+        MDRV_PM_ERR("MDrv_PM_TurnoffBacklight: get BACKLIGHT_RAW dev failed\n");
+        return -ENODEV;
     }
-    fs = get_fs();
-    set_fs(KERNEL_DS);
-    pos = 0;
-    vfs_write(fp, BACKLIGHT_BUFFER, strlen(BACKLIGHT_BUFFER), &pos);
 
-    filp_close(fp, NULL);
-    set_fs(fs);
+    backlight_device_set_brightness(bd, 0);
 
     return E_PM_OK;
 }
 #endif
 
-static int __init MDrv_PM_SetPMPath(char *str)
+//--------------------------------------------------------------------------------------------------
+// DEBUG
+//--------------------------------------------------------------------------------------------------
+void MDrv_PM_Read_Debug(void)
+{
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // CAE Power Test   , Only IR wakeup.\n",       DBG_CMD_CAE);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // Power Down Mode  , Standby.\n",              DBG_CMD_PW);
+    pr_info("echo '0x%02X 0x01 0xFF' // Power Down Mode  , Sleep.\n",                DBG_CMD_PW);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x01 0xFF' // STR Mode         , DC.\n",                   DBG_CMD_STR);
+    pr_info("echo '0x%02X 0x02 0xFF' // STR Mode         , STR.\n",                  DBG_CMD_STR);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // DVI0/1/3 WK      , Disable.\n",              DBG_CMD_DVI013);
+    pr_info("echo '0x%02X 0x01 0xFF' // DVI0/1/3 WK      , Enable.\n",               DBG_CMD_DVI013);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // DVI2 WK          , Disable.\n",              DBG_CMD_DVI2);
+    pr_info("echo '0x%02X 0x01 0xFF' // DVI2 WK          , Enable.\n",               DBG_CMD_DVI2);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // WOL WK           , Disable.\n",              DBG_CMD_LAN);
+    pr_info("echo '0x%02X 0x01 0xFF' // WOL WK           , Enable.\n",               DBG_CMD_LAN);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // CM4 WK           , Disable.\n",              DBG_CMD_VOC);
+    pr_info("echo '0x%02X 0x01 0xFF' // CM4 WK           , Enable.\n",               DBG_CMD_VOC);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // USB WK           , Disable.\n",              DBG_CMD_USB);
+    pr_info("echo '0x%02X 0x01 0xFF' // USB WK           , Enable.\n",               DBG_CMD_USB);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // VAD WK           , Disable.\n",              DBG_CMD_VAD);
+    pr_info("echo '0x%02X 0x01 0xFF' // VAD WK           , Enable.\n",               DBG_CMD_VAD);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0x00 0xFF' // CEC WK           , Disable.\n",              DBG_CMD_CEC);
+    pr_info("echo '0x%02X 0x01 0xFF' // CEC WK           , Enable.\n",               DBG_CMD_CEC);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // BTW WK           , Disable.\n",              DBG_CMD_BTW);
+    pr_info("echo '0x%02X 0x01 0xFF' // BTW WK           , Enable.\n",               DBG_CMD_BTW);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // WIFI WK          , Disable.\n",              DBG_CMD_WIFI);
+    pr_info("echo '0x%02X 0xNN 0x00' // WIFI WK          , Enable Num, Rising.\n",   DBG_CMD_WIFI);
+    pr_info("echo '0x%02X 0xNN 0x01' // WIFI WK          , Enable Num, Falling.\n",  DBG_CMD_WIFI);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // BT WK            , Disable.\n",              DBG_CMD_BT);
+    pr_info("echo '0x%02X 0xNN 0x00' // BT WK            , Enable Num, Rising.\n",   DBG_CMD_BT);
+    pr_info("echo '0x%02X 0xNN 0x01' // BT WK            , Enable Num, Falling.\n",  DBG_CMD_BT);
+    pr_info("===================================================================\n");
+    pr_info("echo '0x%02X 0xFF 0xFF' // EWBS WK          , Disable.\n",              DBG_CMD_EWBS);
+    pr_info("echo '0x%02X 0xNN 0x00' // EWBS WK          , Enable Num, Rising.\n",   DBG_CMD_EWBS);
+    pr_info("echo '0x%02X 0xNN 0x01' // EWBS WK          , Enable Num, Falling.\n",  DBG_CMD_EWBS);
+    pr_info("===================================================================\n");
+}
+
+void MDrv_PM_Write_Debug(const char *buf, size_t size)
+{
+    bool bDebug = TRUE;
+    u8 u8Cmd = 0, u8Param0 = 0, u8Param1 = 0;
+    PM_WakeCfg_t         stCfgDef = {0};
+    PM_PowerDownCfg_t    stCfgPowerDown = {0};
+    PM_WoBT_WakeCfg      stCfgBt = {0};
+    PM_WoEWBS_WakeCfg    stCfgEwbs = {0};
+    u8                   u8CfgBtw = PM_SOURCE_DISABLE;
+    u8                   u8CfgUsb = PM_SOURCE_DISABLE;
+    u8                   u8CfgVad = PM_SOURCE_DISABLE;
+
+    if (size != DBG_CMD_SIZE)
+    {
+        MDRV_PM_ERR("Please reference command list:\n");
+        MDrv_PM_Read_Debug();
+        return;
+    }
+
+    sscanf(buf, "%hhX %hhX %hhX\n",  &u8Cmd, &u8Param0, &u8Param1);
+    MDRV_PM_INFO("Cmd=0x%02tX Param0=0x%02tX Param1=0x%02tX.\n",
+                 (size_t)u8Cmd, (size_t)u8Param0, (size_t)u8Param1);
+
+    gbDebug = FALSE;
+    MDrv_PM_Read_Key(PM_KEY_DEFAULT,    (void *)&stCfgDef);
+    MDrv_PM_Read_Key(PM_KEY_POWER_DOWN, (void *)&stCfgPowerDown);
+    MDrv_PM_Read_Key(PM_KEY_BT,         (void *)&stCfgBt);
+    MDrv_PM_Read_Key(PM_KEY_BTW,        (void *)&u8CfgBtw);
+    MDrv_PM_Read_Key(PM_KEY_EWBS,       (void *)&stCfgEwbs);
+    MDrv_PM_Read_Key(PM_KEY_USB,        (void *)&u8CfgUsb);
+    MDrv_PM_Read_Key(PM_KEY_VAD,        (void *)&u8CfgVad);
+    switch (u8Cmd)
+    {
+        case DBG_CMD_CAE:
+            memset(&stCfgDef, 0, 2);
+            stCfgDef.bPmWakeEnableIR = 1;
+            stCfgDef.u8PmWakeEnableWOWLAN = PM_SOURCE_DISABLE;
+            stCfgBt.u8GpioNum = PM_SOURCE_DISABLE;
+            u8CfgBtw = PM_SOURCE_DISABLE;
+            stCfgEwbs.u8GpioNum = PM_SOURCE_DISABLE;
+            u8CfgUsb = PM_SOURCE_DISABLE;
+            break;
+        case DBG_CMD_PW:
+            stCfgPowerDown.u8PowerDownMode = u8Param0;
+            break;
+        case DBG_CMD_STR:
+            stCfgDef.u8PmStrMode = u8Param0;
+            break;
+        case DBG_CMD_DVI013:
+            stCfgDef.bPmWakeEnableDVI0 = u8Param0;
+            break;
+        case DBG_CMD_DVI2:
+            stCfgDef.bPmWakeEnableDVI2 = u8Param0;
+            break;
+        case DBG_CMD_LAN:
+            stCfgDef.bPmWakeEnableWOL = u8Param0;
+            break;
+        case DBG_CMD_VOC:
+            stCfgDef.bPmWakeEnableCM4 = u8Param0;
+            break;
+        case DBG_CMD_USB:
+            u8CfgUsb = u8Param0;
+            break;
+        case DBG_CMD_VAD:
+            u8CfgVad = u8Param0;
+            break;
+        case DBG_CMD_CEC:
+            stCfgDef.bPmWakeEnableCEC = u8Param0;
+            break;
+        case DBG_CMD_BTW:
+            u8CfgBtw = u8Param0;
+            break;
+        case DBG_CMD_WIFI:
+            stCfgDef.u8PmWakeEnableWOWLAN = u8Param0;
+            stCfgDef.u8PmWakeWOWLANPol = u8Param1;
+            break;
+        case DBG_CMD_BT:
+            stCfgBt.u8GpioNum = u8Param0;
+            stCfgBt.u8Polarity = u8Param1;
+            break;
+        case DBG_CMD_EWBS:
+            stCfgEwbs.u8GpioNum = u8Param0;
+            stCfgEwbs.u8Polarity = u8Param1;
+            break;
+        default:
+            MDRV_PM_INFO("Command not support, exsit debug mode.\n");
+            bDebug = FALSE;
+            break;
+    }
+    MDrv_PM_Write_Key(PM_KEY_DEFAULT,       (void *)&stCfgDef,          sizeof(stCfgDef));
+    MDrv_PM_Write_Key(PM_KEY_POWER_DOWN,    (void *)&stCfgPowerDown,    sizeof(stCfgPowerDown));
+    MDrv_PM_Write_Key(PM_KEY_BT,            (void *)&stCfgBt,           sizeof(stCfgBt));
+    MDrv_PM_Write_Key(PM_KEY_BTW,           (void *)&u8CfgBtw,          sizeof(u8CfgBtw));
+    MDrv_PM_Write_Key(PM_KEY_EWBS,          (void *)&stCfgEwbs,         sizeof(stCfgEwbs));
+    MDrv_PM_Write_Key(PM_KEY_USB,           (void *)&u8CfgUsb,          sizeof(u8CfgUsb));
+    MDrv_PM_Write_Key(PM_KEY_VAD,           (void *)&u8CfgVad,          sizeof(u8CfgVad));
+    gbDebug = bDebug;
+}
+
+//--------------------------------------------------------------------------------------------------
+// EARLY_PARAM
+//--------------------------------------------------------------------------------------------------
+static int __init MDrv_PM_Set_Info(char *str)
 {
     if( str != NULL)
     {
-        strncpy(pm_path, str, (CORENAME_MAX_SIZE-1));
-        pm_path[sizeof(pm_path) - 1] = '\0';
-        pm_path_exist = 1;
+        strncpy(gPM_Path, str, (CORENAME_MAX_SIZE - 1));
+        gPM_Path[sizeof(gPM_Path) - 1] = '\0';
     }
     return 0;
 }
 
-static int __init MDrv_PM_Set_RTPM_Info(char *str)
+static int __init MDrv_RTPM_Set_Info(char *str)
 {
+    /* TODO: Need to parsing mmap. */
     if (str != NULL)
     {
-        sscanf(str, "%u, %lx", &gRTPM_Enable, &gRTPM_Addr);
+        sscanf(str, "%u, %llx", &gRTPM_Enable, &gRTPM_DramAddr);
     }
     return 0;
 }
 
-static int __init MDrv_PM_Init_Addr(void)
+static int __init MDrv_RTPM_Set_Slot_Info(char *str)
 {
-    printk("Init STR PM addr first\n");
-    remap_config_addr = (phys_addr_t *)ioremap_wc(gPM_DataAddr + ARM_MIU0_BUS_BASE, gPM_DataSize);
-    remap_PM_addr = (phys_addr_t *)ioremap_wc(gPM_DramAddr + ARM_MIU0_BUS_BASE, gPM_DramSize);
+    if( str != NULL)
+    {
+        strncpy(gSlot_Suffix, str, 2);
+        gSlot_Suffix[sizeof(gSlot_Suffix) - 1] = '\0';
+    }
     return 0;
 }
+early_param("pm_path", MDrv_PM_Set_Info);
+early_param("RTPM_INFO", MDrv_RTPM_Set_Info);
+early_param("androidboot.slot_suffix", MDrv_RTPM_Set_Slot_Info);
 
-
-EXPORT_SYMBOL(MDrv_PM_SetPMPath);
-
-module_init(MDrv_PM_Init_Addr);
-early_param("pm_path", MDrv_PM_SetPMPath);
-early_param("RTPM_INFO", MDrv_PM_Set_RTPM_Info);
+//--------------------------------------------------------------------------------------------------
+//TODO: Remove API as follow.
+//--------------------------------------------------------------------------------------------------
+PM_Result MDrv_PM_CopyBin2Dram(void)
+{
+    return E_PM_OK;
+}
+EXPORT_SYMBOL(MDrv_PM_CopyBin2Dram);

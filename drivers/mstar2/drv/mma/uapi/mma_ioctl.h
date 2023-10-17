@@ -77,6 +77,26 @@ struct  mma_alloc_data {
     char  miu_select;
 };
 
+struct mma_alloc_data_v2 {
+	union {
+	char tag_name[MAX_NAME_SIZE];
+	char heap_name[MAX_NAME_SIZE];
+	};
+	int pipeid;
+	__u64 addr;
+	__u32 len;
+	int dmabuf_fd;
+	__u32 bSecure; //whethe secure buffer
+	char miu_select;
+	__u32 flag;
+};
+
+struct mma_map_iova_data {
+	__u64 addr;
+	int dmabuf_fd;
+};
+
+
 struct  mma_buftag_data {
     char tag_name[MAX_NAME_SIZE];
     __u32 heaptype;
@@ -104,6 +124,17 @@ struct mma_fd_data {
     __u64 addr;//IOVA or PA
 };
 
+struct mma_ion_handle_data {
+    int handle;
+    __s32 dmabuf_fd;
+};
+struct mma_va_iova {
+    char tag_name[MAX_NAME_SIZE];
+    __u64 addr;
+    __u32 len;
+    __u64 vaddr;
+    int   fd;
+};
 
 #define MMA_IOC_MAGIC  'M'
 
@@ -144,4 +175,21 @@ struct mma_fd_data {
 #define MMA_IOC_QUERY_PIPELINE_ID      _IOWR(MMA_IOC_MAGIC, 17, struct mma_alloc_data)
 
 #define MMA_IOC_QUERY_GLOBAL_NAME      _IOWR(MMA_IOC_MAGIC, 18, struct mma_fd_data)
+
+#define MMA_IOC_ALLOC_V2                _IOWR(MMA_IOC_MAGIC, 19, struct mma_alloc_data_v2)
+
+#define MMA_IOC_MAP_IOVA                _IOWR(MMA_IOC_MAGIC, 20, struct mma_map_iova_data)
+
+#define MMA_IOC_ION_IMPORT              _IOWR(MMA_IOC_MAGIC, 21, struct mma_ion_handle_data)
+
+#define MMA_IOC_ION_FREE                _IOWR(MMA_IOC_MAGIC, 22, struct mma_ion_handle_data)
+
+#define MMA_IOC_VA2IOVA                _IOWR(MMA_IOC_MAGIC, 23, struct  mma_va_iova)
+
+#define MMA_IOC_PUT_PIPEID             _IOW(MMA_IOC_MAGIC, 24, struct mma_alloc_data)
+
+#define MMA_IOC_RESIZE                 _IOWR(MMA_IOC_MAGIC, 25, struct mma_alloc_data_v2)
+
+#define MMA_IOC_SUPPORT                _IOWR(MMA_IOC_MAGIC, 26, int)
+
 #endif

@@ -78,7 +78,7 @@
 #else
 #include <asm/uaccess.h>
 #endif
-
+#include <linux/of.h>
 //drver header files
 #include "mdrv_mstypes.h"
 #include "chip_int.h"
@@ -241,6 +241,8 @@ EXPORT_SYMBOL(_MDrv_GFLIP_HDRCentralInfo);
 // Global Variables
 //=============================================================================
 MS_BOOL bStrEnableIRQFlag = TRUE;
+MS_BOOL bGflipResumeDone = FALSE, bGflipIRQState = TRUE;
+EN_GFLIP_STR_STATE enGflipSTRstate = E_GFLIP_RESUME_DONE_STATE;
 EXPORT_SYMBOL(bStrEnableIRQFlag);
 //-------------------------------------------------------------------------------------------------
 // IOCtrl Driver functions
@@ -710,7 +712,7 @@ int _MDrv_GFLIP_VECIO_IOC_VECaptureConfig(struct file *filp, unsigned long arg)
     {
         if(u8Length > sizeof(MS_GFLIP_VEC_CONFIG))
         {
-            printk("[Warning][%s][%d]u8Length: %u is larger than sizeof(MS_GFLIP_VEC_CONFIG): %d\n",__FUNCTION__,__LINE__,u8Length,sizeof(MS_GFLIP_VEC_CONFIG));
+            printk("[Warning][%s][%d]u8Length: %u is larger than sizeof(MS_GFLIP_VEC_CONFIG): %zu\n",__FUNCTION__,__LINE__,u8Length,sizeof(MS_GFLIP_VEC_CONFIG));
             return EFAULT;
         }
 
@@ -816,10 +818,20 @@ int _MDrv_GFLIPIO_IOC_SetGwinInfo(struct file *filp, unsigned long arg)
 
     MS_GWIN_INFO stGwinInfo;
 
-    if(copy_from_user(&stGwinInfo, (MS_GWIN_INFO __user *)arg, sizeof(MS_GWIN_INFO)))
+    memset(&stGwinInfo, 0, sizeof(stGwinInfo));
+    if(copy_from_user(&stGwinInfo.u64Addr, ((MS_U8*)arg), sizeof(MS_PHY) ))
     {
         return EFAULT;
     }
+    if(copy_from_user(&stGwinInfo.u16X, ((MS_U8*)arg)+sizeof(MS_PHY), 10UL ))
+    {
+        return EFAULT;
+    }
+    if(copy_from_user(&stGwinInfo.clrType, ((MS_U8*)arg)+sizeof(MS_GWIN_INFO) - 4UL, 4UL))
+    {
+        return EFAULT;
+    }
+
 
     if(stGwinInfo.u8GwinIdx >= MAX_GOP_GWIN || stGwinInfo.u8GopIdx >= MAX_GOP_SUPPORT)
     {
@@ -852,14 +864,13 @@ int _MDrv_GFLIPIO_IOC_DlcInitInfo(struct file *filp, unsigned long arg)
 
 MS_U32 _MDrv_GFLIPIO_SetIRQ(MS_BOOL bEnableIRQ)
 {
-    if(bEnableIRQ)
+    if((bEnableIRQ== TRUE) && (bGflipResumeDone == TRUE) && (bGflipIRQState == FALSE))
     {
         enable_irq(E_IRQ_GOP);
+        bGflipIRQState = TRUE;
     }
-    else
-    {
-        disable_irq(E_IRQ_GOP);
-    }
+
+    bStrEnableIRQFlag = TRUE;//set to default state
 
     return TRUE;
 }
@@ -985,23 +996,46 @@ int _MDrv_GFLIPIO_IOC_SDR2HDRInfo(struct file *filp, unsigned long arg)
 int _MDrv_GFLIPIO_IOC_GetVsync(struct file *filp, unsigned long arg)
 {
     MS_U32 u32GopIdx = 0;
-	MS_S64 u64VsyncTs;
-	GFLIP_GETVSYNC_DATA data;
 
-    if (__get_user(data.vsync_gop, &(((GFLIP_GETVSYNC_DATA __user *)arg)->vsync_gop)))
+    if (__get_user(u32GopIdx, (MS_U32 __user *)arg))
     {
         return EFAULT;
     }
-	u32GopIdx = data.vsync_gop;
     if(u32GopIdx >= MAX_GOP_SUPPORT)
     {
 		printk("GFLIPIO_IOC_GetVsync GOP = %td is out of range ",(ptrdiff_t)u32GopIdx);
         return EFAULT;
     }
-	u64VsyncTs = MDrv_GFLIP_WaitForVsync(u32GopIdx);
-	if (__put_user(u64VsyncTs, &(((GFLIP_GETVSYNC_DATA __user *)arg)->vsync_ts))) {
-		return EFAULT;
-	}
+    if(MDrv_GFLIP_WaitForVsync(u32GopIdx) == TRUE)
+    {
+        return 0;
+    }
+    else
+    {
+        return EFAULT;
+    }
+}
+
+int _MDrv_GFLIPIO_IOC_GetVsync_EX(struct file *filp, unsigned long arg)
+{
+    MS_U32 u32GopIdx = 0;
+    MS_S64 u64VsyncTs;
+    GFLIP_GETVSYNC_DATA data;
+
+    if (__get_user(data.vsync_gop, &(((GFLIP_GETVSYNC_DATA __user *)arg)->vsync_gop)))
+    {
+        return EFAULT;
+    }
+    u32GopIdx = data.vsync_gop;
+    if(u32GopIdx >= MAX_GOP_SUPPORT)
+    {
+        printk("GFLIPIO_IOC_GetVsync GOP = %td is out of range ",(ptrdiff_t)u32GopIdx);
+        return EFAULT;
+    }
+    u64VsyncTs = MDrv_GFLIP_WaitForVsync_EX(u32GopIdx);
+    if (__put_user(u64VsyncTs, &(((GFLIP_GETVSYNC_DATA __user *)arg)->vsync_ts))) {
+         return EFAULT;
+    }
     if (u64VsyncTs != -1)
     {
         return 0;
@@ -1074,6 +1108,25 @@ int _MDrv_GFLIPIO_IOC_CSC_Calc(struct file *filp, unsigned long arg)
     return 0;
 }
 
+int _MDrv_GFLIPIO_IOC_SetBWPEnFlag(struct file *filp, unsigned long arg)
+{
+    ST_GFLIP_GOP_BWP_INFO stGflipBWPInfo;
+
+    memset(&stGflipBWPInfo, 0, sizeof(ST_GFLIP_GOP_BWP_INFO));
+
+    if(copy_from_user(&stGflipBWPInfo, (ST_GFLIP_GOP_BWP_INFO __user *)arg, sizeof(ST_GFLIP_GOP_BWP_INFO)))
+    {
+        return EFAULT;
+    }
+
+    if(_MDrv_GFLIP_SetBWPEnFlag(stGflipBWPInfo.u32GOPNum, stGflipBWPInfo.bEnable) == FALSE)
+    {
+        return EFAULT;
+    }
+
+    return 0;
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 //-------------------------------------------------------------------------------------------------
 // IOCtrl Driver interface functions
@@ -1102,12 +1155,7 @@ int _MDrv_GFLIPIO_Release(struct inode *inode, struct file *filp)
     GFLIPIO_KDBG("[GFLIP] GFLIP DRIVER CLOSE\n");
 
     GFLIPIO_ASSERT(_devGFLIP.refCnt>0);
-#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
-    if(_devGFLIP.refCnt == 1)//delete timier when the last close of gflip
-    {
-        MDrv_GFLIP_Del_Timer();
-    }
-#endif
+
     for(u32Idx=0; u32Idx<MAX_FILE_HANDLE_SUPPRT; u32Idx++)
     {
         if(_filpGopIdxGFLIP[u32Idx].filp != filp)
@@ -1176,6 +1224,8 @@ long _Compat_MDrv_GFLIPIO_IOCtl(struct file *filp, U32 u32Cmd, unsigned long u32
         case MDRV_GFLIP_IOC_SETHDRCENTRAL:
         case MDRV_GFLIP_IOC_DLCSETHDRINFO:
         case MDRV_GFLIP_IOC_CSCTUNING:
+        case MDRV_GFLIP_IOC_GETVSYNCEX:
+        case MDRV_GFLIP_IOC_SETBWPENFLAG:
     	    return filp->f_op->unlocked_ioctl(filp, u32Cmd,
     						(unsigned long)compat_ptr(u32Arg));
             break;
@@ -1347,6 +1397,12 @@ long _MDrv_GFLIPIO_IOCtl(struct file *filp, U32 u32Cmd, unsigned long u32Arg)
         case MDRV_GFLIP_IOC_CSCTUNING:
             retval = _MDrv_GFLIPIO_IOC_CSC_Calc(filp,u32Arg);
             break;
+        case MDRV_GFLIP_IOC_GETVSYNCEX:
+            retval = _MDrv_GFLIPIO_IOC_GetVsync_EX(filp,u32Arg);
+            break;
+        case MDRV_GFLIP_IOC_SETBWPENFLAG:
+            retval = _MDrv_GFLIPIO_IOC_SetBWPEnFlag(filp,u32Arg);
+            break;
         default:  /* redundant, as cmd was checked against MAXNR */
             GFLIPIO_KDBG("[GFLIP] ERROR IOCtl number %x\n ",u32Cmd);
             return -ENOTTY;
@@ -1355,21 +1411,36 @@ long _MDrv_GFLIPIO_IOCtl(struct file *filp, U32 u32Cmd, unsigned long u32Arg)
     return (long)retval;
 }
 
-extern void str_time_check(const char *label, const char *module, const char *function);//, unsigned int *str_time);
 static int mstar_gflip_drv_suspend(struct platform_device *dev, pm_message_t state)
 {
-    disable_irq(E_IRQ_GOP);
-    return MDrv_GFLIP_Suspend();
+    if(enGflipSTRstate == E_GFLIP_RESUME_DONE_STATE)
+    {
+        disable_irq(E_IRQ_GOP);
+        bGflipIRQState = FALSE;
+
+        MDrv_GFLIP_Suspend();
+        enGflipSTRstate = E_GFLIP_SUSPEND_DONE_STATE;
+        bGflipResumeDone = FALSE;
+    }
+
+    return 0;
 }
 static int mstar_gflip_drv_resume(struct platform_device *dev)
 {
-    MDrv_GFLIP_Resume();
-    if(bStrEnableIRQFlag)
+    if(enGflipSTRstate == E_GFLIP_SUSPEND_DONE_STATE)
     {
-    enable_irq(E_IRQ_GOP);
+        MDrv_GFLIP_Resume();
+        bGflipResumeDone = TRUE;
+
+        if((bStrEnableIRQFlag == TRUE) && (bGflipIRQState == FALSE))
+        {
+            enable_irq(E_IRQ_GOP);
+            bGflipIRQState = TRUE;
+        }
+
+        enGflipSTRstate = E_GFLIP_RESUME_DONE_STATE;
     }
 
-	str_time_check("Resume", "Kernel", __FUNCTION__);//, &str_gflip_resume_time);
     return 0;
 }
 
@@ -1464,6 +1535,12 @@ int _MDrv_GFLIPIO_ModuleInit(void)
 #endif
 
     platform_driver_register(&Mstar_gflip_driver);
+
+#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
+    printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_devGFLIP.refCnt=%d\n",__func__,__LINE__,current->pid,current->comm,_devGFLIP.refCnt);
+    MDrv_GFLIP_InitTimer();
+#endif
+
     return 0;
 }
 

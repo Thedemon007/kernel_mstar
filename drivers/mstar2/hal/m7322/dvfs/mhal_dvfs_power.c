@@ -88,12 +88,12 @@ static unsigned int g_u32VoltageUpper[DVFS_CLUSTER_NUM];
 static unsigned int g_u32VoltageLower[DVFS_CLUSTER_NUM];
 
 #if CONFIG_DVFS_CPU_POWER_GPIO_ENABLE
-static unsigned int num_of_gpio;
-static unsigned int control_level;
-static unsigned int *gpio_num;
-static unsigned int *power_control;
-static unsigned int **gpio_control;
-static U32 bDvfsPowerInfoParse;
+static unsigned int num_of_gpio = 0;
+static unsigned int control_level = 0;
+static unsigned int *gpio_num = NULL;
+static unsigned int *power_control = NULL;
+static unsigned int **gpio_control = NULL;
+static U32 bDvfsPowerInfoParse = FALSE;
 #endif
 
 #if ((defined(CONFIG_MSTAR_DVFS_KERNEL_SWIIC) && (CONFIG_MSTAR_DVFS_KERNEL_SWIIC == 1)))

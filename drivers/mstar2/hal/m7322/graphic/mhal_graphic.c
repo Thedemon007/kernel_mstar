@@ -384,7 +384,7 @@ void _HAL_GOP_SetGwinInfo(MS_U8 u8GOP, MS_U8 u8win,DRV_GWIN_INFO WinInfo)
 {
     MS_U16 u16Bpp = 0;
     MS_U32 u32BankOffSet = 0, u32RingBuffer = 0, u32Voffset = 0;
-	MS_BOOL bPixelModeSupport = FALSE;
+    MS_BOOL bPixelModeSupport = FALSE;
 
     _HAL_GOP_GetBnkOfstByGop(u8GOP, &u32BankOffSet);
 
@@ -396,16 +396,19 @@ void _HAL_GOP_SetGwinInfo(MS_U8 u8GOP, MS_U8 u8win,DRV_GWIN_INFO WinInfo)
     }
 
     WinInfo.u32Addr = ALIGN_CHECK(WinInfo.u32Addr,GOP_WordUnit);
-	bPixelModeSupport = MHal_GRAPHIC_GetPixelModeSupport();
-	if (bPixelModeSupport == TRUE) {
-		WinInfo.u16Pitch = ALIGN_CHECK(WinInfo.u16Pitch, GOP_GWIN_SIZE_PIXELBASE_ALIGN);
-		WinInfo.u16HStart = ALIGN_CHECK(WinInfo.u16HStart, GOP_GWIN_SIZE_PIXELBASE_ALIGN);
-		WinInfo.u16HEnd = ALIGN_CHECK(WinInfo.u16HEnd, GOP_GWIN_SIZE_PIXELBASE_ALIGN);
-	} else {
-		WinInfo.u16Pitch = ALIGN_CHECK(WinInfo.u16Pitch, (GOP_WordUnit/u16Bpp));
-		WinInfo.u16HStart = ALIGN_CHECK(WinInfo.u16HStart, (GOP_WordUnit/u16Bpp));
-		WinInfo.u16HEnd = ALIGN_CHECK(WinInfo.u16HEnd, (GOP_WordUnit/u16Bpp));
-	}
+    bPixelModeSupport = MHal_GRAPHIC_GetPixelModeSupport();
+    if(bPixelModeSupport == TRUE)
+    {
+        WinInfo.u16Pitch = ALIGN_CHECK(WinInfo.u16Pitch,GOP_GWIN_SIZE_PIXELBASE_ALIGN);
+        WinInfo.u16HStart = ALIGN_CHECK(WinInfo.u16HStart, GOP_GWIN_SIZE_PIXELBASE_ALIGN);
+        WinInfo.u16HEnd = ALIGN_CHECK(WinInfo.u16HEnd, GOP_GWIN_SIZE_PIXELBASE_ALIGN);
+    }
+    else
+    {
+        WinInfo.u16Pitch = ALIGN_CHECK(WinInfo.u16Pitch,(GOP_WordUnit/u16Bpp));
+        WinInfo.u16HStart = ALIGN_CHECK(WinInfo.u16HStart,(GOP_WordUnit/u16Bpp));
+        WinInfo.u16HEnd = ALIGN_CHECK(WinInfo.u16HEnd,(GOP_WordUnit/u16Bpp));
+    }
 
     //Color Fmt
     _HAL_GOP_Write16Reg(u32BankOffSet+GOP_4G_GWIN0_CTRL(u8win), WinInfo.clrType <<4,0x00f0);

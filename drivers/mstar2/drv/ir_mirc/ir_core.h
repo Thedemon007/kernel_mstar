@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 
 #ifndef _IR_CORE_
 #define _IR_CORE_
@@ -22,12 +76,12 @@
 #include <linux/workqueue.h>
 #include <linux/poll.h>
 #include <linux/wait.h>
+#include <linux/version.h>
 #include <linux/time.h>  //added
 #include <linux/timer.h> //added
 #include <linux/types.h> //added
 #include <linux/input.h>
 #include <linux/platform_device.h>
-#include <linux/pm_wakeup.h>
 #include <asm/io.h>
 
 #include "ir_common.h"
@@ -108,7 +162,6 @@ struct mstar_ir_dev {
     IR_Mode_e                ir_mode;
     IR_Profile_t             support_ir[IR_SUPPORT_MAX];
     u8                       support_num;
-	struct wakeup_source	*ws;
 };
 
 
@@ -177,6 +230,10 @@ void MIRC_Set_Protocols(u64 data);
 void MIRC_Send_KeyEvent(u8 flag);
 unsigned long MIRC_Get_LastKey_Time(void);
 unsigned long MIRC_Get_System_Time(void);
+bool MIRC_IsEnable_WhiteBalance(void);
+void MIRC_Set_WhiteBalance_Enable(bool bEnble);
+void MIRC_IR_Config_Dump(void);
+void MIRC_Set_IR_Enable(IR_Type_e eIRType ,u32 u32HeadCode,u8 u8Enble);
 int MIRC_Data_Store(struct mstar_ir_dev *dev, struct ir_raw_data *ev);
 void MIRC_Data_Wakeup(struct mstar_ir_dev *dev);
 int MIRC_Data_Ctrl_Init(struct mstar_ir_dev *dev);
@@ -187,7 +244,11 @@ int MIRC_IRCustomer_Config(IR_Profile_t *stIr,u8 num);
 #ifdef CONFIG_MIRC_INPUT_DEVICE
 unsigned long MIRC_Get_Event_Timeout(void);
 void MIRC_Set_Event_Timeout(unsigned long time);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+void MIRC_Timer_Proc(struct timer_list *t);
+#else
 void MIRC_Timer_Proc(unsigned long data);
+#endif
 int MIRC_Map_Register(struct key_map_list *map);
 u32 MIRC_Get_Keycode(u32 keymapnum, u32 scancode);
 void MIRC_Map_UnRegister(struct key_map_list *map);

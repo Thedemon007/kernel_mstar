@@ -90,6 +90,7 @@
 #endif
 
 #include "eMMC_linux.h"
+#include "../../mstar_mci.h"
 
 //=====================================================
 // misc. do NOT edit the following content.

@@ -69,6 +69,10 @@
 #include "../ir_core.h"
 #include "../ir_common.h"
 
+#ifndef KEY_ASSISTANT
+#define KEY_ASSISTANT  0x247
+#endif
+
 /*
  * Jimmy Hsu <jimmy.hsu@mstarsemi.com>
  * this is the remote control that comes with the mstar smart tv
@@ -111,6 +115,8 @@ static struct key_map_table mstar_tv[] = {
     { 0x14, KEY_INFO },
     { 0x40, KEY_KP0 },        // WINDOW
     { 0x04, KEY_KP1 },        // TV_INPUT
+    { 0x21, KEY_ASSISTANT },  // ASSISTANT
+    { 0x27, KEY_POUND },      // POUND
     { 0x0E, KEY_REWIND },
     { 0x12, KEY_FORWARD },
     { 0x02, KEY_PREVIOUSSONG },
@@ -127,8 +133,10 @@ static struct key_map_table mstar_tv[] = {
     { 0x10, KEY_LIST },       // (C)LIST
     { 0x53, KEY_SUBTITLE },   // (C)SUBTITLE
     { 0x41, KEY_FN_F1 },      // (C)MTS
+    { 0x26, KEY_FN_F1 },      // (C)MTS I/II
     { 0x4E, KEY_FN_F2 },      // (C)FREEZE
     { 0x0A, KEY_FN_F3 },      // (C)TTX
+    { 0x23, KEY_FN_F3 },      // (C)TTX   //TEXT
     { 0x09, KEY_FN_F4 },      // (C)CC
     { 0x1C, KEY_FN_F5 },      // (C)TV_SETTING
     { 0x08, KEY_FN_F6 },      // (C)SCREENSHOT
@@ -142,7 +150,11 @@ static struct key_map_table mstar_tv[] = {
     { 0x5F, KEY_F8 },         // MSTAR_CLOCK
     { 0xFE, KEY_POWER2 },     // FAKE_POWER
     { 0xFF, KEY_OK },         // KEY_OK
-
+    { 0x22, KEY_F12 },         // KEY_F12
+    { 0x24, KEY_FAVORITES },  // FAV
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
+    { 0x25, KEY_AUDIO_DESC }, // AD
+#endif
     // 2nd IR controller.
 };
 

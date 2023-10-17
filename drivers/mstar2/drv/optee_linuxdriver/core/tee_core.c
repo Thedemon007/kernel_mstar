@@ -26,15 +26,16 @@
 #include <linux/uaccess.h>
 #include <asm-generic/ioctl.h>
 #include <linux/sched.h>
-#include "linux/string.h"
+#include <linux/string.h>
 #include <linux/kthread.h>
 #include <linux/ctype.h>
 #include <linux/delay.h>
 #include "linux/tee_core.h"
 #include "linux/tee_ioc.h"
 
-#include "linux/string.h"
+#include <linux/of.h>
 #include <linux/time.h>
+#include <linux/version.h>
 #include "tee_core_priv.h"
 
 #include "tee_sysfs.h"
@@ -42,6 +43,8 @@
 #include "tee_shm.h"
 #include "tee_supp_com.h"
 #include "mdrv_types.h"
+#include <linux/cpumask.h>
+#include <linux/threads.h>
 
 #define _TEE_CORE_FW_VER "1:0.1"
 
@@ -95,15 +98,29 @@ void tee_dec_stats(struct tee_stats_entry *entry)
 }
 
 #ifdef CONFIG_MSTAR_CHIP
-#ifndef CONFIG_TEE_2_4
 atomic_t tee_sup_count = ATOMIC_INIT(0);
 
 int tee_get_supplicant_count(void)
 {
+#ifndef CONFIG_TEE_2_4
 	return (int)atomic_read(&tee_sup_count);
+#else	//2.4 & 3.2
+//	int tee_ver = get_optee_version();
+	extern int optee_version;
+	extern int _tee_get_supplicant_count(void);
+	if (optee_version == 1) {
+		//optee 1.0.1
+		return (int)atomic_read(&tee_sup_count);
+	}
+	else {
+		pr_info("%s optee_version:%d\n", __func__,optee_version);
+		return _tee_get_supplicant_count();
+	}
+#endif
 }
 EXPORT_SYMBOL(tee_get_supplicant_count);
 
+#ifndef CONFIG_TEE_2_4
 void tee_client_close_context(struct tee_context *ctx __attribute__((unused)))
 {
 	pr_err("%s This is for weak symbol\n", __func__);
@@ -235,10 +252,9 @@ static int tee_supp_open(struct tee *tee)
 {
 	int ret = 0;
 #ifdef CONFIG_MSTAR_CHIP
-#ifndef CONFIG_TEE_2_4
 	int cnt;
 #endif
-#endif
+
 	dev_dbg(_DEV(tee), "%s: appclient=\"%s\" pid=%d\n", __func__,
 		current->comm, current->pid);
 
@@ -256,10 +272,8 @@ static int tee_supp_open(struct tee *tee)
 		else {
 			wake_up_interruptible (&wait_tee_supp);
 		}
-#ifndef CONFIG_TEE_2_4
 		cnt = atomic_read(&tee->rpc->used);
 		atomic_set(&tee_sup_count, cnt);
-#endif
 	} else {
 		if (atomic_read(&tee->rpc->used) == 0)
 			dev_err(tee->dev, "\033[1;33m%s: Warning, Supplicant not ready\033[m\n",
@@ -273,10 +287,9 @@ static int tee_supp_open(struct tee *tee)
 static void tee_supp_release(struct tee *tee)
 {
 #ifdef CONFIG_MSTAR_CHIP
-#ifndef CONFIG_TEE_2_4
 	int cnt;
 #endif
-#endif
+
 	dev_dbg(_DEV(tee), "%s: appclient=\"%s\" pid=%d\n", __func__,
 		current->comm, current->pid);
 
@@ -284,14 +297,13 @@ static void tee_supp_release(struct tee *tee)
 
 	if ((atomic_read(&tee->rpc->used) == 1) &&
 			(strncmp(_tee_supp_app_name, current->comm,
-					strlen(_tee_supp_app_name)) == 0))
+					strlen(_tee_supp_app_name)) == 0)) {
 		atomic_sub(1, &tee->rpc->used);
 #ifdef CONFIG_MSTAR_CHIP
-#ifndef CONFIG_TEE_2_4
-	cnt = atomic_read(&tee->rpc->used);
-	atomic_set(&tee_sup_count, cnt);
+		cnt = atomic_read(&tee->rpc->used);
+		atomic_set(&tee_sup_count, cnt);
 #endif
-#endif
+	}
 }
 
 static int tee_ctx_open(struct inode *inode, struct file *filp)
@@ -522,8 +534,9 @@ static long tee_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	int ret = -EINVAL;
 	struct tee_context *ctx = filp->private_data;
 	void __user *u_arg;
+#ifdef MSTAR_MEASURE_TIME
 	struct timespec start,end;
-
+#endif
 	BUG_ON(!ctx);
 	BUG_ON(!ctx->tee);
 
@@ -737,7 +750,7 @@ static ssize_t tz_write_name(struct file *filp, const char __user *buffer,
 
 	memcpy(parse_name, local_buf, sizeof(parse_name));
 
-	printk("\033[0;32;31m [Ian] %s %d %s %zu\033[m\n",__func__,__LINE__,parse_name,count);
+	printk("\033[0;32;31m %s %d %s %zu\033[m\n",__func__,__LINE__,parse_name,count);
 	name_count = count;
 
 	return count;
@@ -755,7 +768,7 @@ static ssize_t tz_write_file_name(struct file *filp, const char __user *buffer,
 
 	memcpy(file_name, local_buf, sizeof(file_name));
 
-	printk("\033[0;32;31m [Ian] %s %d %s %zu\033[m\n",__func__,__LINE__,file_name,count);
+	printk("\033[0;32;31m %s %d %s %zu\033[m\n",__func__,__LINE__,file_name,count);
 	file_name_count = count;
 
 	return count;
@@ -772,7 +785,7 @@ static int tee_ramlog_loop2(void *p)
 	else
 		fp=filp_open(file_name,O_RDWR | O_CREAT,0644);
 
-	printk("\033[0;32;31m [Ian] %s %d \033[m\n",__func__,__LINE__);
+	printk("\033[0;32;31m %s %d \033[m\n",__func__,__LINE__);
 
 	while(1){
 		oldfs = get_fs();
@@ -860,6 +873,55 @@ static ssize_t tz_write(struct file *filp, const char __user *buffer,
 	return count;
 }
 
+static ssize_t tz_write_ramlog_addr(struct file *filp, const char __user *buffer,
+                                    size_t count, loff_t *ppos)
+{
+	char local_buf[256];
+	char* const delim = " ";
+  	char *token, *cur;
+	int i;
+	uint32_t param_value[2];
+	struct tee *tee;
+	long val;
+
+	if(count >= 256)
+		return -EINVAL;
+
+	if (copy_from_user(local_buf, buffer, count))
+		return -EFAULT;
+
+	local_buf[count] = 0;
+	cur = local_buf;
+
+	for (i = 0 ; i < (sizeof(param_value)/sizeof(param_value[0])) ; i++) {
+		token = strsep(&cur, delim);
+
+		if (!token)
+			return -EINVAL;
+
+		if (kstrtol(token, 0, &val))
+			return -EINVAL;
+
+		param_value[i] = (uint32_t)val;
+	}
+
+	printk("\033[0;32;31m [RAMLOG] %s addr = 0x%x , length = %d\033[m\n",
+		__func__,param_value[0],param_value[1]);
+
+	tee = tee_get_tee("opteearmtz00");
+	if (!tee) {
+		pr_err("%s - can't get device [%s]\n", __func__, "opteearmtz00");
+		return TEEC_ERROR_BAD_PARAMETERS;
+	}
+
+	if(tee->ops->set_log_addr){
+		tee->ops->set_log_addr(param_value[0],param_value[1]);
+	}else
+		pr_err("%s - can't configure ramlog [%s]\n", __func__, ".set_log_addr");
+
+	return count;
+}
+
 static ssize_t crc_write(struct file *filp, const char __user *buffer,
                                     size_t count, loff_t *ppos)
 {
@@ -915,12 +977,11 @@ static ssize_t tz_write_nagra_warmboot(struct file *filp, const char __user *buf
 	char local_buf[256];
 	char* const delim = " ";
   	char *token, *cur;
-	int i;
-	uint32_t param_value[3];
+	uint32_t param_value;
 	struct tee *tee;
 	long val;
 
-	if(count >= 256)
+	if (count >= 256)
 		return -EINVAL;
 
 	if (copy_from_user(local_buf, buffer, count))
@@ -928,18 +989,12 @@ static ssize_t tz_write_nagra_warmboot(struct file *filp, const char __user *buf
 
 	local_buf[count] = 0;
 	cur = local_buf;
+	token = strsep(&cur, delim);
 
-	for (i = 0; i < 3; i++) {
-		token = strsep(&cur, delim);
+	if (kstrtol(token, 0, &val))
+		return -EINVAL;
 
-		if (!token)
-			return -EINVAL;
-
-		if (kstrtol(token, 0, &val))
-			return -EINVAL;
-
-		param_value[i] = (uint32_t)val;
-	}
+	param_value = (uint32_t)val;
 
 	tee = tee_get_tee("opteearmtz00");
 	if (!tee) {
@@ -948,11 +1003,59 @@ static ssize_t tz_write_nagra_warmboot(struct file *filp, const char __user *buf
 	}
 
 	if (tee->ops->configure_crc_args) {
-		tee->ops->set_nagra_warmboot(param_value[0],param_value[1],param_value[2],tee);
+		tee->ops->set_nagra_warmboot(param_value, tee);
 	} else
 		pr_err("%s - can't configure nagra_warmboot args\n", __func__);
 
 	return count;
+}
+
+static long tee_xtest_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int ret = -EINVAL;
+	void __user *u_arg;
+	uint32_t result = 0;
+	extern unsigned int setup_max_cpus;
+#ifdef CONFIG_COMPAT
+	if (is_compat_task() && _is_user_addr(arg))
+		u_arg = compat_ptr(arg);
+	else
+		u_arg = (void __user *)arg;
+#else
+	u_arg = (void __user *)arg;
+#endif
+
+	switch (cmd) {
+		case TEE_XTEST_SUPPLICANT_CNT_IOC:
+			result = tee_get_supplicant_count();
+			pr_info("%s %d supplicant cnt:%d\n", __func__, __LINE__, result);
+			if (result) {
+				put_user(TEEC_SUCCESS,(unsigned int __user *) u_arg);
+				ret = 0;
+			}
+			else {
+				put_user(TEEC_ERROR_GENERIC, (unsigned int __user *)u_arg);
+				ret = -ENOSYS;
+			}
+			break;
+		case TEE_XTEST_CHECK_SMP_IOC:
+			result = num_online_cpus();
+			pr_info("%s %d The number of online core:%d,\
+and expect setup_max_cpus:%d\n", __func__, __LINE__, result, setup_max_cpus);
+			if (result == setup_max_cpus) {
+				put_user(TEEC_SUCCESS, (unsigned int __user *)u_arg);
+				ret = 0;
+			}
+			else {
+				put_user(TEEC_ERROR_GENERIC, (unsigned int __user *)u_arg);
+				ret = -ENOSYS;
+			}
+			break;
+		default:
+			ret = -ENOSYS;
+		break;
+	}
+	return ret;
 }
 
 static struct file_operations crc_fops = {
@@ -980,13 +1083,71 @@ static struct file_operations tz_fops4 = {
 	.write   = tz_write_nagra_warmboot,
 };
 
+static struct file_operations ramlog_fops = {
+	.owner   = THIS_MODULE, // system
+	.write   = tz_write_ramlog_addr,
+};
+
+static struct file_operations tz_fops_misc = {
+	.owner   = THIS_MODULE,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = tee_xtest_ioctl,
+#endif
+	.unlocked_ioctl = tee_xtest_ioctl,
+};
+
 #define USER_ROOT_DIR "tz_mstar"
 static struct proc_dir_entry *tz_root;
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static const struct of_device_id optee_match[] = {
+	{ .compatible = "linaro,optee-tz-1.0.1" },
+	{},
+};
+#endif
+
+#define XTEST_ROOT_DIR "mtk_xtest"
+static struct proc_dir_entry *xtest_root;
+static int __init tee_create_xtest(void)
+{
+	struct proc_dir_entry *timeout;
+	xtest_root = proc_mkdir(XTEST_ROOT_DIR, NULL);
+	if (NULL == xtest_root)
+	{
+		printk(KERN_ALERT "Create dir /proc/%s error!\n",XTEST_ROOT_DIR);
+		return -1;
+	}
+
+	timeout = proc_create("optee_xtest", 0644, xtest_root, &tz_fops_misc);
+	if (!timeout){
+		printk(KERN_ALERT "Create dir /proc/%s/optee_xtest error!\n",XTEST_ROOT_DIR);
+		return -ENOMEM;
+	}
+	return 0;
+}
 
 static int __init tee_core_init(void)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	struct device_node *fw_np;
+	struct device_node *np;
+
+	if (tee_create_xtest())
+		pr_err("%s - tee_create_xtest init fail!\n", __func__);
+
+	/* Node is supposed to be below /firmware */
+	fw_np = of_find_node_by_name(NULL, "firmware");
+	if (!fw_np)
+		return -ENODEV;
+
+	np = of_find_matching_node(fw_np, optee_match);
+	if (!np)
+		return -ENODEV;
+#else
+	if (tee_create_xtest())
+		pr_err("%s - tee_create_xtest init fail!\n", __func__);
+#endif
 	if(TEEINFO_TYPTE == SECURITY_TEEINFO_OSTYPE_SECARM) {
 		printk(KERN_ALERT "This kernel verison is not support OSTYPE_SECARM!\n");
 		return -EFAULT;
@@ -1033,6 +1194,12 @@ static int __init tee_core_init(void)
 			return -ENOMEM;
 		}
 
+		timeout = proc_create("ramlog_setup", 0644, tz_root, &ramlog_fops);
+		if (!timeout){
+			printk(KERN_ALERT "Create dir /proc/%s/ramlog_setup error!\n",USER_ROOT_DIR);
+			return -ENOMEM;
+		}
+
 		mutex_init(&tee_ramlog_lock2);
 		memset(parse_name,0,sizeof(parse_name));
 #endif
@@ -1051,9 +1218,9 @@ static void __exit tee_core_exit(void)
 
 #ifdef CONFIG_MSTAR_CHIP
 	remove_proc_entry(USER_ROOT_DIR, tz_root);
+	remove_proc_entry(XTEST_ROOT_DIR, xtest_root);
 #endif
 }
-
 module_init(tee_core_init);
 module_exit(tee_core_exit);
 

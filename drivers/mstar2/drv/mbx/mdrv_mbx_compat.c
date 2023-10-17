@@ -136,7 +136,7 @@ int mdrv_mbx_recvmsg_compat_get_ion_allaction_data(COMPAT_MS_MBX_RECV_MSG __user
 
 int mdrv_mbx_recvmsg_compat_put_ion_allaction_data(COMPAT_MS_MBX_RECV_MSG __user *data32, MS_MBX_RECV_MSG __user *data)
 {
-	MS_MBX_RECV_MSG temp;
+	MS_MBX_RECV_MSG temp = {};
 	int err;
 
 	err = get_user(temp.eTargetClass, &data->eTargetClass);

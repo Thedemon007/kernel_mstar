@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
 /******************************************************************************
  *
  * This file is provided under a dual license.  When you use or
@@ -51,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #ifndef _MDRV_ALSA_PUBLIC_HEADER
 #define _MDRV_ALSA_PUBLIC_HEADER
 
@@ -68,6 +70,9 @@
 
 #define MAD_PRINT(fmt, args...)    printk("[%010u][MAD_ALSA][%06d]     " fmt, jiffies_to_msecs(jiffies), __LINE__, ## args)
 
+#define COMMON_PCM_SHM_VERSION		0xAA190003
+#define COMMON_PCM_SHM_DRAM_SIZE	0x100
+
 enum MStar_GET_CMD {
 	/* Playback */
 	E_PCM_PLAYBACK_GET_BUFFER_SIZE = 0,
@@ -83,23 +88,37 @@ enum MStar_GET_CMD {
 	E_PCM_PLAYBACK_GET_BUFFER_CONSUMED_BYTES,
 	E_PCM_PLAYBACK_GET_DEVICE_STATUS,
 	E_PCM_PLAYBACK_GET_STR_STATUS,
+	E_PCM_PLAYBACK_GET_DEVICE_USED,
 
 	/* Capture */
 	E_PCM_CAPTURE_GET_NEW_PCM_AVAIL_BYTES,
 	E_PCM_CAPTURE_GET_TOTAL_PCM_AVAIL_BYTES,
 	E_PCM_CAPTURE_GET_DEVICE_STATUS,
+	E_PCM_CAPTURE_GET_IS_DMIC,
+	E_PCM_CAPTURE_GET_DEVICE_USED,
 };
 
 enum MStar_SET_CMD {
 	/* Playback */
 	E_PCM_PLAYBACK_SET_SAMPLE_RATE = 0,
 	E_PCM_PLAYBACK_SET_CHANNEL_MODE,
+	E_PCM_PLAYBACK_SET_DEVICE_USED,
 
 	/* Capture */
 	E_PCM_CAPTURE_SET_CHANNEL_MODE,
 	E_PCM_CAPTURE_SET_SAMPLE_RATE,
 	E_PCM_CAPTURE_SET_BUFFER_SIZE,
 	E_PCM_CAPTURE_SET_BIT_WIDTH,
+	E_PCM_CAPTURE_SET_DEVICE_USED,
+
+	E_PCM_CAPTURE_SET_DMIC_ENABLE,
+	E_PCM_CAPTURE_SET_DMIC_NUM,
+	E_PCM_CAPTURE_SET_DMIC_REF_NUM,
+	E_PCM_CAPTURE_SET_DMIC_HPF_SWITCH,
+	E_PCM_CAPTURE_SET_DMIC_HPF_CONFIG,
+	E_PCM_CAPTURE_SET_DMIC_SINE_GEN,
+	E_PCM_CAPTURE_SET_DMIC_GAIN,
+
 };
 
 enum {
@@ -117,6 +136,110 @@ enum {
 	E_RESUME,
 };
 
+enum {
+	E_HW_DMA_Reader1 = 0,
+	E_HW_DMA_Reader2,
+	E_HW_DMA_Reader3,
+	E_HW_DMA_Reader4,
+	E_R2_DMA_Reader1,
+	E_R2_DMA_Reader2,
+
+	E_SW_DMA_Reader1 = 6,
+	E_SW_DMA_Reader2,
+	E_SW_DMA_Reader3,
+	E_SW_DMA_Reader4,
+	E_SW_DMA_Reader5,
+
+	E_PCM_CAPTURE1 = 16,
+	E_PCM_CAPTURE2,
+	E_PCM_CAPTURE3,
+	E_PCM_CAPTURE4,
+	E_PCM_CAPTURE5,
+};
+
+struct MStar_COMMON_PCM_SHM_Struct {
+	unsigned int version;
+	unsigned int init_flag;
+	unsigned int dma_use_status;
+	/*
+		[0]:        HW DMA Reader1
+		[1]:        HW DMA Reader2
+		[2]:        HW DMA Reader3
+		[3]:        HW DMA Reader4
+		[4]:        R2 DMA Reader1
+		[5]:        R2 DMA Reader2
+		[6]:        SW DMA Reader1
+		[7]:        SW DMA Reader2
+		[8]:        SW DMA Reader3
+		[9]:        SW DMA Reader4
+		[10]:       SW DMA Reader5
+		[16]:       PCM CAP1
+		[17]:       PCM CAP2
+		[18]:       PCM CAP3
+		[19]:       PCM CAP4
+		[20]:       PCM CAP5
+	*/
+	unsigned int dma_channel_mapping;
+	/*
+		[0:3]:      HW DMA Reader1
+		[4:7]:      HW DMA Reader2
+		[8:11]:     HW DMA Reader3
+		[12:15]:    HW DMA Reader4
+	*/
+	unsigned int sw_dma_channel_mapping;
+	/*
+		[0:3]:      SW DMA Reader1
+		[4:7]:      SW DMA Reader2
+		[8:11]:     SW DMA Reader3
+		[12:15]:    SW DMA Reader4
+		[16:19]:    SW DMA Reader5
+	*/
+	unsigned int hw_dma_reader1_offset;
+	unsigned int hw_dma_reader1_size;
+	unsigned int hw_dma_reader2_offset;
+	unsigned int hw_dma_reader2_size;
+	unsigned int hw_dma_reader3_offset;
+	unsigned int hw_dma_reader3_size;
+	unsigned int hw_dma_reader4_offset;
+	unsigned int hw_dma_reader4_size;
+
+	unsigned int sw_dma_reader1_offset;
+	unsigned int sw_dma_reader1_size;
+	unsigned int sw_dma_reader2_offset;
+	unsigned int sw_dma_reader2_size;
+	unsigned int sw_dma_reader3_offset;
+	unsigned int sw_dma_reader3_size;
+	unsigned int sw_dma_reader4_offset;
+	unsigned int sw_dma_reader4_size;
+	unsigned int sw_dma_reader5_offset;
+	unsigned int sw_dma_reader5_size;
+
+	unsigned int capture1_offset;
+	unsigned int capture1_size;
+	unsigned int capture2_offset;
+	unsigned int capture2_size;
+	unsigned int capture3_offset;
+	unsigned int capture3_size;
+	unsigned int capture4_offset;
+	unsigned int capture4_size;
+	unsigned int capture5_offset;
+	unsigned int capture5_size;
+
+	unsigned int dmic_capture_offset;
+	unsigned int dmic_capture_size;
+	unsigned int aec_capture_offset;
+	unsigned int aec_capture_size;
+
+	unsigned int sw_mixer_client_number;
+	unsigned int sw_mixer_client_info_offset;
+	unsigned int sw_mixer_client_info_size;
+	unsigned int sw_mixer_client_buffer_offset;
+	unsigned int sw_mixer_client_buffer_size;
+	unsigned int sw_mixer_server1_offset;
+	unsigned int sw_mixer_server2_offset;
+	unsigned int sw_mixer_server_size;
+};
+
 struct MStar_MAD_Ops {
 	int (*open)(void);
 	int (*close)(void);
@@ -128,6 +251,8 @@ struct MStar_MAD_Ops {
 	unsigned int (*write)(void *buffer, unsigned int bytes);
 	int (*get)(int cmd, unsigned int *param);
 	int (*set)(int cmd, unsigned int *param);
+	int (*mmap)(struct vm_area_struct *vma);
+	int (*init)(void);
 };
 
 struct MStar_MAD_Info {

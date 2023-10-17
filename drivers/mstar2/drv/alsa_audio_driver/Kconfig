@@ -4,6 +4,7 @@ menuconfig MSTAR_ALSA_AUDIO_DRIVER
 	tristate "ALSA Audio Driver"
 	default n
 	depends on SND
+	select SND_SOC
 	help
 		MStar ALSA Audio Driver.
 

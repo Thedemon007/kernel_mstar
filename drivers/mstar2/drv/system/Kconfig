@@ -6,3 +6,7 @@ config MSTAR_SYSTEM
 config MSTAR_UTOPIA2K_MDEBUG
 	bool "UTOPIA2K_MDEBUG"
   default n
+
+config MSTAR_SUPPORT_MULTI_GATE
+        bool "Support Multi Gate"
+  default n

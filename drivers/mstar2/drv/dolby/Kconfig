@@ -21,3 +21,9 @@ bool "XC HDR Support 1_5_1"
 default n
 help
     enable MStar XC HDR Support 1_5_1
+
+config MSTAR_XC_HDR_1_6_1_1
+bool "XC HDR Support 1_6_1_1"
+default n
+help
+    enable MStar XC HDR Support 1_6_1_1

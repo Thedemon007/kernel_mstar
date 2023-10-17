@@ -82,20 +82,17 @@
 //-------------------------------------------------------------------------------------------------
 void MDrv_GPIO_Init(void);
 void MDrv_GPIO_WriteRegBit(U32 u32Reg, U8 u8Enable, U8 u8BitMsk);
-int MDrv_GPIO_Set_Post_Init_GPIO_Pad(const U8 u8IndexGPIO, const BOOL b_enable, const BOOL b_output_enable, const BOOL b_output_high);
-int MDrv_GPIO_Set_Pad_As_GPIO(const U8 u8IndexGPIO, const BOOL b_output_enable, const BOOL b_output_high);
-int MDrv_GPIO_Is_GPIO(const U8 u8IndexGPIO, BOOL *const pbIsGPIO);
-void MDrv_GPIO_Pad_Set(U8 u8IndexGPIO);
-void MDrv_GPIO_Pad_Oen(U8 u8IndexGPIO);
-void MDrv_GPIO_Pad_Odn(U8 u8IndexGPIO);
-U8 MDrv_GPIO_Pad_Read(U8 u8IndexGPIO);
-U8 MDrv_GPIO_Pad_InOut(U8 u8IndexGPIO);
-void MDrv_GPIO_Pull_High(U8 u8IndexGPIO);
-void MDrv_GPIO_Pull_Low(U8 u8IndexGPIO);
-void MDrv_GPIO_Set_High(U8 u8IndexGPIO);
-void MDrv_GPIO_Set_Low(U8 u8IndexGPIO);
-void MDrv_GPIO_Set_Input(U8 u8IndexGPIO);
-int MDrv_GPIO_Get_Level(U8 u8IndexGPIO);
+void MDrv_GPIO_Pad_Set(U32 u32IndexGPIO);
+void MDrv_GPIO_Pad_Oen(U32 u32IndexGPIO);
+void MDrv_GPIO_Pad_Odn(U32 u32IndexGPIO);
+U8 MDrv_GPIO_Pad_Read(U32 u32IndexGPIO);
+U8 MDrv_GPIO_Pad_InOut(U32 u32IndexGPIO);
+void MDrv_GPIO_Pull_High(U32 u32IndexGPIO);
+void MDrv_GPIO_Pull_Low(U32 u32IndexGPIO);
+void MDrv_GPIO_Set_High(U32 u32IndexGPIO);
+void MDrv_GPIO_Set_Low(U32 u32IndexGPIO);
+void MDrv_GPIO_Set_Input(U32 u32IndexGPIO);
+
 #ifdef CONFIG_EXT_INTERRUPT_SUPPORT
 /*Mstar_Gpio_Irq_Attach API export to Utopia for debug*/
 void Mstar_Gpio_Irq_Attach(int gpio_num, unsigned long irqflags,void* ptr);

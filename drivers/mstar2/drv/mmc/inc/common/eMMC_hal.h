@@ -123,6 +123,7 @@ extern  U32 eMMC_FCIE_EnableFastMode(U8 u8_PadType);
 extern  U32 eMMC_FCIE_EnableSDRMode(void);
 extern  U32 eMMC_FCIE_DetectDDRTiming(void);
 extern void eMMC_DumpTimingTable(void);
+extern  U32 eMMC_LoadTimingTable_Ex(U8 u8_PadType, U8 *pBuf);
 extern  U32 eMMC_LoadTimingTable(U8 u8_PadType);
 extern  U32 eMMC_TuningDDR52_Skew(void);
 extern  U32 eMMC_TuningHS200_Skew(void);
@@ -202,6 +203,9 @@ extern 	bool HalFcie_CheckIfeMMCRun4Kernel(void);
 
 extern  void eMMC_DumpATopTable(void);
 extern  void eMMC_FCIE_SymmetrySkew4(void);
+extern  void eMMC_pll_dll_retry(void);
+extern  void eMMC_FCIE_Force_Polling(void);
+extern  void eMMC_FCIE_Force_Intr(void);
 
 extern U8 sgu8_IfNeedRestorePadType; // = 0xff
 extern U8 u8_sdr_retry_count;	// = 0

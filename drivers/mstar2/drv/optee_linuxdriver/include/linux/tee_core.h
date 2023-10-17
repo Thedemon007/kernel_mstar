@@ -203,11 +203,14 @@ struct tee_ops {
 #ifdef CONFIG_MSTAR_CHIP
 	int (*set_log_level)(uint32_t level, struct tee *tee);
 	int (*configure_crc_args)(int miu,uint32_t offset,uint32_t size);
-	int (*set_nagra_warmboot)(uint32_t base,uint32_t size,uint32_t entry, struct tee *tee);
+	int (*set_nagra_warmboot)(uint32_t base, struct tee *tee);
+	int (*set_log_addr)(unsigned long buf_adr, unsigned long buf_len);
 #endif
 	int (*pm51ctl)(uint32_t cmd, struct tee *tee);
 };
 
+//#define MSTAR_MEASURE_TIME 1
+#ifdef MSTAR_MEASURE_TIME
 #define TIME_PRINTK_START(buf,start,index) 	do{	\
 						getrawmonotonic(&start);	\
 						_TIME_PRINTK(buf,start,0,index);	\
@@ -217,6 +220,10 @@ struct tee_ops {
 						getrawmonotonic(&end);	\
 						_TIME_PRINTK(buf,end,end.tv_nsec -start.tv_nsec,index);	\
 					}while(0)
+#else
+#define TIME_PRINTK_START(buf,start,index)
+#define TIME_PRINTK_END(buf,start,end,index)
+#endif
 
 void _TIME_PRINTK(char *buf,struct timespec now,long diff,uint32_t index);
 #endif /* __TEE_CORE_DRV_H__ */

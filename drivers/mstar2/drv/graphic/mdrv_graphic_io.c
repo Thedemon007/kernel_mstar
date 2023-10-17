@@ -111,6 +111,7 @@ static int _mstar_fb_ioctl(struct fb_info *pinfo, MS_U32 u32Cmd, unsigned long u
 #define MIU0_BUS_OFFSET 	ARM_MIU0_BUS_BASE
 #define MIU1_INTERVAL 		(ARM_MIU1_BUS_BASE - ARM_MIU0_BUS_BASE)
 static MS_BOOL bGwinEnable=FALSE;
+static FBDEV_Controller fbControllers;
 
 /* Device independent changeable information */
 static struct fb_var_screeninfo mstar_fb_var =
@@ -159,6 +160,8 @@ static struct fb_fix_screeninfo mstar_fb_fix =
 static struct fb_ops mstar_fb_ops =
 {
     .owner = THIS_MODULE,
+    .fb_open = _mstar_fb_open,
+    .fb_release = _mstar_fb_release,
     .fb_mmap = _mstar_fb_mmap,
     .fb_set_par = mstar_fb_set_par,
     .fb_check_var = mstar_fb_check_var,
@@ -170,6 +173,39 @@ static struct fb_ops mstar_fb_ops =
     .fb_imageblit = mstar_fb_imageblit,
     .fb_destroy = mstar_fb_destroy,
 };
+
+static int _mstar_fb_open(struct fb_info *info, int user)
+{
+    FBDEV_Controller* par;
+    par = info->par;
+
+    if(user)
+    {
+        par->ref_count++;
+    }
+
+    return 0;
+}
+
+static int _mstar_fb_release(struct fb_info *info, int user)
+{
+    FBDEV_Controller* par;
+    par = info->par;
+
+    if(user)
+    {
+        if (!par->ref_count)
+            return -EINVAL;
+        else
+            par->ref_count--;
+    }
+    else
+    {
+        printk("\33[0;36m fb:%d user=%d \33[m \n",info->node,user);
+    }
+
+    return 0;
+}
 
 void _fb_gwin_update(struct fb_var_screeninfo *fbvar,  struct fb_info *pinfo)
 {
@@ -318,21 +354,29 @@ static int mstar_fb_blank(int blank, struct fb_info *info)
 static int mstar_fb_pan_display(struct fb_var_screeninfo *var, struct fb_info *pinfo)
 {
     //update gwin
-    if(0 == strncmp(current->comm,"recovery",strlen(current->comm)))
+    FBDEV_Controller* par;
+    par = pinfo->par;
+
+    //invoked by linux framebuffer framework fbcon notify
+    if(!par->ref_count)
     {
-        _fb_strewin_update(var);
-        _fb_gwin_update(var,pinfo);
-
-        //enable gwin
-        if(bGwinEnable == FALSE)
-        {
-            _fb_gwin_enable(TRUE);
-            bGwinEnable = TRUE;
-        }
-
-        //update  mstar_fb_var
-        memcpy(&mstar_fb_var, var, sizeof(struct fb_var_screeninfo));
+        printk("%s fb:%d invoked by fbcon notify do nothing\n",__FUNCTION__,pinfo->node);
+        return 0;
     }
+
+     _fb_strewin_update(var);
+     _fb_gwin_update(var,pinfo);
+
+     //enable gwin
+     if(bGwinEnable == FALSE)
+     {
+         _fb_gwin_enable(TRUE);
+         bGwinEnable = TRUE;
+     }
+
+     //update  mstar_fb_var
+     memcpy(&mstar_fb_var, var, sizeof(struct fb_var_screeninfo));
+
     return 0;
 }
 
@@ -529,6 +573,9 @@ static void _fb_gwin_init(void)
             _MDrv_GRAPHIC_SetHMirror(GOP0,TRUE);
             _MDrv_GRAPHIC_SetVMirror(GOP0,FALSE);
             break;
+        default:
+            printk("[%s][%d]Invalid u8MirrorMode\n",__FUNCTION__, __LINE__);
+            break;
     }
 
 #ifdef Box_Chip
@@ -581,9 +628,11 @@ static int __init mstar_fb_probe(struct platform_device *dev)
     if (!pinfo)
         return retval;
 
+    memset(&fbControllers, 0x0, sizeof(FBDEV_Controller));
+
     pinfo->fbops = &mstar_fb_ops;
-    pinfo->pseudo_palette = pinfo->par;
-    pinfo->par = NULL;
+    pinfo->pseudo_palette = fbControllers.pseudo_palette;
+    pinfo->par = &fbControllers;
     pinfo->flags = FBINFO_FLAG_DEFAULT;
     if(0 != mstar_fb_fix.smem_start)
     {
@@ -771,7 +820,10 @@ static int __init MDrv_SYS_SetGraphicAddr(char *str)
 {
     if (str != NULL)
     {
-        strict_strtol(str, 0, &recovery_addr);
+        if(kstrtoul(str, 0, &recovery_addr)!=0)
+        {
+            printk("KERN_ERR [%.16s][%d]ERROR: Parsing Fail !\n",__FUNCTION__, __LINE__);
+        }
     }
     mstar_fb_fix.smem_start = recovery_addr;
     return 0;
@@ -781,7 +833,12 @@ static int __init MDrv_SYS_SetGraphicMirror(char *str)
 {
     if (str != NULL)
     {
-        strict_strtol(str, 0, &u8MirrorMode);
+        long mode = 0;
+        if(kstrtol(str, 0, &mode)!=0)
+        {
+            printk(KERN_ERR "[%.16s][%d]ERROR: Parsing Fail !\n",__FUNCTION__, __LINE__);
+        }
+        u8MirrorMode = (MS_U8)mode;
     }
 
     return 0;

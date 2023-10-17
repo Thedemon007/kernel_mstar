@@ -275,7 +275,7 @@ return (ret);
 #define ENABLE_HC_RESET_FAIL_ECO
 
 //---- 23. EHCI keeps running when device is disconnected
-#define ENABLE_DISCONNECT_HC_KEEP_RUNNING_ECO
+//#define ENABLE_DISCONNECT_HC_KEEP_RUNNING_ECO
 
 //---- 24. DMA interrupt after the write back of qTD
 // don't enable it, it make split transaction very slow
@@ -374,8 +374,9 @@ return (ret);
 
 //------ UTMI disconnect level parameters ---------------------------------
 // disc: bit[7:4] 0x00: 550mv, 0x20: 575, 0x40: 600, 0x60: 625
-// squelch: bit[3:0] 4'b0100 => 100mv
-#define UTMI_DISCON_LEVEL_2A    (0x60 | 0x02)
+// squelch: bit[3:0] 4'b0010 => 100mv
+// squelch: bit[3:0] 4'b1110 =>  75mv
+#define UTMI_DISCON_LEVEL_2A    (0x60 | 0x0e)
 #define UTMI_CHIRP_DCT_LEVEL_42	(0x80)
 
 //------ UTMI eye diagram parameters ---------------------------------

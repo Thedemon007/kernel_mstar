@@ -42,3 +42,18 @@ config MSTAR_FTL
   default n
   help
     Enable Mstar MLC FTL
+
+config MSTAR_RESERVED_END_OF_NAND
+	bool "enable reserved bytes from end of nand"
+	depends on MSTAR_NAND
+	default n
+	help
+		Enable reserved bytes from end of nand flash for security data
+
+config MSTAR_RESERVED_NAND_BYTE
+    int "reserved bytes from end of nand"
+	depends on MSTAR_RESERVED_END_OF_NAND
+	default 0
+	range 0 2147483647
+	help
+		Reserved bytes from end of nand flash for security data

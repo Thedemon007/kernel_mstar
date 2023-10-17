@@ -74,7 +74,8 @@
 #define __Sizeof_GPIO_Pins() \
 	(sizeof(gpio_table) /sizeof(struct gpio_setting))
 
-#define INT_COUNT                       8
+#define INT_COUNT                       16
+#define GPIO_PM_INT_SUPPORTED  1
 extern const int gpio_IntPad[INT_COUNT];
 extern const int gpio_IRQnum[INT_COUNT];
 //-------------------------------------------------------------------------------------------------
@@ -84,26 +85,22 @@ extern const int gpio_IRQnum[INT_COUNT];
 extern void MHal_GPIO_Init(void);
 extern void MHal_GPIO_WriteRegBit(U32 u32Reg, U8 u8Enable, U8 u8BitMsk);
 extern U8   MHal_GPIO_ReadRegBit(U32 u32Reg, U8 u8BitMsk);
-extern int MHal_GPIO_Set_Post_Init_GPIO_Pad(const U8 u8IndexGPIO, const BOOL b_enable, const BOOL b_output_enable, const BOOL b_output_high);
-extern int MHal_GPIO_Resume_GPIO_Pads(void);
-extern int MHal_GPIO_Set_Pad_As_GPIO(const U8 u8IndexGPIO);
-extern int MHal_GPIO_Is_Pad_GPIO(const U8 u8IndexGPIO, BOOL *const pbIsGPIO);
-extern void MHal_GPIO_Pad_Set(U8 u8IndexGPIO);
-extern void MHal_GPIO_Pad_Oen(U8 u8IndexGPIO);
-extern void MHal_GPIO_Pad_Odn(U8 u8IndexGPIO);
-extern U8   MHal_GPIO_Pad_Level(U8 u8IndexGPIO);
-extern U8   MHal_GPIO_Pad_InOut(U8 u8IndexGPIO);
-extern void MHal_GPIO_Pull_High(U8 u8IndexGPIO);
-extern void MHal_GPIO_Pull_Low(U8 u8IndexGPIO);
-extern void MHal_GPIO_Set_High(U8 u8IndexGPIO);
-extern void MHal_GPIO_Set_Low(U8 u8IndexGPIO);
-extern void MHal_GPIO_Set_Input(U8 u8IndexGPIO);
-extern int MHal_GPIO_Get_Interrupt_Num(U8 u8IndexGPIO);
-extern U16 MHal_GPIO_Get_Pins_Count(void);
-extern int MHal_GPIO_Set_Pin_Status_Array(U32* pGPIOPinStatusList, U8 u8PinCount, U8 *upRetPinCount, U32* pin_disable);
-extern int MHal_GPIO_Get_Pin_Status_Array(U32* pGPIOPinStatusList, U8 u8PinCount, U8 *upRetPinCount);
+extern void MHal_GPIO_Pad_Set(U32 u32IndexGPIO);
+extern void MHal_GPIO_Pad_Oen(U32 u32IndexGPIO);
+extern void MHal_GPIO_Pad_Odn(U32 u32IndexGPIO);
+extern U8   MHal_GPIO_Pad_Level(U32 u32IndexGPIO);
+extern U8   MHal_GPIO_Pad_InOut(U32 u32IndexGPIO);
+extern void MHal_GPIO_Pull_High(U32 u32IndexGPIO);
+extern void MHal_GPIO_Pull_Low(U32 u32IndexGPIO);
+extern void MHal_GPIO_Set_High(U32 u32IndexGPIO);
+extern void MHal_GPIO_Set_Low(U32 u32IndexGPIO);
+extern void MHal_GPIO_Set_Input(U32 u32IndexGPIO);
+extern int MHal_GPIO_Get_Interrupt_Num(U32 u32IndexGPIO);
+extern U32 MHal_GPIO_Get_Pins_Count(void);
+extern int MHal_GPIO_Set_Pin_Status_Array(U32* pGPIOPinStatusList, U32 u32PinCount, U32 *upRetPinCount, U32* pin_disable);
+extern int MHal_GPIO_Get_Pin_Status_Array(U32* pGPIOPinStatusList, U32 u32PinCount, U32 *upRetPinCount);
 extern int MHal_GPIO_Enable_Interrupt(int gpio_num, unsigned long gpio_edge_type, irq_handler_t pCallback, void *dev_id);
-extern int MHal_GPIO_Disable_Interrupt(int gpio_num);
-extern U8 MHal_GPIO_Get_Level(U8 u8IndexGPIO);
+extern int MHal_GPIO_Disable_Interrupt(int gpio_num, void *dev_id);
+
 #endif // _HAL_GPIO_H_
 

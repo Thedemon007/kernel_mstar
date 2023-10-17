@@ -64,7 +64,7 @@ extern ptrdiff_t mstar_pm_base;
 #endif
 
 #define SAR_WR_PRO                      0x03
-#define SAR_MASK_OFFSET_L               0x1420
+#define SAR_MASK_OFFSET_L               0x1428
 #define SAR_MASK_OFFSET_H               0x1464
 #define REG_SAR_PRO_BASE                (0x0100UL)
 #define REG_SAR_PRO_CTRL                (REG_SAR_PRO_BASE + (0x48UL << 1))
@@ -87,6 +87,7 @@ extern ptrdiff_t mstar_pm_base;
 #define REG_PM_SCRATCH_PAD_1            (REG_PM_SLEEP_BASE + (0x53UL << 1))
 #define REG_PM_SCRATCH_PAD_2            (REG_PM_SLEEP_BASE + (0x54UL << 1))
 #define REG_PM_SCRATCH_PAD_3            (REG_PM_SLEEP_BASE + (0x55UL << 1))
+#define REG_PM_DUMMY_WAKEUP_SOURCE      (REG_PM_SLEEP_BASE + (0x39UL << 1))
 #define REG_PM_WK_MASK                  (REG_PM_SLEEP_BASE + (0x08UL << 1))
 
 //------------------------------------------------------------------------------

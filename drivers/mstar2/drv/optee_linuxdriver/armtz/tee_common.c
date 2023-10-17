@@ -6,6 +6,8 @@
 #ifdef CONFIG_TEE_2_4
 #include <linux/types.h>
 #include <linux/device.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
 
 /* tee_shm_pool_free */
 extern int tee_shm_pool_free_1_0_1(void *, void *, void *, void *);
@@ -33,7 +35,6 @@ static int get_optee_version(void)
         extern int optee_version;
         return optee_version;
 }
-
 int tee_shm_pool_free(void *a0, void *a1, void *a2, void *a3)
 {
     int tee_ver = get_optee_version();
@@ -171,6 +172,6 @@ void *tee_shm_pool_alloc(void *a0, void *a1, void *a2, void *a3)
 
 }
 EXPORT_SYMBOL_GPL(tee_shm_pool_alloc);
-
+#endif
 #endif
 #endif

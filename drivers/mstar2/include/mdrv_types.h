@@ -90,29 +90,12 @@ typedef unsigned int	                    BOOL;
 #define FALSE                       0
 #endif
 
-#ifndef true
-/// definition for true
-#define true                        1
-/// definition for false
-#define false                       0
-#endif
-
-
-#if !defined(TRUE) && !defined(FALSE)
-/// definition for TRUE
-#define TRUE                        1
-/// definition for FALSE
-#define FALSE                       0
-#endif
-
-
 #if !defined(ENABLE) && !defined(DISABLE)
 /// definition for ENABLE
 #define ENABLE                      1
 /// definition for DISABLE
 #define DISABLE                     0
 #endif
-
 
 #if !defined(ON) && !defined(OFF)
 /// definition for ON

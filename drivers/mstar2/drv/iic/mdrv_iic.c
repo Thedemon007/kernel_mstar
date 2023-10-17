@@ -95,13 +95,11 @@
 struct mutex gBusLocks[IIC_BUS_MAX];
 struct mutex gAdapterLock;
 
-const char gu8SWI2CMutexName[IIC_BUS_MAX][13] = { \
-    "SWI2CMTXBUS0","SWI2CMTXBUS1","SWI2CMTXBUS2","SWI2CMTXBUS3","SWI2CMTXBUS4","SWI2CMTXBUS5","SWI2CMTXBUS6","SWI2CMTXBUS7", \
-    "SWI2CMTXBUS8","SWI2CMTXBUS9","SWI2CMTXBUSA","SWI2CMTXBUSB","SWI2CMTXBUSC","SWI2CMTXBUSD","SWI2CMTXBUSE","SWI2CMTXBUSF" };
-
 #define IIC_WR_RETRY_TIMES         3
 struct mutex gPortLocks[HWI2C_PORTS];
 static HWI2C_PortCfg gp_HWI2CinitCfg[HWI2C_PORTS];
+
+EXPORT_SYMBOL(gPortLocks);
 
 //#define LOCK_HW_SEM()   {\
 							MDrv_SEM_Lock(E_SEM_IIC, SEM_WAIT_FOREVER); \
@@ -175,7 +173,7 @@ static long long timespec_diff_us(struct timespec start, struct timespec end)
         temp.tv_sec = end.tv_sec - start.tv_sec;
         temp.tv_nsec = end.tv_nsec - start.tv_nsec;
     }
-    return (temp.tv_sec * 1000000) + (temp.tv_nsec / 1000);
+    return ((long long)temp.tv_sec * 1000000) + (temp.tv_nsec / 1000);
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -512,7 +510,7 @@ static bool IIC_AccessStart(u8 u8BusNum, u8 u8SlaveID, u8 trans_t)
 ///- FALSE: Fail
 /******************************************************************************///
 //static bool IIC_GetByte(u8* pu8data)    // Auto generate ACK
-static u8 IIC_GetByte (u8 u8BusNum, u8  bAck)
+static u8 IIC_GetByte (u8 u8BusNum, u16 bAck)
 {
 	u8 ucReceive = 0;
 	u8 ucMask = 0x80;
@@ -1434,7 +1432,7 @@ HW_IIC_Write_End:
     if(retryCount == 0)
         printk(KERN_DEBUG "[IIC] Write to slave ID 0x%x failed. Please check slave id or port is correct \n", u8SlaveIdIIC);
 
-    udelay(60);
+    usleep_range(60, 120);
 
     IIC_DBG(printk("MDrv_IIC_Write() --> s32RetCountIIC=%d \n", s32RetCountIIC));
 
@@ -1517,7 +1515,7 @@ HW_IIC_Write_End:
     if(retryCount == 0)
         printk(KERN_DEBUG "[IIC] Write to slave ID 0x%x failed. Please check slave id or port is correct \n", u8SlaveIdIIC);
 
-    udelay(60);
+    usleep_range(60, 120);
 
     IIC_DBG(printk("MDrv_IIC_Write() --> s32RetCountIIC=%d \n", s32RetCountIIC));
     return s32RetCountIIC;
@@ -1632,7 +1630,7 @@ HW_IIC_Read_End:
     if(retryCount == 0)
         printk(KERN_DEBUG "[IIC] Read from slave ID 0x%x failed. Please check slave id or port is correct \n", u8SlaveIdIIC);
 
-    udelay(60);
+    usleep_range(60, 120);
 
     IIC_DBG(printk("MDrv_IIC_Read() --> s32RetCountIIC=%d \n", s32RetCountIIC));
 
@@ -1720,7 +1718,7 @@ HW_IIC_Read_End:
     if(retryCount == 0)
         printk(KERN_DEBUG "[IIC] Read from slave ID 0x%x failed. Please check slave id or port is correct \n", u8SlaveIdIIC);
 
-    udelay(60);
+    usleep_range(60, 120);
 
     IIC_DBG(printk("MDrv_IIC_Read() --> s32RetCountIIC=%d \n", s32RetCountIIC));
     return s32RetCountIIC;
@@ -1736,6 +1734,7 @@ void MDrv_HW_IIC_Resume(void)
     {
         if(gp_HWI2CinitCfg[u8I].bEnable)
         {
+            MHal_IIC_STR_Record();
             /*
 	          (1) Select Pad Mux
             */
@@ -1780,8 +1779,8 @@ void MDrv_HW_IIC_Init(IIC_BusCfg_t I2CBusCfg[], u8 u8CfgBusNum)
         printk("[HWIIC] Not support this port. %s, %d\n", __FUNCTION__, __LINE__);
         return;
     }
-
-    HWIIC_MUTEX_CREATE(u8PortIdx);
+	/* move to probe function to avoid utpa using mutex without calling init
+    //HWIIC_MUTEX_CREATE(u8PortIdx);
 
     /*
 	  (1) Select Pad Mux

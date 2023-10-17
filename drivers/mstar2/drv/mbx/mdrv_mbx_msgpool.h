@@ -101,6 +101,7 @@ typedef struct
     MBX_Msg mbxMsg; //the msg in slot.
     MS_S16 s16Next;  //next item in pool;
     MS_U16 u16Usage; //the slot is used or free;
+    MS_U16 u16MsgID;  //for recognizing this msg
 }MSGPOOL_MsgPoolItem; //sizeof(MSGPOOL_MsgPoolItem) == 28 bytes
 
 typedef struct
@@ -126,6 +127,7 @@ typedef enum
     E_MSGQ_OVERFLOW   = 0x03
 } MSGPOOL_MsgQStatus;
 
+#if 0 //msgQmgr is in notifier
 typedef struct
 {
     MS_S16 s16MsgFirst; //the first MsgPoolItem slot idx in MsgPool
@@ -143,6 +145,7 @@ typedef struct
     MS_S16 s16MsgQNotifierID; //the MsgQ Register in MBX Driver
     MS_S16 s16NextMsgQ; //the Next MsgQ which belongs to the same Register;
 }MSGPOOL_MsgQMgr; //message queue manager, per class per queue.
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////
 // interface to control the Msg Pool:
@@ -153,17 +156,19 @@ INTERFACE void MDrv_MSGPOOL_DeInit(void);
 // interface to control the Msg Queue:
 INTERFACE MSGPOOL_Result MDrv_MSGQ_Init(void);
 
-INTERFACE MSGPOOL_Result MDrv_MSGQ_RegisterMSG(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQFirst, MS_S16 s16MsgQID, MS_U16 u16MsgQSize);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_UnRegisterMSG(MS_S16 s16MsgQNotifierID, MS_S16* ps16MsgQFirst, MS_S16 s16MsgQID, MS_BOOL bForceDiscardMsgQueue);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_ClearMSG(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQID);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_UnRegisterMSGQ(MS_S16 s16MsgQFirst, MS_BOOL bForceDiscardPendingMsg);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_GetMsgQStatus(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQID, MBX_MSGQ_Status *pMsgQStatus);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_RecvMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_CheckMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_RemoveLatestMsg(void);
-INTERFACE MS_S16 MDrv_MSGQ_GetNextMsgQ(MS_S16 s16MsgQIdx);
-INTERFACE MSGPOOL_Result MDrv_MSGQ_AddMSG(MBX_Msg* pMbxMsg);
-INTERFACE MS_S16 MDrv_MSGQ_GetNotiferIDByQID(MS_S16 s16MsgQIdx);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_RegisterMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQFirst, MS_S16 s16MsgQID, MS_U16 u16MsgQSize);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_UnRegisterMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQNotifierID,  MS_S16* ps16MsgQFirst, MS_S16 s16MsgQID, MS_BOOL bForceDiscardMsgQueue);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_ClearMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQID);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_UnRegisterMSGQ(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQFirst, MS_BOOL bForceDiscardPendingMsg);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_GetMsgQStatus(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQID, MBX_MSGQ_Status *pMsgQStatus);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_RecvMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg, MS_U16 *pu16MsgRecvID);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_DequeueMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MS_BOOL bInstantMsg, MS_U16 u16MsgRecvID);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_CheckMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_RemoveLatestMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier);
+INTERFACE MS_S16 MDrv_MSGQ_GetNextMsgQ(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx);
+INTERFACE MSGPOOL_Result MDrv_MSGQ_AddMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MBX_Msg* pMbxMsg, MS_U16 u16MsgID);
+INTERFACE MS_S16 MDrv_MSGQ_GetNotiferIDByQID(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx);
+INTERFACE MS_U16 MDrv_MSGQ_GetQStatusByQID(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx);
 
 #undef INTERFACE
 #endif //_DRV_MBX_MSGPOOL_H

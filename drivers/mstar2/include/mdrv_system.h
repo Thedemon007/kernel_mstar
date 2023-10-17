@@ -922,6 +922,27 @@
 #elif defined(CONFIG_MSTAR_M7322)
         #include <include/mstar/mstar_chip.h>
 
+#elif defined(CONFIG_MSTAR_M7332)
+        #include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_M7632)
+        #include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_M7642)
+        #include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_MT5862)
+        #include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_MT5867)
+	#include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_MT5889)
+        #include <include/mstar/mstar_chip.h>
+
+#elif defined(CONFIG_MSTAR_MT5872)
+        #include <include/mstar/mstar_chip.h>
+
 #elif defined(CONFIG_MSTAR_M3822)
         #include <include/mstar/mstar_chip.h>
 
@@ -1250,6 +1271,13 @@
       defined(CONFIG_MSTAR_MOONEY) || \
       defined(CONFIG_MSTAR_M7221) || \
       defined(CONFIG_MSTAR_M7322) || \
+      defined(CONFIG_MSTAR_M7632) || \
+      defined(CONFIG_MSTAR_M7332) || \
+      defined(CONFIG_MSTAR_M7642) || \
+      defined(CONFIG_MSTAR_MT5862) || \
+      defined(CONFIG_MSTAR_MT5867) || \
+      defined(CONFIG_MSTAR_MT5889) || \
+      defined(CONFIG_MSTAR_MT5872) || \
       defined(CONFIG_MSTAR_M3822)
 
     #define MS_MIU_INTERVAL 0x80000000
@@ -1288,7 +1316,7 @@
 #define PCMCIA_IO_READ                      0x05
 #define PCMCIA_IO_WRITE                     0x06
 #if defined(CONFIG_MSTAR_M7322)
-    #define REG_PCMCIA_BASE                     0x60940
+    #define REG_PCMCIA_BASE                     0x60940//note: pcm bank 0x1609 only support M7322
 #else
     #define REG_PCMCIA_BASE                     0x3440
 #endif
@@ -1406,6 +1434,7 @@ void MDrv_SYS_PD_STRLD(B16 bStatus);
 void MDrv_SYS_PD_AEON(B16 bStatus);
 void MDrv_SYS_PD_GOPG2(B16 bStatus);
 
+
 unsigned int MDrv_SYS_GetDRAMLength(void);
 
 #if defined(CONFIG_ARM) || defined(CONFIG_MIPS)
@@ -1469,7 +1498,6 @@ void MDrv_SYS_SetNexus(U32 argv);
 void MDrv_SYS_HasNexus(U32 argv);
 
 
-
 #elif defined(CONFIG_ARM64)
 
 U32 MDrv_SYS_SetPanelInfo(unsigned long arg);
@@ -1525,7 +1553,6 @@ void MDrv_SYS_SetNexus(unsigned long argv);
 void MDrv_SYS_HasNexus(unsigned long argv);
 
 
-
 #endif
 
 void MDrv_SYS_ReadMemory(void);
@@ -1536,10 +1563,6 @@ unsigned int MDrv_SYS_GetGPIOIR(void);
 unsigned int MDrv_SYS_GetGPIOIRType(void);
 
 void MDrv_SYS_UtopiaMdbMkdir(void);
-
-void MDrv_SYS_SWITCH_UART(unsigned int OnOff);
-int MDrv_SYS_IsSupportDolbyVision(bool * const pbSupportDolbyVision);
-int MDrv_SYS_IsSupportDolbyAtmos(bool * const pbSupportDolbyAtmos);
 
 #endif // _DRV_SYSTEM_H_
 

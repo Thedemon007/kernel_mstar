@@ -54,8 +54,14 @@ enum teec_rpc_result tee_supp_cmd(struct tee *tee,
 				, __func__, task->tgid);
 #ifdef CONFIG_MSTAR_CHIP
 		set_current_state (TASK_INTERRUPTIBLE);
+#ifdef CONFIG_KASAN
+retry:
+#endif
 		schedule_timeout (HZ*10);
 		if (atomic_read(&rpc->used) == 0) {
+#ifdef CONFIG_KASAN
+			goto retry;
+#endif
 			dev_err(tee->dev, "\033[1;31m[%u]Fatal error: wait tee-Supplicant timeout\033[m\n",  task->tgid);
 			set_current_state(TASK_RUNNING);
 			remove_wait_queue (&wait_tee_supp, &wait);
@@ -123,7 +129,19 @@ enum teec_rpc_result tee_supp_cmd(struct tee *tee,
 
 #ifdef CONFIG_MSTAR_CHIP
 			freezer_do_not_count();
-			down(&rpc->datafromuser);
+			// That's weird tee-sup working up to 5 sec
+			while (down_timeout(&rpc->datafromuser,
+					msecs_to_jiffies(1000*5))) {
+					// check is tee-sup is dead or alive
+					if (atomic_read(&rpc->used) == 0) {
+					dev_err(tee->dev,
+						"\033[1;33m%s: ERROR, Wait for tee-supplicant but it's dead [%d]\033[m\n",
+						__func__, task->tgid);
+					mutex_unlock(&rpc->thrd_mutex);
+					res = TEEC_RPC_FAIL;
+					goto out;
+				}
+			}
 			freezer_count();
 #else
 			down(&rpc->datafromuser);

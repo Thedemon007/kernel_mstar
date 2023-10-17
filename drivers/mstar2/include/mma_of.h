@@ -64,6 +64,7 @@ typedef enum mma_of_heap_type {
     HEAP_TYPE_IOMMU = 0,
     HEAP_TYPE_CMA,
     HEAP_TYPE_CMA_IOMMU,       //CMA with MPA for external domain. alloc cma_page for iommu
+    HEAP_TYPE_CARVEOUT,
     HEAP_TYPE_MAX,
 }heap_type;
 

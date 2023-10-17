@@ -105,7 +105,7 @@
 #define GOP_WordUnit                                32
 #define GOP_STRETCH_WIDTH_UNIT                2
 #define SCALING_MULITPLIER                      0x1000
-#define GOP_GWIN_SIZE_PIXELBASE_ALIGN             2
+#define GOP_GWIN_SIZE_PIXELBASE_ALIGN           2
 
 #define PANEL_WIDTH         3840
 #define PANEL_HEIGHT        2160

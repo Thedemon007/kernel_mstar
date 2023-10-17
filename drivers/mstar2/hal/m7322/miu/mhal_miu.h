@@ -188,17 +188,31 @@ typedef enum
     E_MIU_ID_GROUP_NONE,
 }MIU_ID_GROUP;
 
+typedef struct
+{
+    // Order cannot be exchanged
+    MS_U16 u16CheckMagicNumber;
+    MS_U16 u16DramSize[4];
+    MS_U16 u16ProtectIDG0[8];
+    MS_U16 u16ProtectIDG1[8];
+    MS_U16 u16ProtectIDEnable[8];
+    MS_U16 u16ProtectIDGroupSelect;
+    MS_U16 u16ProtectAddress[32];
+    MS_U16 u16ProtectAddressEnable[2];
+}MIU_Protect_Info;
+
 //-------------------------------------------------------------------------------------------------
 //  Function and Variable
 //-------------------------------------------------------------------------------------------------
-MS_U32* HAL_MIU_GetDefaultClientID_KernelProtect(void);
-MS_BOOL HAL_MIU_Protect( MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY phyStart, MS_PHY phyEnd, MS_BOOL bSetFlag);
-MS_BOOL HAL_MIU_ParseOccupiedResource(void);
+MS_U32* HAL_MIU_Kernel_GetDefaultClientID_KernelProtect(void);
+MS_BOOL HAL_MIU_Kernel_Protect( MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY phyStart, MS_PHY phyEnd, MS_BOOL bSetFlag);
+MS_BOOL HAL_MIU_Kernel_ParseOccupiedResource(void);
 
-MS_BOOL HAL_MIU_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo);
+MS_BOOL HAL_MIU_Kernel_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo);
 MS_BOOL HAL_MIU_Save(void);
 MS_BOOL HAL_MIU_Restore(void);
-MS_BOOL HAL_MIU_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize);
+MS_BOOL HAL_MIU_Kernel_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize);
 MS_BOOL HAL_MIU_Set_DebugLevel(MIU_DBGLV eDebugLevel);
 MS_BOOL HAL_MIU_Enable_Hitkernelpanic(MS_U32 bEnablePanic);
+MS_U32  HAL_MIU_Get_Hitkernelpanic(void);
 #endif // _HAL_MIU_H_

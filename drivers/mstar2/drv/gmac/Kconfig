@@ -136,7 +136,7 @@ help
 choice
     prompt "Select RX Method"
     default GMAC_RX_DMA if MSTAR_K7U
-    default GMAC_Memory_Copy
+    default GMAC_RX_Memory_Copy
 
 config GMAC_RX_Memory_Copy
 bool "Memory_Copy"

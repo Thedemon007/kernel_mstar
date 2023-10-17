@@ -96,6 +96,7 @@
 //=============================================================================
 #define MAX_FLIP_ADDR_FIFO 	(0x10)
 #define FLIP_INTERRUPT_TIMEOUT   (100)  //In MS
+#define FLIP_WAITQ_ONESHOT_TIMEOUT   (10)  //In MS
 
 #if	( defined (CONFIG_MSTAR_VE_CAPTURE_SUPPORT))
 #define VE_CAPTURE_FRAME_INVALID_NUM 0
@@ -146,6 +147,8 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
 static FP_CFD_GOP_PreProcess _fpGflip_CB_CFD_GOP_PreProcess = NULL;
 static FP_CFD_GOP_PreSDR _fpGflip_CB_CFD_GOP_PreSDR = NULL;
 static FP_CFD_GOP_TestMode _fpGflip_CB_CFD_GOP_TestMode = NULL;
+static MS_U64 g_timer_callback_times = 0x0;
+static MS_U64 g_Multi_timer_callback_times = 0x0;
 
 EXPORT_SYMBOL(_MDrv_GFLIP_SetFlipInfo);
 #ifdef	GFLIP_MULTI_FLIP
@@ -167,6 +170,7 @@ EXPORT_SYMBOL(MDrv_GFLIP_Del_Timer);
 #endif
 EXPORT_SYMBOL(MDrv_GFLIP_Register_CB);
 EXPORT_SYMBOL(_MDrv_GFLIP_CSC_Calc);
+EXPORT_SYMBOL(_MDrv_GFLIP_SetBWPEnFlag);
 //=============================================================================
 // Macros
 //=============================================================================
@@ -263,9 +267,14 @@ typedef struct
     unsigned short u16AfbcRegEn[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegAddrL[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegAddrH[GOP_AFBC_CORE_NUMBER];
+    unsigned short u16AfbcRegAddrMSB[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegFmt[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegWidth[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegHeight[GOP_AFBC_CORE_NUMBER];
+    unsigned short u16AfbcRegCropX[GOP_AFBC_CORE_NUMBER];
+    unsigned short u16AfbcRegCropY[GOP_AFBC_CORE_NUMBER];
+    unsigned short u16AfbcRegCropHSize[GOP_AFBC_CORE_NUMBER];
+    unsigned short u16AfbcRegCropVSize[GOP_AFBC_CORE_NUMBER];
     unsigned short u16AfbcRegMiu;
     unsigned short u16AfbcTrigger;
 #endif
@@ -286,10 +295,23 @@ typedef struct
 #ifdef GEN_GOP_XCIP_TIMING
     unsigned short u16GenGOPXCIPTiming;
 #endif
+
+#ifdef DRAM_RBLK_MSB_MOVE_TO_SC
+    unsigned short u16GopDramRblkMsb[MAX_GOP_SUPPORT];
+#endif
+
+#ifdef SC_BWP_SETTING
+    unsigned short u16GopBwpTrgSlow[MAX_GOP_SUPPORT];
+    unsigned short u16GopBwpRlsSlow[MAX_GOP_SUPPORT];
+    unsigned short u16GopBwpTrgStop[MAX_GOP_SUPPORT];
+    unsigned short u16GopBwpRlsStop[MAX_GOP_SUPPORT];
+#endif
 }GFLIP_REGS_SAVE_AREA;
 
 static GFLIP_REGS_SAVE_AREA _gflip_regs_save={{{0},{0}}};
 static MS_U32 _gu32PaletteSave[MAX_GOP_SUPPORT][PALETTE_SIZE];
+static MS_S64 s_s64VsyncTs[6] = {0, 0, 0, 0, 0, 0};
+static MS_BOOL _gbBWPEnFlag[MAX_GOP_SUPPORT] = {FALSE};
 //=============================================================================
 // Global Variables
 //=============================================================================
@@ -430,7 +452,7 @@ static MS_U32 _MDrv_GFLIP_GetRegForm(MS_U8 u8GOP)
 MS_U32 MDrv_GFLIP_InitTimer(void)
 {
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-    printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_bTimerInited=%d\n",__func__,__LINE__,current->pid,current->comm,_bTimerInited);
+    //printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_bTimerInited=%d\n",__func__,__LINE__,current->pid,current->comm,_bTimerInited);
     if(_bTimerInited == FALSE)
     {
         hrtimer_init( &_stGflip_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
@@ -451,10 +473,7 @@ MS_U32 MDrv_GFLIP_Del_Timer(void)
         _MDrv_GFLIP_Mutex_Lock(u32Idx,TRUE);
     }
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-    if(hrtimer_cancel( &_stGflip_hrtimer ) == 0)
-    {
-        _bTimerInited = FALSE;
-    }
+    //no delete timer
 #else
     del_timer_sync( &_stGflip_timer);
 #endif
@@ -582,7 +601,7 @@ MS_BOOL MDrv_GFLIP_ProcessIRQ(void)
     MS_U32 u32GwinIdx=0;
 #if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
     MS_BOOL bNeedToFlipCnt[MAX_GOP_SUPPORT] = {FALSE};
-    MS_U16 u16RegAutoDetect = 0;
+    MS_U16 u16RegAutoDetect = 0, u16RegGwinEn = 0;
 #endif
 #endif
 
@@ -685,10 +704,24 @@ MS_BOOL MDrv_GFLIP_ProcessIRQ(void)
             if(bNeedToFlipCnt[u32GopIdx] != TRUE)
             {
                  MHal_GFLIP_IntEnable(u32GopIdx, FALSE); //disable ISR of u32GopIdx
-                 MHal_GFLIP_Fire(1 << u32GopIdx);
+                 MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_1, REG_GOP4G_GWIN_CTRL0(u32GwinIdx), &u16RegGwinEn);
+                 if((u16RegGwinEn & GOP_GWIN_ENABLE_MASK) != 0)
+                 {
+                     MHal_GFLIP_Fire(1 << u32GopIdx);
+                 }
             }
         }
 #endif
+#endif
+#ifdef SC_BWP_SETTING
+        if(_gbBWPEnFlag[u32GopIdx] && MHal_GFLIP_CheckBWPEnCondition(u32GopIdx))
+        {
+            MHal_GFLIP_SetBWPEnable(u32GopIdx, TRUE);
+        }
+        else
+        {
+            MHal_GFLIP_SetBWPEnable(u32GopIdx, FALSE);
+        }
 #endif
     }
 
@@ -902,11 +935,7 @@ MS_BOOL MDrv_GFLIP_SetFlipToGop(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
     return bRet;
 }
 
-#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-static enum hrtimer_restart MDrv_GFLIP_Timer_Callback( struct hrtimer *timer )
-#else
-static void MDrv_GFLIP_Timer_Callback(unsigned long value)
-#endif
+static MS_BOOL _MDrv_GFLIP_FlipBufWithTimer(MS_BOOL* pbContiTimer, MS_BOOL *pbWakeupQue, MS_U32* pu32GOPIdx)
 {
     MS_U32 u32GopIdx = 0, u32GwinIdx = 0;
     MS_BOOL bWakeUpQue = FALSE, bContinueTimer = FALSE;
@@ -917,18 +946,9 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
     MS_PHY64 u32SubAddress=0;
 #endif
 
-#if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
-    MS_BOOL bNeedToFlipCnt[MAX_GOP_SUPPORT] = {FALSE};
-    MS_U16 u16RegAutoDetect = 0;
-#endif
-
-#if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
-    //avoid reentry
-    spin_lock_irq(&spinlock_gflip);
-#else
-    spin_lock(&spinlock_gflip);
-#endif
-
+    *pu32GOPIdx = 0;
+    *pbContiTimer = FALSE;
+    *pbWakeupQue = FALSE;
     for(u32GopIdx=0; u32GopIdx<MAX_GOP_SUPPORT; u32GopIdx++)
     {
         for(u32GwinIdx=0; u32GwinIdx<MAX_GOP_GWIN; u32GwinIdx++)
@@ -945,6 +965,7 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
             {
                 if(MHal_GFLIP_IsGOPACK(u32GopIdx))
                 {
+                    bgflipVsyncStatus=TRUE;
                     //flip is done
                     bWakeUpQue = TRUE;
                     _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoReadPtr[u32GopIdx][u32GwinIdx]].bKickOff = FALSE;
@@ -987,6 +1008,38 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
         }
     }
 
+    *pu32GOPIdx = u32GopIdx;
+    *pbContiTimer = bContinueTimer;
+    *pbWakeupQue = bWakeUpQue;
+
+    return TRUE;
+}
+
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+static enum hrtimer_restart MDrv_GFLIP_Timer_Callback( struct hrtimer *timer )
+#else
+static void MDrv_GFLIP_Timer_Callback(unsigned long value)
+#endif
+{
+    MS_U32 u32GopIdx = 0, u32GwinIdx = 0;
+    MS_BOOL bWakeUpQue = FALSE, bContinueTimer = FALSE;
+
+#if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
+    MS_BOOL bNeedToFlipCnt[MAX_GOP_SUPPORT] = {FALSE};
+    MS_U16 u16RegAutoDetect = 0, u16RegGwinEn = 0;
+#endif
+
+#if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
+    //avoid reentry
+    spin_lock_irq(&spinlock_gflip);
+#else
+    unsigned long flags;
+
+    spin_lock_irqsave(&spinlock_gflip, flags);
+#endif
+    g_timer_callback_times++;
+
+    _MDrv_GFLIP_FlipBufWithTimer(&bContinueTimer, &bWakeUpQue, &u32GopIdx);
 
 #if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
     spin_unlock_irq(&spinlock_gflip);
@@ -999,17 +1052,16 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
     }
 
 #else
-    spin_unlock(&spinlock_gflip);
+    spin_unlock_irqrestore(&spinlock_gflip, flags);
 #endif
 
     if (bWakeUpQue && waitqueue_active(&_gflip_waitqueue))
     {
-        bgflipVsyncStatus=TRUE;
         wake_up_interruptible(&_gflip_waitqueue);
     }
 
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-    if(bContinueTimer)
+    if((timer != NULL) && bContinueTimer)
     {
         hrtimer_forward_now( timer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)));
         return HRTIMER_RESTART;
@@ -1033,7 +1085,15 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
                 if(bNeedToFlipCnt[u32GopIdx] != TRUE)
                 {
                     MHal_GFLIP_IntEnable(u32GopIdx, FALSE); //disable ISR of u32GopIdx
-                    MHal_GFLIP_Fire(1 << u32GopIdx);
+                    for(u32GwinIdx=0; u32GwinIdx < MAX_GOP_GWIN; u32GwinIdx++)
+                    {
+                        MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_1, REG_GOP4G_GWIN_CTRL0(u32GwinIdx), &u16RegGwinEn);
+                        if((u16RegGwinEn & GOP_GWIN_ENABLE_MASK) != 0)
+                        {
+                            MHal_GFLIP_Fire(1 << u32GopIdx);
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1044,30 +1104,20 @@ static void MDrv_GFLIP_Timer_Callback(unsigned long value)
 }
 
 #ifdef	GFLIP_MULTI_FLIP
-#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-enum hrtimer_restart MDrv_GFLIP_MultiGOP_Timer_Callback( struct hrtimer *timer )
-#else
-static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
-#endif
+static MS_BOOL _MDrv_GFLIP_MultiFlipBufWithTimer(MS_BOOL* pbContiTimer, MS_BOOL *pbWakeupQue, MS_U32* pu32GOPIdx)
 {
     MS_U32 u32GopIdx = 0, u32GwinIdx = 0;
     MS_BOOL bWakeUpQue = FALSE, bContinueTimer = FALSE;
     MS_U8 i=0;
+
 #ifdef GFLIP_GOP_TLB
     MS_BOOL bTLBenable = FALSE;
     MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInfo;
 #endif
 
-#if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
-    MS_BOOL bNeedToFlipCnt[MAX_GOP_SUPPORT] = {FALSE};
-    MS_U16 u16RegAutoDetect = 0;
-#endif
-
-#if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
-    //avoid reentry
-    spin_lock_irq(&spinlock_gflip);
-#endif
-
+    *pbContiTimer = FALSE;
+    *pbWakeupQue = FALSE;
+    *pu32GOPIdx = 0;
     for(u32GopIdx=0; u32GopIdx<MAX_GOP_SUPPORT; u32GopIdx++)
     {
         for(u32GwinIdx=0; u32GwinIdx<MAX_GOP_GWIN; u32GwinIdx++)
@@ -1084,6 +1134,7 @@ static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
             {
                 if(MHal_GFLIP_IsGOPACK(u32GopIdx))
                 {
+                    bgflipVsyncStatus=TRUE;
                     //flip is done
                     bWakeUpQue = TRUE;
                     _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoReadPtr[u32GopIdx][u32GwinIdx]].bKickOff = FALSE;
@@ -1126,6 +1177,40 @@ static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
         }
     }
 
+    *pbContiTimer = bContinueTimer;
+    *pbWakeupQue = bWakeUpQue;
+    *pu32GOPIdx = u32GopIdx;
+
+    return TRUE;
+}
+
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+enum hrtimer_restart MDrv_GFLIP_MultiGOP_Timer_Callback( struct hrtimer *timer )
+#else
+static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
+#endif
+{
+    MS_U32 u32GopIdx = 0, u32GwinIdx = 0;
+    MS_BOOL bWakeUpQue = FALSE, bContinueTimer = FALSE;
+    MS_U8 i=0;
+
+#if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
+    MS_BOOL bNeedToFlipCnt[MAX_GOP_SUPPORT] = {FALSE};
+    MS_U16 u16RegAutoDetect = 0, u16RegGwinEn = 0;
+#endif
+
+#if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
+    //avoid reentry
+    spin_lock_irq(&spinlock_gflip);
+#else
+    unsigned long flags;
+
+    spin_lock_irqsave(&spinlock_gflip, flags);
+#endif
+
+    g_Multi_timer_callback_times++;
+    _MDrv_GFLIP_MultiFlipBufWithTimer(&bContinueTimer, &bWakeUpQue, &u32GopIdx);
+
 #if (GFLIP_TIMER_TYPE == GFLIP_HZ_TIMER)
     spin_unlock_irq(&spinlock_gflip);
     if(bContinueTimer)
@@ -1135,16 +1220,17 @@ static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
         _stGflip_timer.expires = jiffies + msecs_to_jiffies(GFLIP_TIMER_CHECK_TIME);
         mod_timer(&_stGflip_timer, _stGflip_timer.expires);
     }
+#else
+    spin_unlock_irqrestore(&spinlock_gflip, flags);
 #endif
 
     if (bWakeUpQue && waitqueue_active(&_gflip_waitqueue))
     {
-        bgflipVsyncStatus=TRUE;
         wake_up(&_gflip_waitqueue);
     }
 
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-    if(bContinueTimer)
+    if((timer != NULL) && bContinueTimer)
     {
         hrtimer_forward_now( timer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)));
         return HRTIMER_RESTART;
@@ -1168,7 +1254,11 @@ static void MDrv_GFLIP_MultiGOP_Timer_Callback(unsigned long value)
                 if(bNeedToFlipCnt[u32GopIdx] != TRUE)
                 {
                     MHal_GFLIP_IntEnable(u32GopIdx, FALSE); //disable ISR of u32GopIdx
-                    MHal_GFLIP_Fire(1 << u32GopIdx);
+                    MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_1, REG_GOP4G_GWIN_CTRL0(u32GwinIdx), &u16RegGwinEn);
+                    if((u16RegGwinEn & GOP_GWIN_ENABLE_MASK) != 0)
+                    {
+                        MHal_GFLIP_Fire(1 << u32GopIdx);
+                    }
                 }
             }
         }
@@ -1199,12 +1289,19 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
     MS_U32 u32QCnt = 0;
     MS_U64 cur_jiffies;
     MS_BOOL bRet = TRUE;
+    static MS_U64 cur_timer_callback_times = 0x0;
+
+    bgflipVsyncStatus=FALSE;
+    cur_timer_callback_times = g_timer_callback_times;
 
     if ((u32GopIdx >= MAX_GOP_SUPPORT) || (u32GwinIdx >= MAX_GOP_GWIN)) //overflow
     {
         *u32Result = FALSE;
         return bRet;
     }
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+    unsigned long flags;
+#endif
 
     if(TRUE == _bGFlipInVsyncLimitation[u32GopIdx])
     { //in handling vsync limitation status, just print the error and return true to avoid block app:
@@ -1226,10 +1323,7 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
 
         if( u32QCnt >= *u32QEntry )
         {
-            *u32QEntry = u32QCnt;
-            *u32Result = FALSE;
-            bRet = TRUE;
-            goto _Release_Mutex;
+            printk("[GFLIP][%d]: unexpect case: u32QCnt %d, u32QEntry = %d", __LINE__, u32QCnt, *u32QEntry);
         }
 
         _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoWritePtr[u32GopIdx][u32GwinIdx]].u32MainAddr = (u32MainAddr >> GFLIP_ADDR_ALIGN_RSHIFT);
@@ -1241,16 +1335,16 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
         _u32GOPTLBaddress[u32GopIdx] =  NULL;
 #if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+        spin_lock_irqsave(&spinlock_gflip, flags);
 	    if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
         {
+            MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+            MS_U32 u32Gopid = 0;
+            //printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_bTimerInited=%d\n",__func__,__LINE__,current->pid,current->comm,_bTimerInited);
             _stGflip_hrtimer.function = MDrv_GFLIP_Timer_Callback;
 
-            MDrv_GFLIP_Timer_Callback(&_stGflip_hrtimer);
+            _MDrv_GFLIP_FlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
 
-            if(_stGflip_hrtimer.function == NULL)
-            {
-                printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_stGflip_hrtimer.function is NULL\n",__func__,__LINE__,current->pid,current->comm);
-            }
             hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
         }
         else
@@ -1260,6 +1354,7 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
                 printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_stGflip_hrtimer.function is NULL\n",__func__,__LINE__,current->pid,current->comm);
             }
         }
+        spin_unlock_irqrestore(&spinlock_gflip, flags);
 #else
         mb();
         if(FALSE == timer_pending(&_stGflip_timer)) //no call back timer, then add one
@@ -1307,10 +1402,29 @@ MS_BOOL _MDrv_GFLIP_SetFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 u3
 
             if(time_after(jiffies, (unsigned long)(msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT)+cur_jiffies)))
             {
-                break;//Time out skip
+                printk("[GFLIP][%d]: flip failed, cur_timer_callback_times %llu, g_timer_callback_times %llu  \r\n",
+                        __LINE__, cur_timer_callback_times, g_timer_callback_times);
+                *u32Result = FALSE;
+                bRet = TRUE;
+                goto _Release_Mutex;
             }
-            bgflipVsyncStatus=FALSE;
-            wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            if (0 == wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_WAITQ_ONESHOT_TIMEOUT)))
+            {
+#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+                if(FALSE == hrtimer_active(&_stGflip_hrtimer))
+                {
+                    printk("[%s][%d]timer off now, start hr timer again \n",__FUNCTION__,__LINE__);
+                    MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+                    MS_U32 u32Gopid = 0;
+                    _stGflip_hrtimer.function = MDrv_GFLIP_Timer_Callback;
+                    _MDrv_GFLIP_FlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+                    hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
+                }
+#endif
+#endif
+            }
+
         }
 
         //since do not do the sync. with mutex/spinlock, the return of avaiable queue number maybe not accurate.
@@ -1350,10 +1464,13 @@ MS_BOOL MDrv_GFLIP_SetTLBFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 
     MS_U64 cur_jiffies;
     MS_BOOL bRet = TRUE;
 #if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE)) && (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-        enum hrtimer_restart (*timer_cb)(struct hrtimer *);
+    unsigned long flags;
+    enum hrtimer_restart (*timer_cb)(struct hrtimer *);
 #endif
+   static MS_U64 cur_Multi_timer_callback_times = 0x0;
 
-
+    bgflipVsyncStatus = FALSE;
+    cur_Multi_timer_callback_times = g_Multi_timer_callback_times;
     if ((u32GopIdx >= MAX_GOP_SUPPORT) || (u32GwinIdx >= MAX_GOP_GWIN)) //overflow
     {
         *u32Result = FALSE;
@@ -1380,10 +1497,7 @@ MS_BOOL MDrv_GFLIP_SetTLBFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 
 
         if( u32QCnt >= *u32QEntry )
         {
-            *u32QEntry = u32QCnt;
-            *u32Result = FALSE;
-            bRet = TRUE;
-            goto _Release_Mutex;
+            printk("[GFLIP][%d]: unexpect case: u32QCnt %d, u32QEntry = %d", __LINE__, u32QCnt, *u32QEntry);
         }
 
         _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoWritePtr[u32GopIdx][u32GwinIdx]].u32MainAddr = (u32MainAddr >> GFLIP_ADDR_ALIGN_RSHIFT);
@@ -1402,13 +1516,22 @@ MS_BOOL MDrv_GFLIP_SetTLBFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 
 #else
         timer_cb = MDrv_GFLIP_Timer_Callback;
 #endif
+        spin_lock_irqsave(&spinlock_gflip, flags);
         if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
         {
-            timer_cb(&_stGflip_hrtimer);
+            MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+            MS_U32 u32Gopid = 0;
 
+            //printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_bTimerInited=%d\n",__func__,__LINE__,current->pid,current->comm,_bTimerInited);
             _stGflip_hrtimer.function = timer_cb;
+#if ( defined (GFLIP_MULTI_FLIP))
+            _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+#else
+            _MDrv_GFLIP_FlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+#endif
             hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
         }
+        spin_unlock_irqrestore(&spinlock_gflip, flags);
 #else
         mb();
         if(FALSE == timer_pending(&_stGflip_timer)) //no call back timer, then add one
@@ -1442,10 +1565,34 @@ MS_BOOL MDrv_GFLIP_SetTLBFlipInfo(MS_U32 u32GopIdx, MS_U32 u32GwinIdx, MS_PHY64 
 
             if(time_after(jiffies, (unsigned long)(msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT)+cur_jiffies)))
             {
-                break;//Time out skip
+                 printk("[GFLIP][%d]: flip failed, cur_Multi_timer_callback_times %llu, g_Multi_timer_callback_times %llu  \r\n",
+                         __LINE__, cur_Multi_timer_callback_times, g_Multi_timer_callback_times);
+                *u32Result = FALSE;
+                bRet = TRUE;
+                goto _Release_Mutex;
             }
-            bgflipVsyncStatus=FALSE;
-            wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus ,msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+
+            if (0 == wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus ,msecs_to_jiffies(FLIP_WAITQ_ONESHOT_TIMEOUT)))
+            {
+#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+                if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
+                {
+                    printk("[%s][%d]timer off now, start hr timer again \n",__FUNCTION__,__LINE__);
+                    MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+                    MS_U32 u32Gopid = 0;
+#if ( defined (GFLIP_MULTI_FLIP))
+                    timer_cb = MDrv_GFLIP_MultiGOP_Timer_Callback;
+                    _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+#else
+                    timer_cb = MDrv_GFLIP_Timer_Callback;
+                    _MDrv_GFLIP_FlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+#endif
+                    hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
+                }
+#endif
+#endif
+            }
         }
 
         //since do not do the sync. with mutex/spinlock, the return of avaiable queue number maybe not accurate.
@@ -1482,7 +1629,13 @@ MS_BOOL _MDrv_GFLIP_SetMultiFlipInfo(MS_GFLIP_MULTIINFO* pMultiFlipInfo)
     u32Result = &(pMultiFlipInfo->astGopInfo[0].u32Result);
     u32MainAddr = pMultiFlipInfo->astGopInfo[0].u32MainAddr;
     u32SubAddr = pMultiFlipInfo->astGopInfo[0].u32SubAddr;
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+    unsigned long flags;
+#endif
+    static MS_U64 cur_Multi_timer_callback_times = 0x0;
 
+    bgflipVsyncStatus = FALSE;
+    cur_Multi_timer_callback_times = g_Multi_timer_callback_times;
     if ((u32GopIdx >= MAX_GOP_SUPPORT) || (u32GwinIdx >= MAX_GOP_GWIN)) //overflow
     {
         *u32Result = FALSE;
@@ -1510,10 +1663,7 @@ MS_BOOL _MDrv_GFLIP_SetMultiFlipInfo(MS_GFLIP_MULTIINFO* pMultiFlipInfo)
 
         if( u32QCnt >= *u32QEntry )
         {
-            *u32QEntry = u32QCnt;
-            *u32Result = FALSE;
-            bRet = TRUE;
-            goto _Release_Mutex;
+            printk("[GFLIP][%d]: unexpect case: u32QCnt %d, u32QEntry = %d", __LINE__, u32QCnt, *u32QEntry);
         }
 
         _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoWritePtr[u32GopIdx][u32GwinIdx]].u32MainAddr = (u32MainAddr >> GFLIP_ADDR_ALIGN_RSHIFT) ;
@@ -1526,16 +1676,16 @@ MS_BOOL _MDrv_GFLIP_SetMultiFlipInfo(MS_GFLIP_MULTIINFO* pMultiFlipInfo)
         _u32GOPTLBaddress[u32GopIdx] =  0;
 #if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+        spin_lock_irqsave(&spinlock_gflip, flags);
         if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
         {
+            MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+            MS_U32 u32Gopid = 0;
+
             _stGflip_hrtimer.function = MDrv_GFLIP_MultiGOP_Timer_Callback;
 
-            MDrv_GFLIP_MultiGOP_Timer_Callback(&_stGflip_hrtimer);
+            _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
 
-            if(_stGflip_hrtimer.function == NULL)
-            {
-                printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_stGflip_hrtimer.function is NULL\n",__func__,__LINE__,current->pid,current->comm);
-            }
             hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
         }
         else
@@ -1545,6 +1695,7 @@ MS_BOOL _MDrv_GFLIP_SetMultiFlipInfo(MS_GFLIP_MULTIINFO* pMultiFlipInfo)
                 printk(KERN_ALERT"[%s,%d][pid:%d][name:%s]_stGflip_hrtimer.function is NULL\n",__func__,__LINE__,current->pid,current->comm);
             }
         }
+        spin_unlock_irqrestore(&spinlock_gflip, flags);
 #else
         mb();
         if(FALSE == timer_pending(&_stGflip_timer)) //no call back timer, then add one
@@ -1592,10 +1743,28 @@ MS_BOOL _MDrv_GFLIP_SetMultiFlipInfo(MS_GFLIP_MULTIINFO* pMultiFlipInfo)
 
             if(time_after(jiffies, (unsigned long)(msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT)+cur_jiffies)))
             {
-                break;//Time out skip
+                printk("[GFLIP][%d]: flip failed, cur_Multi_timer_callback_times %llu, g_Multi_timer_callback_times %llu  \r\n",
+                        __LINE__, cur_Multi_timer_callback_times, g_Multi_timer_callback_times);
+                *u32Result = FALSE;
+                bRet = TRUE;
+                goto _Release_Mutex;
             }
-            bgflipVsyncStatus=FALSE;
-            wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            if(0 == wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_WAITQ_ONESHOT_TIMEOUT)))
+            {
+#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+                 if(FALSE == hrtimer_active(&_stGflip_hrtimer))
+                 {
+                    printk("[%s][%d]timer off now, start hr timer again \n",__FUNCTION__,__LINE__);
+                    MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+                    MS_U32 u32Gopid = 0;
+                    _stGflip_hrtimer.function = MDrv_GFLIP_MultiGOP_Timer_Callback;
+                    _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+                    hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
+                 }
+#endif
+#endif
+            }
         }
 
         //since do not do the sync. with mutex/spinlock, the return of avaiable queue number maybe not accurate.
@@ -1625,6 +1794,10 @@ MS_BOOL _MDrv_GFLIP_SetTLBMultiFlipInfo(MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInf
     MS_PHY64 u32MainAddr = 0,u32SubAddr = 0;
     MS_BOOL bTLBenable = FALSE;
     MS_PHY64 u32TLBAddr = 0;
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+    unsigned long flags;
+#endif
+    static MS_U64 cur_Multi_timer_callback_times = 0x0;
 
     u32GopIdx = pTLBMultiFlipInfo->astTLBGopInfo[0].u32GopIdx;
     u32GwinIdx = pTLBMultiFlipInfo->astTLBGopInfo[0].u32GwinIdx;
@@ -1636,6 +1809,8 @@ MS_BOOL _MDrv_GFLIP_SetTLBMultiFlipInfo(MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInf
     bTLBenable = pTLBMultiFlipInfo->astTLBGopInfo[0].bTLBEnable;
     u32TLBAddr = pTLBMultiFlipInfo->astTLBGopInfo[0].u32TLBAddr;
 
+    bgflipVsyncStatus = FALSE;
+    cur_Multi_timer_callback_times = g_Multi_timer_callback_times;
     if ((u32GopIdx >= MAX_GOP_SUPPORT) || (u32GwinIdx >= MAX_GOP_GWIN)) //overflow
     {
         *u32Result = FALSE;
@@ -1663,10 +1838,7 @@ MS_BOOL _MDrv_GFLIP_SetTLBMultiFlipInfo(MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInf
 
         if( u32QCnt >= *u32QEntry )
         {
-            *u32QEntry = u32QCnt;
-            *u32Result = FALSE;
-            bRet = TRUE;
-            goto _Release_Mutex;
+            printk("[GFLIP][%d]: unexpect case: u32QCnt %d, u32QEntry = %d", __LINE__, u32QCnt, *u32QEntry);
         }
 
         _GFlipInfo[u32GopIdx][u32GwinIdx][_u32GFlipInfoWritePtr[u32GopIdx][u32GwinIdx]].u32MainAddr = (u32MainAddr >> GFLIP_ADDR_ALIGN_RSHIFT) ;
@@ -1679,12 +1851,17 @@ MS_BOOL _MDrv_GFLIP_SetTLBMultiFlipInfo(MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInf
         _u32GOPTLBaddress[u32GopIdx] =  u32TLBAddr;
 #if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
 #if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
-        MDrv_GFLIP_MultiGOP_Timer_Callback(&_stGflip_hrtimer);
+        spin_lock_irqsave(&spinlock_gflip, flags);
         if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
         {
+            MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+            MS_U32 u32Gopid = 0;
+
             _stGflip_hrtimer.function = MDrv_GFLIP_MultiGOP_Timer_Callback;
+            _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
             hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
         }
+        spin_unlock_irqrestore(&spinlock_gflip, flags);
 #else
         mb();
         if(FALSE == timer_pending(&_stGflip_timer)) //no call back timer, then add one
@@ -1718,10 +1895,29 @@ MS_BOOL _MDrv_GFLIP_SetTLBMultiFlipInfo(MS_TLB_GFLIP_MULTIINFO* pTLBMultiFlipInf
 
             if(time_after(jiffies, (unsigned long)(msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT)+cur_jiffies)))
             {
-                break;//Time out skip
+                printk("[GFLIP][%d]: flip failed, cur_Multi_timer_callback_times %llu, g_Multi_timer_callback_times %llu  \r\n",
+                         __LINE__, cur_Multi_timer_callback_times, g_Multi_timer_callback_times);
+                *u32Result = FALSE;
+                bRet = TRUE;
+                goto _Release_Mutex;
             }
-            bgflipVsyncStatus=FALSE;
-            wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+
+            if(0 == wait_event_interruptible_timeout(_gflip_waitqueue, bgflipVsyncStatus,msecs_to_jiffies(FLIP_WAITQ_ONESHOT_TIMEOUT)))
+            {
+#if ( defined (CONFIG_MSTAR_NEW_FLIP_FUNCTION_ENABLE))
+#if (GFLIP_TIMER_TYPE == GFLIP_HR_TIMER)
+                if(FALSE == hrtimer_active(&_stGflip_hrtimer)) //no call back timer, then add one
+                {
+                    MS_BOOL bConTimer = FALSE, bWakeQue = FALSE;
+                    MS_U32 u32Gopid = 0;
+
+                    _stGflip_hrtimer.function = MDrv_GFLIP_MultiGOP_Timer_Callback;
+                    _MDrv_GFLIP_MultiFlipBufWithTimer(&bConTimer, &bWakeQue, &u32Gopid);
+                    hrtimer_start( &_stGflip_hrtimer, ns_to_ktime(MS_TO_NS(GFLIP_TIMER_CHECK_TIME)), HRTIMER_MODE_REL );
+                }
+#endif
+#endif
+            }
         }
 
         //since do not do the sync. with mutex/spinlock, the return of avaiable queue number maybe not accurate.
@@ -1950,11 +2146,9 @@ MS_BOOL MDrv_GFLIP_VEC_ProcessIRQ(void)
 /// @param pu16Histogram                \b OUT: the value of histogram
 /// @return FALSE :fail
 //-------------------------------------------------------------------------------------------------
-
-static MS_S64 s_s64VsyncTs[6] = {0, 0, 0, 0, 0, 0};
-
-MS_S64 MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx)
+MS_BOOL MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx)
 {
+    MS_BOOL bRet = TRUE;
 #if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
     MS_U16 u16RegDetectBuf = 0, u16RegIntMsk = 0;
 
@@ -1964,7 +2158,8 @@ MS_S64 MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx)
         MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_0, REG_GOP_INT, &u16RegIntMsk);
         if(u16RegIntMsk & GOP_INTMASK_VS0)
         {
-			return -1;
+            bRet = FALSE;
+            return bRet;
         }
     }
 #endif
@@ -1997,17 +2192,70 @@ MS_S64 MDrv_GFLIP_WaitForVsync(MS_U32 u32GopIdx)
             break;
         default :
             printk("[%s][%d]u32GopIdx =%td is out of case",__FUNCTION__,__LINE__, (ptrdiff_t)u32GopIdx);
-			return 0;
+            break;
     }
-	return s_s64VsyncTs[u32GopIdx];
+    return bRet;
 }
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
 EXPORT_SYMBOL(MDrv_GFLIP_WaitForVsync);
+#endif
+
+MS_S64 MDrv_GFLIP_WaitForVsync_EX(MS_U32 u32GopIdx)
+{
+#if (GFLIP_AUTO_DETECT_BUFFER_EN == 1)
+    MS_U16 u16RegDetectBuf = 0, u16RegIntMsk = 0;
+
+    MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_0, REG_GOP_AUTO_DETECT_BUF, &u16RegDetectBuf);
+    if(u16RegDetectBuf & GOP_AUTO_DETECT_BUF_EN)
+    {
+        MHal_GFLIP_ReadGopReg(u32GopIdx, GFLIP_GOP_BANK_IDX_0, REG_GOP_INT, &u16RegIntMsk);
+        if(u16RegIntMsk & GOP_INTMASK_VS0)
+        {
+            return -1;
+        }
+    }
+#endif
+
+    switch(u32GopIdx)
+    {
+        case 0:
+            bGOPVsyncStatus[0]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop0_waitqueue, bGOPVsyncStatus[0],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        case 1:
+            bGOPVsyncStatus[1]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop1_waitqueue, bGOPVsyncStatus[1],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        case 2:
+            bGOPVsyncStatus[2]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop2_waitqueue, bGOPVsyncStatus[2],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        case 3:
+            bGOPVsyncStatus[3]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop3_waitqueue, bGOPVsyncStatus[3],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        case 4:
+            bGOPVsyncStatus[4]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop4_waitqueue, bGOPVsyncStatus[4],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        case 5:
+            bGOPVsyncStatus[5]=FALSE;
+            wait_event_interruptible_timeout(_gvsync_gop5_waitqueue, bGOPVsyncStatus[5],msecs_to_jiffies(FLIP_INTERRUPT_TIMEOUT));
+            break;
+        default :
+            printk("[%s][%d]u32GopIdx =%td is out of case",__FUNCTION__,__LINE__, (ptrdiff_t)u32GopIdx);
+            return 0;
+    }
+    return s_s64VsyncTs[u32GopIdx];
+}
+#ifdef CONFIG_MP_PLATFORM_UTOPIA2K_EXPORT_SYMBOL
+EXPORT_SYMBOL(MDrv_GFLIP_WaitForVsync_EX);
+#endif
 
 MS_BOOL MDrv_GFLIP_GetVsync(MS_U32 u32GopIdx)
 {
     MS_BOOL bRet = TRUE;
-
-	MS_S64 s64VsyncTS = ktime_to_ns(ktime_get());
+    MS_S64 s64VsyncTS = ktime_to_ns(ktime_get());
 
     switch(u32GopIdx)
     {
@@ -2067,10 +2315,10 @@ MS_BOOL MDrv_GFLIP_GetVsync(MS_U32 u32GopIdx)
         }
         default :
             printk("[%s][%d] u32GopIdx =%td is out of case",__FUNCTION__,__LINE__,(ptrdiff_t)u32GopIdx);
-			return bRet;
+            return bRet;
     }
 
-	s_s64VsyncTs[u32GopIdx] = s64VsyncTS;
+    s_s64VsyncTs[u32GopIdx] = s64VsyncTS;
 
     return bRet;
 }
@@ -2098,7 +2346,7 @@ MS_BOOL _MDrv_GFLIP_ClearFlipQueue(MS_U32 u32GopIdx,MS_U32 u32GwinIdx)
 MS_BOOL _MDrv_GFLIP_SetGwinInfo(MS_GWIN_INFO stGwinInfo)
 {
 
-    _u32GwinInfo[stGwinInfo.u8GopIdx][stGwinInfo.u8GwinIdx].u32Addr =  stGwinInfo.u32Addr;
+    _u32GwinInfo[stGwinInfo.u8GopIdx][stGwinInfo.u8GwinIdx].u64Addr =  stGwinInfo.u64Addr;
     _u32GwinInfo[stGwinInfo.u8GopIdx][stGwinInfo.u8GwinIdx].u16X =  stGwinInfo.u16X;
     _u32GwinInfo[stGwinInfo.u8GopIdx][stGwinInfo.u8GwinIdx].u16Y =  stGwinInfo.u16Y;
     _u32GwinInfo[stGwinInfo.u8GopIdx][stGwinInfo.u8GwinIdx].u16W =  stGwinInfo.u16W;
@@ -2291,17 +2539,26 @@ int MDrv_GFLIP_Suspend(void)
 
 #ifdef SUPPORT_GOP_AFBC
     _gflip_regs_save.u16AfbcRegClk = CKG_REG(GOP_AFBC_CLK);
+#ifdef REG_AFBC_TRIGGER
     _gflip_regs_save.u16AfbcTrigger = REG_AFBC_TRIGGER;
+#endif
     for (i=0; i<GOP_AFBC_CORE_NUMBER; i++)
     {
         _gflip_regs_save.u16AfbcRegEn[i] = REG_AFBC_CORE_EN(i);
         _gflip_regs_save.u16AfbcRegAddrL[i] = REG_AFBC_ADDR_L(i);
         _gflip_regs_save.u16AfbcRegAddrH[i] = REG_AFBC_ADDR_H(i);
+        _gflip_regs_save.u16AfbcRegAddrMSB[i] = REG_AFBC_ADDR_MSB(i);
         _gflip_regs_save.u16AfbcRegFmt[i] = REG_AFBC_FMT(i);
         _gflip_regs_save.u16AfbcRegWidth[i] = REG_AFBC_WIDTH(i);
         _gflip_regs_save.u16AfbcRegHeight[i] = REG_AFBC_HEIGHT(i);
+        _gflip_regs_save.u16AfbcRegCropX[i] = REG_AFBC_CROP_X(i);
+        _gflip_regs_save.u16AfbcRegCropY[i] = REG_AFBC_CROP_Y(i);
+        _gflip_regs_save.u16AfbcRegCropHSize[i] = REG_AFBC_CROP_HSIZE(i);
+        _gflip_regs_save.u16AfbcRegCropVSize[i] = REG_AFBC_CROP_VSIZE(i);
     }
+#ifdef REG_AFBC_MIU
     _gflip_regs_save.u16AfbcRegMiu = REG_AFBC_MIU;
+#endif
 #endif
 
 #ifdef SUPPORT_GOP_MIXER
@@ -2316,6 +2573,23 @@ int MDrv_GFLIP_Suspend(void)
 
 #ifdef GEN_GOP_XCIP_TIMING
     _gflip_regs_save.u16GenGOPXCIPTiming = SC_IP_REG(REG_GOP_XCIP_TIMING);
+#endif
+
+#ifdef DRAM_RBLK_MSB_MOVE_TO_SC
+    for(u8GOPIndex = 0; u8GOPIndex < MAX_GOP_SUPPORT; u8GOPIndex++)
+    {
+        _gflip_regs_save.u16GopDramRblkMsb[u8GOPIndex] = SC_MSB_REG(REG_GOP_DRAM_RBLK_STR_EX(u8GOPIndex)) & GOP_DRAM_RBLK_STR_EX_MASK;
+    }
+#endif
+
+#ifdef SC_BWP_SETTING
+    for(u8GOPIndex = 0; u8GOPIndex < MAX_GOP_SUPPORT; u8GOPIndex++)
+    {
+        _gflip_regs_save.u16GopBwpTrgSlow[u8GOPIndex] = SC_BWP_REG(SC_BWP_LV_TRG_SLOW(u8GOPIndex)) & SC_BWP_LV_MASK;
+        _gflip_regs_save.u16GopBwpRlsSlow[u8GOPIndex] = SC_BWP_REG(SC_BWP_LV_RLS_SLOW(u8GOPIndex)) & SC_BWP_LV_MASK;
+        _gflip_regs_save.u16GopBwpTrgStop[u8GOPIndex] = SC_BWP_REG(SC_BWP_LV_TRG_STOP(u8GOPIndex)) & SC_BWP_LV_MASK;
+        _gflip_regs_save.u16GopBwpRlsStop[u8GOPIndex] = SC_BWP_REG(SC_BWP_LV_RLS_STOP(u8GOPIndex)) & SC_BWP_LV_MASK;
+    }
 #endif
 
     return 0;
@@ -2424,6 +2698,38 @@ int MDrv_GFLIP_Resume(void)
     SC_REG(GOP_SC_HSYNC_SHIFT) = _gflip_regs_save.SC_GopHsyncShift;
 #endif
 
+#ifdef SUPPORT_GOP_AFBC
+    CKG_REG(GOP_AFBC_CLK) = _gflip_regs_save.u16AfbcRegClk;
+#ifdef REG_AFBC_TRIGGER
+    REG_AFBC_TRIGGER = _gflip_regs_save.u16AfbcTrigger;
+#endif
+#ifdef REG_AFBC_MIU
+    REG_AFBC_MIU = _gflip_regs_save.u16AfbcRegMiu;
+#endif
+    for (i=0; i<GOP_AFBC_CORE_NUMBER; i++)
+    {
+        if(_gflip_regs_save.u16AfbcRegEn[i] & AFBC_CORE_EN)
+        {
+            REG_AFBC_ADDR_L(i) = _gflip_regs_save.u16AfbcRegAddrL[i];
+            REG_AFBC_ADDR_H(i) = _gflip_regs_save.u16AfbcRegAddrH[i];
+            REG_AFBC_ADDR_MSB(i) = _gflip_regs_save.u16AfbcRegAddrMSB[i];
+            REG_AFBC_FMT(i) = _gflip_regs_save.u16AfbcRegFmt[i];
+            REG_AFBC_WIDTH(i) = _gflip_regs_save.u16AfbcRegWidth[i];
+            REG_AFBC_HEIGHT(i) = _gflip_regs_save.u16AfbcRegHeight[i];
+            REG_AFBC_CROP_X(i) = _gflip_regs_save.u16AfbcRegCropX[i];
+            REG_AFBC_CROP_Y(i) = _gflip_regs_save.u16AfbcRegCropY[i];
+            REG_AFBC_CROP_HSIZE(i) = _gflip_regs_save.u16AfbcRegCropHSize[i];
+            REG_AFBC_CROP_VSIZE(i) = _gflip_regs_save.u16AfbcRegCropVSize[i];
+
+            REG_AFBC_CORE_EN(i) = _gflip_regs_save.u16AfbcRegEn[i];
+        }
+    }
+    if((REG_AFBC_CORE_EN(0) & AFBC_CORE_EN) == 0)
+    {
+        _gflip_regs_save.BankReg[0][REG_GOP_MIU_SEL] &= (~GOP_AFBC_EN);
+    }
+#endif
+
     for(i=0;i<GFLIP_REG_BANKS;i++){
         if (i < 12)
         {
@@ -2468,8 +2774,8 @@ int MDrv_GFLIP_Resume(void)
         u32PaletteForm = _MDrv_GFLIP_GetRegForm(u8GOPIndex);
         if((u32PaletteForm & E_GOP_PAL_SIZE_MASK) != E_GOP_PAL_SIZE_NONE)
         {
-
             MHal_GFLIP_ReadGopReg(u8GOPIndex,0,REG_GOP_4G_OLDADDR,&u16ClkGated); //Get GOP clk dynamical gated
+            MHal_GFLIP_ReadGopReg(u8GOPIndex,0,REG_GOP_4G_PALCTRL,&u16tmp);
             if((u16ClkGated & (BIT(0) | BIT(1))))
             {
                 //Disable clk gated when R/W palette
@@ -2487,6 +2793,7 @@ int MDrv_GFLIP_Resume(void)
                 //MHal_GFLIP_WriteGopReg(u8GOPIndex,0, REG_GOP_BAK_SEL, 0, BIT(9));
             }
             //Disable clk gated when R/W palette
+            MHal_GFLIP_WriteGopReg(u8GOPIndex,0 ,REG_GOP_4G_PALCTRL, u16tmp , BMASK(15:0));
             MHal_GFLIP_WriteGopReg(u8GOPIndex,0 ,REG_GOP_4G_OLDADDR, u16ClkGated , (BIT(1) | BIT(0))); //enable GOP clk dynamical gated
         }
     }
@@ -2497,22 +2804,6 @@ int MDrv_GFLIP_Resume(void)
         REG_GOP_CROP_PRECALDONE(i) = _gflip_regs_save.u16GopManualCrop_PreCalDone[i];
         REG_GOP_CROP_ORIHSTART(i) = _gflip_regs_save.u16GopManualCrop_Hstart[i];
         REG_GOP_CROP_ORIHEND(i) = _gflip_regs_save.u16GopManualCrop_HEnd[i];
-    }
-#endif
-
-#ifdef SUPPORT_GOP_AFBC
-    CKG_REG(GOP_AFBC_CLK) = _gflip_regs_save.u16AfbcRegClk;
-    REG_AFBC_TRIGGER = _gflip_regs_save.u16AfbcTrigger;
-    REG_AFBC_MIU = _gflip_regs_save.u16AfbcRegMiu;
-    for (i=0; i<GOP_AFBC_CORE_NUMBER; i++)
-    {
-        REG_AFBC_ADDR_L(i) = _gflip_regs_save.u16AfbcRegAddrL[i];
-        REG_AFBC_ADDR_H(i) = _gflip_regs_save.u16AfbcRegAddrH[i];
-        REG_AFBC_FMT(i) = _gflip_regs_save.u16AfbcRegFmt[i];
-        REG_AFBC_WIDTH(i) = _gflip_regs_save.u16AfbcRegWidth[i];
-        REG_AFBC_HEIGHT(i) = _gflip_regs_save.u16AfbcRegHeight[i];
-
-        REG_AFBC_CORE_EN(i) = _gflip_regs_save.u16AfbcRegEn[i];
     }
 #endif
 
@@ -2530,6 +2821,23 @@ int MDrv_GFLIP_Resume(void)
 
 #ifdef GEN_GOP_XCIP_TIMING
     SC_IP_REG(REG_GOP_XCIP_TIMING) = _gflip_regs_save.u16GenGOPXCIPTiming;
+#endif
+
+#ifdef DRAM_RBLK_MSB_MOVE_TO_SC
+    for(u8GOPIndex = 0; u8GOPIndex < MAX_GOP_SUPPORT; u8GOPIndex++)
+    {
+        SC_MSB_REG(REG_GOP_DRAM_RBLK_STR_EX(u8GOPIndex)) = (SC_MSB_REG(REG_GOP_DRAM_RBLK_STR_EX(u8GOPIndex)) & ~GOP_DRAM_RBLK_STR_EX_MASK) | _gflip_regs_save.u16GopDramRblkMsb[u8GOPIndex];
+    }
+#endif
+
+#ifdef SC_BWP_SETTING
+    for(u8GOPIndex = 0; u8GOPIndex < MAX_GOP_SUPPORT; u8GOPIndex++)
+    {
+        SC_BWP_REG(SC_BWP_LV_TRG_SLOW(u8GOPIndex)) = (SC_BWP_REG(SC_BWP_LV_TRG_SLOW(u8GOPIndex)) & ~SC_BWP_LV_MASK) | _gflip_regs_save.u16GopBwpTrgSlow[u8GOPIndex];
+        SC_BWP_REG(SC_BWP_LV_RLS_SLOW(u8GOPIndex)) = (SC_BWP_REG(SC_BWP_LV_RLS_SLOW(u8GOPIndex)) & ~SC_BWP_LV_MASK) | _gflip_regs_save.u16GopBwpRlsSlow[u8GOPIndex];
+        SC_BWP_REG(SC_BWP_LV_TRG_STOP(u8GOPIndex)) = (SC_BWP_REG(SC_BWP_LV_TRG_STOP(u8GOPIndex)) & ~SC_BWP_LV_MASK) | _gflip_regs_save.u16GopBwpTrgStop[u8GOPIndex];
+        SC_BWP_REG(SC_BWP_LV_RLS_STOP(u8GOPIndex)) = (SC_BWP_REG(SC_BWP_LV_RLS_STOP(u8GOPIndex)) & ~SC_BWP_LV_MASK) | _gflip_regs_save.u16GopBwpRlsStop[u8GOPIndex];
+    }
 #endif
 
     u32GOPBitMask = 0;
@@ -2624,17 +2932,17 @@ void _MDrv_GFLIP_Set_InitValue_Main_Control_GOP(STU_CFDAPI_MAIN_CONTROL_GOP *pst
     pstu_CfdAPI_MainControl_Param_lite->u8Input_Source  = E_CFD_INPUT_SOURCE_GENERAL;
 
     //E_CFD_CFIO
-    pstu_CfdAPI_MainControl_Param_lite->u8Input_Format  = E_CFD_CFIO_RGB_BT709;
+    pstu_CfdAPI_MainControl_Param_lite->u8Input_Format  = E_GFLIP_CFD_CFIO_RGB_BT709;
     //pstu_CfdAPI_MainControl_Param_lite->u8Input_Format  = E_CFD_CFIO_RGB_NOTSPECIFIED;
     //pstu_CfdAPI_MainControl_Param_lite->u8Input_Format = E_CFD_CFIO_YUV_BT709;
 
     //E_CFD_MC_FORMAT
-    pstu_CfdAPI_MainControl_Param_lite->u8Input_DataFormat  = E_CFD_MC_FORMAT_RGB;
+    pstu_CfdAPI_MainControl_Param_lite->u8Input_DataFormat  = E_GFLIP_CFD_MC_FORMAT_RGB;
     //pstu_CfdAPI_MainControl_Param_lite->u8Input_DataFormat = E_CFD_MC_FORMAT_YUV444;
 
     //E_CFD_CFIO_RANGE
     //0:limit 1:full
-    pstu_CfdAPI_MainControl_Param_lite->u8Input_IsFullRange = E_CFD_CFIO_RANGE_FULL;
+    pstu_CfdAPI_MainControl_Param_lite->u8Input_IsFullRange = E_GFLIP_CFD_CFIO_RANGE_FULL;
 
     //E_CFIO_HDR_STATUS
     //0:SDR 1:HDR1 2:HDR2
@@ -2656,15 +2964,15 @@ void _MDrv_GFLIP_Set_InitValue_Main_Control_GOP(STU_CFDAPI_MAIN_CONTROL_GOP *pst
 
     //E_CFD_CFIO
     //pstu_CfdAPI_MainControl_Param_lite->u8Output_Format = E_CFD_CFIO_RGB_NOTSPECIFIED;
-    pstu_CfdAPI_MainControl_Param_lite->u8Output_Format = E_CFD_CFIO_RGB_BT709;
+    pstu_CfdAPI_MainControl_Param_lite->u8Output_Format = E_GFLIP_CFD_CFIO_RGB_BT709;
 
     //E_CFD_MC_FORMAT
-    pstu_CfdAPI_MainControl_Param_lite->u8Output_DataFormat = E_CFD_MC_FORMAT_RGB;
+    pstu_CfdAPI_MainControl_Param_lite->u8Output_DataFormat = E_GFLIP_CFD_MC_FORMAT_RGB;
     //pstu_CfdAPI_MainControl_Param_lite->u8Output_DataFormat = E_CFD_MC_FORMAT_YUV444;
 
     //E_CFD_CFIO_RANGE
     //0:limit 1:full
-    pstu_CfdAPI_MainControl_Param_lite->u8Output_IsFullRange = E_CFD_CFIO_RANGE_FULL;
+    pstu_CfdAPI_MainControl_Param_lite->u8Output_IsFullRange = E_GFLIP_CFD_CFIO_RANGE_FULL;
     //pstu_CfdAPI_MainControl_Param_lite->u8Output_IsFullRange = E_CFD_CFIO_RANGE_LIMIT;
 
     //E_CFIO_HDR_STATUS
@@ -2832,7 +3140,7 @@ static MS_BOOL _MDrv_GFLIP_Set_SetControlPointBlackAndWhite(STU_CFD_CONTROL_POIN
 {
     if ((pstBlackAndWhite->u8BlackLevel == 0) && (pstBlackAndWhite->u8WhiteLevel == 0))
     {
-        if (pstControlPoint->u8IsFullRange == E_CFD_CFIO_RANGE_FULL)
+        if (pstControlPoint->u8IsFullRange == E_GFLIP_CFD_CFIO_RANGE_FULL)
         {
             pstControlPoint->u16BlackLevelC = 0;
             pstControlPoint->u16BlackLevelY = 0;
@@ -2841,7 +3149,7 @@ static MS_BOOL _MDrv_GFLIP_Set_SetControlPointBlackAndWhite(STU_CFD_CONTROL_POIN
         }
         else
         {
-            if(pstControlPoint->u8DataFormat == E_CFD_MC_FORMAT_RGB)
+            if(pstControlPoint->u8DataFormat == E_GFLIP_CFD_MC_FORMAT_RGB)
             {
                 pstControlPoint->u16BlackLevelC = 64;
                 pstControlPoint->u16BlackLevelY = 64;
@@ -3245,8 +3553,22 @@ MS_BOOL _MDrv_GFLIP_CSC_Calc(ST_GFLIP_GOP_CSC_PARAM *pstGflipCSCParam)
 
     pstPreprocessHWIPS->u8HWGroup = pstGflipCSCParam->u32GOPNum;
 
+    if(_fpGflip_CB_CFD_GOP_PreProcess == NULL)
+    {
+        printk("[%s][%d] _fpGflip_CB_CFD_GOP_PreProcess is NULL.\n",__func__,__LINE__);
+        bRet = FALSE;
+        goto CSC_CALC_FREE;
+    }
     _fpGflip_CB_CFD_GOP_PreProcess(pstPreprocessTopCtrl,pstPreprocessOut);
+
     _MDrv_GFLIP_CFD_Wrapper_PreSDR(pstPreprocessTopCtrl,pstPreprocessOut,pstPreSDRInput);
+
+    if(_fpGflip_CB_CFD_GOP_PreSDR == NULL)
+    {
+        printk("[%s][%d] _fpGflip_CB_CFD_GOP_PreSDR is NULL.\n",__func__,__LINE__);
+        bRet = FALSE;
+        goto CSC_CALC_FREE;
+    }
     _fpGflip_CB_CFD_GOP_PreSDR(pstPreSDRInput,pstPreSDROut);
 
 
@@ -3262,12 +3584,32 @@ MS_BOOL _MDrv_GFLIP_CSC_Calc(ST_GFLIP_GOP_CSC_PARAM *pstGflipCSCParam)
     //select test case of STU_CFDAPI_UI_CONTROL parameters
     stu_CfdAPI_Top_Param_gop_testing.stu_UI_Param.u32TestCases     = 14;
 
+    if(_fpGflip_CB_CFD_GOP_TestMode == NULL)
+    {
+        printk("[%s][%d] _fpGflip_CB_CFD_GOP_TestMode is NULL.\n",__func__,__LINE__);
+        bRet = FALSE;
+        goto CSC_CALC_FREE;
+    }
     _fpGflip_CB_CFD_GOP_TestMode(pstPreprocessTopCtrl, &stu_CfdAPI_Top_Param_gop_testing);
 
     pstPreSDRInput->pstu_Cfd_General_Control->stu_Debug_Param.ShowALLInputInCFDEn = 1;
 
+    if(_fpGflip_CB_CFD_GOP_PreProcess == NULL)
+    {
+        printk("[%s][%d] _fpGflip_CB_CFD_GOP_PreProcess is NULL.\n",__func__,__LINE__);
+        bRet = FALSE;
+        goto CSC_CALC_FREE;
+    }
     _fpGflip_CB_CFD_GOP_PreProcess(pstPreprocessTopCtrl,pstPreprocessOut);
+
     _MDrv_GFLIP_CFD_Wrapper_PreSDR(pstPreprocessTopCtrl,pstPreprocessOut,pstPreSDRInput);
+
+    if(_fpGflip_CB_CFD_GOP_PreSDR == NULL)
+    {
+        printk("[%s][%d] _fpGflip_CB_CFD_GOP_PreSDR is NULL.\n",__func__,__LINE__);
+        bRet = FALSE;
+        goto CSC_CALC_FREE;
+    }
     _fpGflip_CB_CFD_GOP_PreSDR(pstPreSDRInput,pstPreSDROut);
 #endif
 
@@ -3290,6 +3632,18 @@ CSC_CALC_FREE:
     if(NULL != pstPreSDROut){kfree(pstPreSDROut);}
 
         return bRet;
+}
+
+MS_BOOL _MDrv_GFLIP_SetBWPEnFlag(MS_U32 u32GopIdx, MS_BOOL bEnable)
+{
+    if(u32GopIdx >= MAX_GOP_SUPPORT)
+    {
+        return FALSE;
+    }
+
+    _gbBWPEnFlag[u32GopIdx] = bEnable;
+
+    return TRUE;
 }
 
 EXPORT_SYMBOL(MDrv_GFLIP_GetGwinInfo);

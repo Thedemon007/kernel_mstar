@@ -139,5 +139,30 @@ void MDrv_RTC_Disable_Interrupt(void)
 
 EXPORT_SYMBOL(Free_RTC_IRQ);
 
+bool MDrv_RTC_SetDummy(PM_RtcParam *pPmRtcParam, u16 val)
+{
+    if (pPmRtcParam->u8PmRtcDummyIndex == 0) {
+        MHAL_RTC_Set_Dummy0(pPmRtcParam->u8PmRtcIndex, val);
+    } else if (pPmRtcParam->u8PmRtcDummyIndex == 1) {
+        MHAL_RTC_Set_Dummy1(pPmRtcParam->u8PmRtcIndex, val);
+    } else {
+        printk(KERN_ERR "[%s %d] rtc=%d, wrong dummy=%d, val=%d\n", __FUNCTION__, __LINE__, pPmRtcParam->u8PmRtcIndex, pPmRtcParam->u8PmRtcDummyIndex, val);
+        return false;
+    }
 
+    return true;
+}
 
+bool MDrv_RTC_GetDummy(PM_RtcParam *pPmRtcParam, u16 *pval)
+{
+    if (pPmRtcParam->u8PmRtcDummyIndex == 0) {
+        *pval = MHAL_RTC_Get_Dummy0(pPmRtcParam->u8PmRtcIndex);
+    } else if (pPmRtcParam->u8PmRtcDummyIndex == 1) {
+        *pval = MHAL_RTC_Get_Dummy1(pPmRtcParam->u8PmRtcIndex);
+    } else {
+        printk(KERN_ERR "[%s %d] rtc=%d, wrong dummy=%d\n", __FUNCTION__, __LINE__, pPmRtcParam->u8PmRtcIndex, pPmRtcParam->u8PmRtcDummyIndex);
+        return false;
+    }
+
+    return true;
+}

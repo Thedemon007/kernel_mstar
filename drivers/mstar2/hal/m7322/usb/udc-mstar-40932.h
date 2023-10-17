@@ -64,82 +64,11 @@
 #ifndef _UDC_MSTAR_40932_H
 #define _UDC_MSTAR_40932_H
 
-#if defined(CONFIG_ARM)
-#include "../cpu/arm/chip_int.h"
-#endif
+#include "ehci-mstar-40932.h"
 
-#if defined(CONFIG_ARM64)
-#include "../cpu/arm64/chip_int.h"
-#endif
-
-#define ENABLE_IRQ_REMAP
 #if defined(ENABLE_IRQ_REMAP)
 #define MSTAR_UDC_IRQ		E_IRQ_OTG
 #endif
-
-#include <mstar/mstar_chip.h>
-
-#if defined(CONFIG_ARM64)
-	#define RIU_BASE	(mstar_pm_base + 0x00200000ULL)
-#else
-	#define MSTAR_PM_BASE	   0xfd000000UL
-	#define RIU_BASE 0xfd200000UL
-#endif
-
-
-#define MIU0_BUS_BASE_ADDR 	MSTAR_MIU0_BUS_BASE
-#define MIU1_BUS_BASE_ADDR	MSTAR_MIU1_BUS_BASE
-
-
-#define MIU0_PHY_BASE_ADDR	(0x00000000ULL)
-/* MIU0 2G*/
-#define MIU0_SIZE		(0x80000000ULL)
-
-#define MIU1_PHY_BASE_ADDR	(0x80000000ULL)
-/* MIU1 2G*/
-#define MIU1_SIZE		(0x80000000ULL)
-
-#define ENABLE_USB_NEW_MIU_SLE	1
-#if MSTAR_MIU0_BUS_BASE > (0xFF000000ULL) // exceed 32bit, 4G address
-#define USB_MIU_SEL0	((u8) 0x70U)	// UMA
-#define USB_MIU_SEL1	((u8) 0xEFU)	// Set Upper bound < Lower bound to disable MIU2
-#define USB_MIU_SEL2	((u8) 0xF8U)	// UMA
-#define USB_MIU_SEL3	((u8) 0xEFU)	// Set Upper bound < Lower bound to disable MIU3
-#else
-#define USB_MIU_SEL0	((u8) 0xF0U)	// UMA
-#define USB_MIU_SEL1	((u8) 0xEFU)	// Set Upper bound < Lower bound to disable MIU2
-#define USB_MIU_SEL2	((u8) 0xEFU)	// Set Upper bound < Lower bound to disable MIU2
-#define USB_MIU_SEL3	((u8) 0xEFU)	// Set Upper bound < Lower bound to disable MIU3
-#endif
-
-#define MIU_FAIL_ADDR ULONG_MAX
-
-#define IN_MIU_BUS(A, NUM)	\
-(((A)>=MIU##NUM##_BUS_BASE_ADDR)&&((A)<=(MIU##NUM##_BUS_BASE_ADDR+MIU##NUM##_SIZE-1)))
-
-#define IN_MIU_PA(A, NUM)	\
-(((A)>=MIU##NUM##_PHY_BASE_ADDR)&&((A)<=(MIU##NUM##_PHY_BASE_ADDR+MIU##NUM##_SIZE-1)))
-
-#define PA_MIU(A, NUM)	\
-((A)-MIU##NUM##_BUS_BASE_ADDR+MIU##NUM##_PHY_BASE_ADDR)
-
-#define BUS_MIU(A, NUM)	\
-((A)-MIU##NUM##_PHY_BASE_ADDR+MIU##NUM##_BUS_BASE_ADDR)
-
-#if 0//defined(MIU2_BUS_BASE_ADDR)
-#define _BUS2PA(A)	\
-(IN_MIU_BUS(A, 0) ? PA_MIU(A, 0) : (IN_MIU_BUS(A, 1)? PA_MIU(A, 1): (IN_MIU_BUS(A, 2)? PA_MIU(A, 2) : MIU_FAIL_ADDR)))
-
-#define PA2BUS(A)	\
-(IN_MIU_PA(A, 0) ? BUS_MIU(A, 0) : (IN_MIU_PA(A, 1)? BUS_MIU(A, 1): (IN_MIU_PA(A, 2)? BUS_MIU(A, 2) : MIU_FAIL_ADDR)))
-#else
-#define BUS2PA(A)	\
-(IN_MIU_BUS(A, 0) ? PA_MIU(A, 0) : (IN_MIU_BUS(A, 1)? PA_MIU(A, 1): MIU_FAIL_ADDR))
-
-#define PA2BUS(A)	\
-(IN_MIU_PA(A, 0) ? BUS_MIU(A, 0) : (IN_MIU_PA(A, 1)? BUS_MIU(A, 1): MIU_FAIL_ADDR))
-#endif
-
 
 /******************************************************************************
  * SW patch config
@@ -178,14 +107,10 @@ static const char *const ep_name[] = {
 //---USB device switch pad to CID enable
 #define CID_ENABLE
 #define ENABLE_SQUELCH_LEVEL
-//------ UTMI squelch level parameters ---------------------------------
-// disc: bit[7:4] 0x00: 550mv, 0x20: 575, 0x40: 600, 0x60: 625
-// squelch: bit[3:0] 4'b0010 => 100mv
-#define UTMI_DISCON_LEVEL_2A    (0x60 | 0x02)
 
 //------UTMI, USBC and OTG base address -----------------------------
-#define UTMI_BASE_ADDR     (RIU_BASE+(0x3a80*2))
-#define USBC_BASE_ADDR     (RIU_BASE+(0x0700*2))
-#define OTG0_BASE_ADDR     (RIU_BASE+(0x21500*2))
-#define BC_BASE_ADDR	   	 (RIU_BASE+(0x23600*2))
+#define UTMI_BASE_ADDR     _MSTAR_UTMI0_BASE
+#define USBC_BASE_ADDR     _MSTAR_USBC0_BASE
+#define OTG0_BASE_ADDR     (_MSTAR_USB_BASEADR+(0x21500*2))
+#define BC_BASE_ADDR	   	 _MSTAR_BC0_BASE
 #endif  /* define _UDC_MSTAR_40932_H */

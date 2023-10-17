@@ -58,7 +58,7 @@
 //-------------------------------------------------------------------------------------------------
 //  Hardware Capability
 //-------------------------------------------------------------------------------------------------
-#define GPIO_UNIT_NUM               161
+#define GPIO_UNIT_NUM               145
 
 //-------------------------------------------------------------------------------------------------
 //  Macro and Define
@@ -219,24 +219,6 @@ extern ptrdiff_t mstar_pm_base;
 #define PAD_TS2_D0                  142
 #define PAD_TS2_SYNC                143
 #define PAD_TS2_VLD                 144
-
-// Start of Analog GPIOs
-#define PADA_RIN0P                  145
-#define PADA_RIN1P                  146
-#define PADA_GIN0P                  147
-#define PADA_GIN1P                  148
-#define PADA_GIN0M                  149
-#define PADA_GIN1M                  150
-#define PADA_BIN0P                  151
-#define PADA_BIN1P                  152
-#define PADA_HSYNC0                 153
-#define PADA_HSYNC1                 154
-#define PADA_VSYNC0                 155
-#define PADA_VSYNC1                 156
-#define PADA_LINEIN_L0              157
-#define PADA_LINEIN_R0              158
-#define PADA_LINEIN_L1              159
-#define PADA_LINEIN_R1              160
 
 #define GPIO_OEN                    0   //set o to nake output
 #define GPIO_ODN                    1

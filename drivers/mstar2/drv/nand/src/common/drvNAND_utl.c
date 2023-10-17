@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 #include "drvNAND.h"
 #include "drvNAND_utl.h"
 
@@ -1886,7 +1940,11 @@ RETRY:
     //find last good block of cis partition
     u32_GoodBlkIdx = drvNAND_GetBackupBlk();
     if(u32_GoodBlkIdx==0)//No free block to do bakup
+    {
+        kfree(pu8_BakPageDataBuf);
+        kfree(pu8_BakPageSpareBuf);
         return 0;
+    }
     nand_debug(UNFD_DEBUG_LEVEL, 1,"Blk %X is the last good block\n", (unsigned int)u32_GoodBlkIdx);
 
     // write to empty block, so called backup block
@@ -1990,6 +2048,8 @@ RETRY:
             {
                 nand_debug(UNFD_DEBUG_LEVEL_ERROR, 1, "NAND fatal error page @ %X,when reading target block\n",(unsigned int)u32_Row);
                 nand_debug(UNFD_DEBUG_LEVEL_ERROR, 1, "Please re-program nand\n");
+                kfree(pu8_BakPageDataBuf);
+                kfree(pu8_BakPageSpareBuf);
                 return -1;
             }
         }
@@ -2051,7 +2111,9 @@ U16 drvNAND_BBT_Rev_StartBlk(void)
 
     /* set bbt block number to 0.8% of total blocks, or blocks * (2 / 256) */
     u16_StarBlk = pNandDrv->u16_BlkCnt-((pNandDrv->u16_BlkCnt >> 8) * 2);
-
+	#if defined(CONFIG_MSTAR_RESERVED_END_OF_NAND) && CONFIG_MSTAR_RESERVED_END_OF_NAND
+    u16_StarBlk -= (CONFIG_MSTAR_RESERVED_NAND_BYTE + (1 << (pNandDrv->u8_BlkPageCntBits + pNandDrv->u8_PageByteCntBits)) - 1) >> (pNandDrv->u8_BlkPageCntBits + pNandDrv->u8_PageByteCntBits);
+	#endif
     return u16_StarBlk;
 }
 
@@ -2724,5 +2786,33 @@ void drvNAND_CHECK_FLASH_TYPE(void)
     }
 }
 
+#if defined(FCIE_REG_TEE_BASE_ADDR)
+void NC_Get_REE_Grant(void)
+{
+    REG_SET_BITS_UINT16(NC_BOOT_MODE, BIT_REE_REQ);
+    while(1)
+    {
+        if((REG(NC_BOOT_MODE) & BIT_GRANT2REE) == BIT_GRANT2REE)
+        {
+            //nand_debug(0, 1, "Grant to REE\n");
+            break;
+        }
+    }
+}
 
+void NC_Release_REE_Grant(void)
+{
+    REG_CLR_BITS_UINT16(NC_BOOT_MODE, BIT_REE_REQ);
+}
+#else
+void NC_Get_REE_Grant(void)
+{
+}
 
+void NC_Release_REE_Grant(void)
+{
+}
+#endif
+
+EXPORT_SYMBOL(NC_Get_REE_Grant);
+EXPORT_SYMBOL(NC_Release_REE_Grant);

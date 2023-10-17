@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 /* ir-tcl-rca-decoder.c - handle RCA IR Pulse/Space protocol
  *
  * Copyright (C) 2010 by Mauro Carvalho Chehab <mchehab@redhat.com>
@@ -20,11 +74,28 @@
 static u8 u8InitFlag_rca = FALSE;
 static unsigned long  KeyTime;
 static IR_RCA_Spec_t rca;
+static u8 u8FirstPress;
+static u32 u32RcaSpeed;
+
+static u8 bitrev_n(u8 value,u8 n)
+{
+    u8 i = 0;
+    u8 ret = 0;
+    for(i = 0;i<n;i++)
+    {
+        ret = ret<<1;
+        if((value>>i)&0x01)
+        {
+            ret |= 1;
+        }
+    }
+    return ret;
+}
 
 /**
  * ir_rca_decode() - Decode one RCA pulse or space
- * @dev:	the struct rc_dev descriptor of the device
- * @duration:	the struct ir_raw_event descriptor of the pulse/space
+ * @dev:    the struct rc_dev descriptor of the device
+ * @duration:   the struct ir_raw_event descriptor of the pulse/space
  *
  * This function returns -EINVAL if the pulse violates the state machine
  */
@@ -34,9 +105,10 @@ static int ir_rca_decode(struct mstar_ir_dev*dev, struct ir_raw_data ev)
     struct ir_scancode *sc = &dev->raw->this_sc;
     u8 i = 0;
     u8 u8Addr = 0;
-    u8 u8AddrInv =0;
-    u8 u8Cmd =0;
-    u8 u8CmdInv =0;
+    u8 u8AddrInv = 0;
+    u8 u8Cmd = 0;
+    u8 u8CmdInv = 0;
+    u8 u8Repeat = 0;
 
 
     if (!(dev->enabled_protocols & (1<<IR_TYPE_RCA)))
@@ -82,58 +154,79 @@ static int ir_rca_decode(struct mstar_ir_dev*dev, struct ir_raw_data ev)
     case STATE_BIT_SPACE:
         if (ev.pulse)
             break;
-        data->u32DataBits <<= 1;
+        data->u32DataBits >>= 1;
         if (eq_margin(ev.duration, RCA_BIT_1_SPACE_LWB, RCA_BIT_1_SPACE_UPB))
-            data->u32DataBits |= 1;
+            data->u32DataBits |= 0x80000000;
         else if (!eq_margin(ev.duration, RCA_BIT_0_SPACE_LWB, RCA_BIT_0_SPACE_UPB))
             break;
         data->u8BitCount++;
 
         if (data->u8BitCount == RCA_NBITS)
         {
-            u8Addr     = bitrev8(((data->u32DataBits)&0x00F00000UL) >> 20);
-            u8Cmd      = bitrev8(((data->u32DataBits)&0x000FF000UL) >> 12);
-            u8AddrInv  = bitrev8(((data->u32DataBits)&0x00000F00UL) >> 8);
-            u8CmdInv   = bitrev8((data->u32DataBits)&0x000000FFUL);
+            data->u32DataBits = data->u32DataBits>>8;
+            u8AddrInv     = bitrev_n(((data->u32DataBits)&0x0F), 4);
+            u8CmdInv      = bitrev_n((((data->u32DataBits)>>4)&0xFF),8);
+            u8Addr  = bitrev_n((((data->u32DataBits)>>12)&0x0F),4);
+            u8Cmd   = bitrev_n((((data->u32DataBits)>>16)&0xFF),8);
 
             IRDBG_INFO("[RCA] u8Addr = %x u8AddrInv = %x u8Cmd = %x u8CmdInv = %x\n",u8Addr,u8AddrInv,u8Cmd,u8CmdInv);
             IRDBG_INFO("[RCA] TIME =%ld\n",(MIRC_Get_System_Time()-KeyTime));
-            
-            KeyTime = MIRC_Get_System_Time();
             for (i= 0;i<dev->support_num;i++)
             {
-                if(((u8Addr<<8 | u8AddrInv) == dev->support_ir[i].u32HeadCode)&&(dev->support_ir[i].eIRType == IR_TYPE_RCA))
-                {    
-                    u32 speed = dev->support_ir[i].u32IRSpeed;
-                    if (((speed != 0)&&( data->u8RepeatTimes >= (speed - 1)))
-                            || ((speed == 0)&&(data->u8RepeatTimes >= dev->speed)))
+                if(((u8Addr<<8 | u8AddrInv) == dev->support_ir[i].u32HeadCode)&&(dev->support_ir[i].eIRType == IR_TYPE_RCA)&&(dev->support_ir[i].u8Enable == TRUE))
+                {
+                    if (u8Cmd == (u8)~u8CmdInv)
                     {
-                        if (u8Cmd == (u8)~u8CmdInv) 
+                        data->eStatus = STATE_INACTIVE;
+                        data->u32DataBits = 0;
+                        data->u8BitCount = 0;
+                        if((MIRC_Get_System_Time()-KeyTime) <= RCA_REPEAT_TIMEOUT)
                         {
-#ifdef CONFIG_MIRC_INPUT_DEVICE
-                            sc->scancode = (u8Addr<<16) | (u8AddrInv<<8) | u8Cmd;
-                            sc->scancode_protocol = (1<<IR_TYPE_RCA);
-                            dev->map_num = dev->support_ir[i].u32HeadCode;
-#else
-                            sc->scancode = (u8Cmd<<8) |0x00;
-                            sc->scancode |= (0x01UL << 28);
-                            sc->scancode_protocol = (1<<IR_TYPE_RCA);
-#endif
-                            memset(data,0,sizeof(IR_RCA_Spec_t));
-                            return 1;
+                            KeyTime = MIRC_Get_System_Time();
+                            if (((u32RcaSpeed != 0)&&( data->u8RepeatTimes >= (u32RcaSpeed - 1)))
+                            || ((u32RcaSpeed == 0)&&(data->u8RepeatTimes >= dev->speed)))
+                            {
+                                u8Repeat = 1;
+                            }
+                            else
+                            {
+                                data->u8RepeatTimes ++;
+                                IRDBG_INFO("[RCA] repeattimes =%d \n",data->u8RepeatTimes);
+                                return -EINVAL;
+                            }
                         }
+                        else
+                        {
+                            u32RcaSpeed = dev->support_ir[i].u32IRSpeed;
+                            KeyTime = MIRC_Get_System_Time();
+                            u8Repeat = 0;
+                            data->u8RepeatTimes = 0;
+                        }
+                        #ifdef CONFIG_MIRC_INPUT_DEVICE
+                        sc->scancode = (u8Addr<<16) | (u8AddrInv<<8) | u8Cmd;
+                        sc->scancode_protocol = (1<<IR_TYPE_RCA);
+                        dev->map_num = dev->support_ir[i].u32HeadCode;
+                        dev->raw->u8RepeatFlag = u8Repeat;
+                        #else
+                        sc->scancode = (u8Cmd<<8) |(u8Repeat&0x01);
+                        sc->scancode |= (0x01UL << 28);
+                        sc->scancode_protocol = (1<<IR_TYPE_RCA);
+                        #endif
+                        return 1;
+                    }
+                    else
+                    {
+                       IRDBG_ERR("[RCA] parse keycode = u8Cmd fail\n");
+                       memset(data,0,sizeof(IR_RCA_Spec_t));
+                       data->eStatus = STATE_INACTIVE;
+                       return -EINVAL;
                     }
                 }
             }
-
-            data->u8RepeatTimes ++;
-            IRDBG_INFO("[RCA] repeattimes =%d \n",data->u8RepeatTimes);
-
-            data->eStatus = STATE_INACTIVE;
+            break;
         }
         else
             data->eStatus = STATE_BIT_PULSE;
-
         return 0;
     default:
         break;
@@ -144,8 +237,8 @@ static int ir_rca_decode(struct mstar_ir_dev*dev, struct ir_raw_data ev)
 }
 
 static struct ir_decoder_handler rca_handler = {
-    .protocols	= (1<<IR_TYPE_RCA),
-    .decode		= ir_rca_decode,
+    .protocols  = (1<<IR_TYPE_RCA),
+    .decode     = ir_rca_decode,
 };
 
 int rca_decode_init(void)
@@ -154,7 +247,7 @@ int rca_decode_init(void)
     {
         memset(&rca,0,sizeof(IR_RCA_Spec_t));
         MIRC_Decoder_Register(&rca_handler);
-        IR_PRINT("[IR Log] RCA Spec protocol init\n");       
+        IR_PRINT("[IR Log] RCA Spec protocol init\n");
         u8InitFlag_rca = TRUE;
     }
     else

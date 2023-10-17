@@ -109,98 +109,103 @@
 // Local Defines
 //=============================================================================
 #if (defined(CONFIG_MSTAR_HW_SEM) && (CONFIG_MSTAR_HW_SEM == 1) && (USE_HW_SEM == 1))
-#define LOCK_SEND_HW_SEM()   {\
-							while(MDrv_SEM_Get_Resource(SEMID_MBX_HKCPU2PM_SEND, RESID_HKCPU) != TRUE); \
-					  }
-#define UNLOCK_SEND_HW_SEM() {\
-							if (MDrv_SEM_Free_Resource(SEMID_MBX_HKCPU2PM_SEND, RESID_HKCPU) != TRUE) \
-							{ \
-								printk(KERN_EMERG "===ERROR === Hardware Send Semaphore Free Resource \n"); \
-								BUG(); \
-							} \
-					  }
 
-#define LOCK_RECV_HW_SEM()   {\
-							while(MDrv_SEM_Get_Resource(SEMID_MBX_HKCPU2PM_RECV, RESID_HKCPU) != TRUE); \
-					        }
+#define LOCK_SEND_HW_SEM() { while(MDrv_SEM_Get_Resource(SEMID_MBX_HKCPU2PM_SEND, RESID_HKCPU) != TRUE); }
+
+#define UNLOCK_SEND_HW_SEM() {\
+  if (MDrv_SEM_Free_Resource(SEMID_MBX_HKCPU2PM_SEND, RESID_HKCPU) != TRUE) {\
+      printk(KERN_EMERG "===ERROR === Hardware Send Semaphore Free Resource\n");\
+      BUG();\
+  }\
+}
+
+#define LOCK_RECV_HW_SEM() { while(MDrv_SEM_Get_Resource(SEMID_MBX_HKCPU2PM_RECV, RESID_HKCPU) != TRUE); }
 
 #define UNLOCK_RECV_HW_SEM() {\
-							if (MDrv_SEM_Free_Resource(SEMID_MBX_HKCPU2PM_RECV, RESID_HKCPU) != TRUE) \
-							{ \
-								printk(KERN_EMERG "===ERROR === Hardware Receive Semaphore Free Resource \n"); \
-								BUG(); \
-							} \
-					  }
+  if (MDrv_SEM_Free_Resource(SEMID_MBX_HKCPU2PM_RECV, RESID_HKCPU) != TRUE) {\
+      printk(KERN_EMERG "===ERROR === Hardware Receive Semaphore Free Resource\n");\
+      BUG();\
+  }\
+}
+
 #else
+
 #define LOCK_SEND_HW_SEM()
 #define UNLOCK_SEND_HW_SEM()
 #define LOCK_RECV_HW_SEM()
 #define UNLOCK_RECV_HW_SEM()
-#endif
 
-#define MBXCLASS_IN_SIGNAL_MASK	 0x0000FF00
-#define MBXCLASS_IN_SIGNAL_SHIFT	 0x8
+#endif /* (defined(CONFIG_MSTAR_HW_SEM) && (CONFIG_MSTAR_HW_SEM == 1) && (USE_HW_SEM == 1)) */
 
-#define MBX_ASYNCNOTIFIER_MAX  E_MBX_CLASS_MAX
+#define MBXCLASS_IN_SIGNAL_MASK 0x0000FF00
+#define MBXCLASS_IN_SIGNAL_SHIFT 0x8
 
 //=============================================================================
 // Debug Macros
 //=============================================================================
 #define MBX_DEBUG
+
 #ifdef MBX_DEBUG
-    #define MBX_PRINT(fmt, args...)      printk("[MailBox (Driver)][%05d] " fmt, __LINE__, ## args)
-    #define MBX_ASSERT(_cnd, _fmt, _args...)                   \
-                                    if (!(_cnd)) {              \
-                                        MBX_PRINT(_fmt, ##_args);  \
-                                    }
+
+#define MBX_PRINT(fmt, args...) printk("[MailBox (Driver)][%05d] " fmt, __LINE__, ## args)
+#define MBX_ASSERT(_cnd, _fmt, _args...) if (!(_cnd)) { MBX_PRINT(_fmt, ##_args); }
+
 #else
-    #define MBX_PRINT(_fmt, _args...)
-    #define MBX_ASSERT(_cnd, _fmt, _args...)
-#endif
+
+#define MBX_PRINT(_fmt, _args...)
+#define MBX_ASSERT(_cnd, _fmt, _args...)
+
+#endif /* MBX_DEBUG */
 
 //=============================================================================
 // Macros
 //=============================================================================
 static struct mutex _mutexSendMBX;
+static struct mutex _mutexSendMBXFRC;
 static struct mutex _mutexRecvMBX;
 static struct mutex _mutexMBX;
 static struct mutex _mutexPM;
 
-#define DRV_MBX_LockSend_Init()     mutex_init(&_mutexSendMBX)
-#define DRV_MBX_LockSend()   mutex_lock(&_mutexSendMBX)
-#define DRV_MBX_UnLockSend()   mutex_unlock(&_mutexSendMBX)
+#define DRV_MBX_LockSend_Init() mutex_init(&_mutexSendMBX)
+#define DRV_MBX_LockSend() mutex_lock(&_mutexSendMBX)
+#define DRV_MBX_UnLockSend() mutex_unlock(&_mutexSendMBX)
 
-#define DRV_MBX_LockRecv_Init()     mutex_init(&_mutexRecvMBX)
-#define DRV_MBX_LockRecv()   mutex_lock(&_mutexRecvMBX)
-#define DRV_MBX_UnLockRecv()   mutex_unlock(&_mutexRecvMBX)
+#define DRV_MBX_LockSend_FRC_Init() mutex_init(&_mutexSendMBXFRC)
+#define DRV_MBX_LockSendFRC() mutex_lock(&_mutexSendMBXFRC)
+#define DRV_MBX_UnLockSendFRC() mutex_unlock(&_mutexSendMBXFRC)
 
-#define DRV_MBX_Lock_Init()     mutex_init(&_mutexMBX)
-#define DRV_MBX_Lock()   mutex_lock(&_mutexMBX)
-#define DRV_MBX_UnLock()   mutex_unlock(&_mutexMBX)
+#define DRV_MBX_LockRecv_Init() mutex_init(&_mutexRecvMBX)
+#define DRV_MBX_LockRecv() mutex_lock(&_mutexRecvMBX)
+#define DRV_MBX_UnLockRecv() mutex_unlock(&_mutexRecvMBX)
 
-#define DRV_PM_Lock_Init()     mutex_init(&_mutexPM)
-#define DRV_PM_Lock()   mutex_lock(&_mutexPM)
-#define DRV_PM_UnLock()   mutex_unlock(&_mutexPM)
+#define DRV_MBX_Lock_Init() mutex_init(&_mutexMBX)
+#define DRV_MBX_Lock() mutex_lock(&_mutexMBX)
+#define DRV_MBX_UnLock() mutex_unlock(&_mutexMBX)
 
+#define DRV_PM_Lock_Init() mutex_init(&_mutexPM)
+#define DRV_PM_Lock() mutex_lock(&_mutexPM)
+#define DRV_PM_UnLock() mutex_unlock(&_mutexPM)
 
-static MBX_ASYNC_NOTIFIER _mbxAsyncNotifierMBX[MBX_ASYNCNOTIFIER_MAX];
+MBX_ASYNC_NOTIFIER _mbxAsyncNotifierMBX[MBX_ASYNCNOTIFIER_MAX];
+extern MSGPOOL_MsgPoolInfo _infoMSGP;
+extern MSGPOOL_LastRecvMsgInfo _infoLatestMSGP;
 
 static MBX_ROLE_ID _eMbxHostRole = E_MBX_ROLE_MAX;
 static MBX_ROLE_ID _eMbxCpu2Role[E_MBX_CPU_MAX];
 static MBX_CPU_ID _eMbxRole2Cpu[10];
 static MS_U32 _u32TimeoutMillSecs = 0;
+static MS_U16 _u16MsgIDCounter = 0;
 
 static MS_BOOL _bCalledFromDriver = FALSE;
 
 static struct completion mbx_completion[E_MBX_CLASS_MAX];
 static MS_U32 completionInit = 0;
 static MS_U32 g_u32AMBXAsyncID;
-static MS_U8 MBX_Trigger_Tab[E_MBX_CLASS_MAX];
-
+static MS_S16 _lastNotifierIndex = 0;
 
 #if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
 static int mdb_mbx_node_open(struct inode *inode, struct file *file);
-static int mdb_mbx_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
+static ssize_t mdb_mbx_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos);
 
 const struct file_operations mdb_mbx_node_operations = {
     .owner      = THIS_MODULE,
@@ -210,7 +215,8 @@ const struct file_operations mdb_mbx_node_operations = {
     .llseek     = seq_lseek,
     .release    = single_release,
 };
-#endif
+#endif /* CONFIG_MSTAR_UTOPIA2K_MDEBUG */
+
 //=============================================================================
 // Global Variables
 //=============================================================================
@@ -229,22 +235,21 @@ static MS_S16 _MDrv_MBX_GetAsyncNotifierIDByAsyncID(TYPE_MBX_C_U64 u32AsyncID);
 //=============================================================================
 //MBX Config functions:
 static MBX_Result _MDrv_MBX_InitConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs);
-static MBX_Result  _MDrv_MBX_SetConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs);
+static MBX_Result _MDrv_MBX_SetConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs);
 
 //Util Function
 static MS_U32 _MDrv_MBX_GetSystemTime(void); //in ms
 
 //Message Handle functions:
-static MBX_Result  _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole);
-static MBX_Result  _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag);
-static MBX_Result  _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag);
+static MBX_Result _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole);
+static void _MDrv_MBX_DequeueMsg(MBX_Class eTargetClass, MS_BOOL bInstantMsg, MS_U16 u16MsgIDRemove);
+static MBX_Result _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag);
+static MBX_Result _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag);
 
 //=============================================================================
 //Message interrupt callback function:
 static void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq);
-#if 1//def CONFIG_MSTAR_PM_SWIR
 void (*MDrv_MBX_MsgCbFunc)(void);
-#endif
 
 //=============================================================================
 // Local Function
@@ -258,35 +263,31 @@ void (*MDrv_MBX_MsgCbFunc)(void);
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MS_S16 _MDrv_MBX_AllocateAsyncNotifier(TYPE_MBX_C_U64 u32AsyncID)
+static MS_S16 _MDrv_MBX_AllocateAsyncNotifier(TYPE_MBX_C_U64 u32AsyncID)
 {
     MS_S16 s16Idx;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-	DRV_MBX_Lock();
-    for(s16Idx = 0; s16Idx<MBX_ASYNCNOTIFIER_MAX; s16Idx++)
-    {
-        if(_mbxAsyncNotifierMBX[s16Idx].u16Usage == FALSE)
-        {
-            _mbxAsyncNotifierMBX[s16Idx].u32AsyncID = u32AsyncID;
-            _mbxAsyncNotifierMBX[s16Idx].u16Usage = TRUE;
-            _mbxAsyncNotifierMBX[s16Idx].s16MsgQFirst = INVALID_PTR;
-            _mbxAsyncNotifierMBX[s16Idx].bEnable = FALSE; //default disable.
+    DRV_MBX_Lock();
+    for (s16Idx = 0, pMbxAsyncNotifier = _mbxAsyncNotifierMBX; s16Idx < MBX_ASYNCNOTIFIER_MAX; s16Idx++, pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u16Usage == FALSE) {
+            pMbxAsyncNotifier->u32AsyncID = u32AsyncID;
+            pMbxAsyncNotifier->u16Usage = TRUE;
+            pMbxAsyncNotifier->s16MsgQFirst = INVALID_PTR;
+            pMbxAsyncNotifier->bEnable = FALSE; //default disable.
             break;
-        }
-    	else
-    	{
-            if (_mbxAsyncNotifierMBX[s16Idx].u32AsyncID == u32AsyncID)
-            {
+        } else {
+            if (pMbxAsyncNotifier->u32AsyncID == u32AsyncID)
                 break;
-            }
-    	}
+        }
     }
-	DRV_MBX_UnLock();
+    DRV_MBX_UnLock();
 
-    if(s16Idx>=MBX_ASYNCNOTIFIER_MAX)
-    {
+    if (s16Idx >= MBX_ASYNCNOTIFIER_MAX)
         return INVALID_PTR;
-    }
+
+    if (_lastNotifierIndex < s16Idx)
+        _lastNotifierIndex = s16Idx;
 
     return s16Idx;
 }
@@ -300,29 +301,24 @@ MS_S16 _MDrv_MBX_AllocateAsyncNotifier(TYPE_MBX_C_U64 u32AsyncID)
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MS_S16 _MDrv_MBX_FreeAsyncNotifier(MS_U32 u32AsyncID)
+static MS_S16 _MDrv_MBX_FreeAsyncNotifier(MS_U32 u32AsyncID)
 {
     MS_S16 s16Idx;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    DRV_MBX_LockAsync();
-
-    for(s16Idx = 0; s16Idx<MBX_ASYNCNOTIFIER_MAX; s16Idx++)
-    {
-        if(_mbxAsyncNotifierMBX[s16Idx].u32AsyncID == u32AsyncID)
-        {
-            _mbxAsyncNotifierMBX[s16Idx].u32AsyncID = NULL;
-            _mbxAsyncNotifierMBX[s16Idx].u16Usage = FALSE;
-            _mbxAsyncNotifierMBX[s16Idx].bEnable = FALSE; //default disable.
+    DRV_MBX_Lock();
+    for (s16Idx = 0, pMbxAsyncNotifier = _mbxAsyncNotifierMBX; s16Idx < MBX_ASYNCNOTIFIER_MAX; s16Idx++, pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u32AsyncID == u32AsyncID) {
+            pMbxAsyncNotifier->u32AsyncID = NULL;
+            pMbxAsyncNotifier->u16Usage = FALSE;
+            pMbxAsyncNotifier->bEnable = FALSE; //default disable.
             break;
         }
     }
+    DRV_MBX_UnLock();
 
-    DRV_MBX_UnLockAsync();
-
-    if(s16Idx>=MBX_ASYNCNOTIFIER_MAX)
-    {
+    if (s16Idx >= MBX_ASYNCNOTIFIER_MAX)
         return INVALID_PTR;
-    }
 
     return s16Idx;
 }
@@ -335,17 +331,20 @@ MS_S16 _MDrv_MBX_FreeAsyncNotifier(MS_U32 u32AsyncID)
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-void _MDrv_MBX_FreeAsyncNotifierByID(MS_U16 u16NotifierID)
+static void _MDrv_MBX_FreeAsyncNotifierByID(MS_U16 u16NotifierID)
 {
-    MBX_ASSERT((u16NotifierID<MBX_ASYNCNOTIFIER_MAX), "Invalid Async Notifier ID: %x\n", u16NotifierID);
+    MBX_ASSERT((u16NotifierID < MBX_ASYNCNOTIFIER_MAX), "Invalid Async Notifier ID: %x\n", u16NotifierID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-	DRV_MBX_Lock();
-    _mbxAsyncNotifierMBX[u16NotifierID].u32AsyncID = NULL;
-    _mbxAsyncNotifierMBX[u16NotifierID].u16Usage = FALSE;
-    _mbxAsyncNotifierMBX[u16NotifierID].bEnable = FALSE; //default disable.
-	DRV_MBX_UnLock();
+    DRV_MBX_Lock();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[u16NotifierID];
+    pMbxAsyncNotifier->u32AsyncID = NULL;
+    pMbxAsyncNotifier->u16Usage = FALSE;
+    pMbxAsyncNotifier->bEnable = FALSE; //default disable.
 
-    return;
+    if (_lastNotifierIndex == u16NotifierID)
+        _lastNotifierIndex--;
+    DRV_MBX_UnLock();
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -356,18 +355,20 @@ void _MDrv_MBX_FreeAsyncNotifierByID(MS_U16 u16NotifierID)
 /// @attention
 /// <b>[OBAMA] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MS_S16 _MDrv_MBX_GetAsyncNotifierIDByAsyncID(TYPE_MBX_C_U64 u32AsyncID)
+static MS_S16 _MDrv_MBX_GetAsyncNotifierIDByAsyncID(TYPE_MBX_C_U64 u32AsyncID)
 {
     MS_S16 s16Idx;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    for(s16Idx = 0; s16Idx<MBX_ASYNCNOTIFIER_MAX; s16Idx++)
-    {
-        if(_mbxAsyncNotifierMBX[s16Idx].u32AsyncID == u32AsyncID)
-        {
-            MBX_ASSERT((_mbxAsyncNotifierMBX[s16Idx].u16Usage), "Invalid Usage of allocated Async ID: %x Notifier ID: %x\n", (unsigned int)u32AsyncID, s16Idx);
+    DRV_MBX_Lock();
+    for (s16Idx = 0, pMbxAsyncNotifier = _mbxAsyncNotifierMBX; s16Idx < MBX_ASYNCNOTIFIER_MAX; s16Idx++, pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u32AsyncID == u32AsyncID) {
+            MBX_ASSERT((pMbxAsyncNotifier->u16Usage), "Invalid Usage of allocated Async ID: %x Notifier ID: %x\n", (unsigned int)u32AsyncID, s16Idx);
+            DRV_MBX_UnLock();
             return s16Idx;
         }
     }
+    DRV_MBX_UnLock();
 
     return (INVALID_PTR);
 }
@@ -384,7 +385,7 @@ MS_S16 _MDrv_MBX_GetAsyncNotifierIDByAsyncID(TYPE_MBX_C_U64 u32AsyncID)
 // @attention
 // <b>[MXLIB] <em>Int Config in MDrv_MBX_Init, or After MDrv_MBX_Init</em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result _MDrv_MBX_InitConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
+static MBX_Result _MDrv_MBX_InitConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
 {
     //Set eMbxHostRole:
     _eMbxHostRole = eHostRole;
@@ -394,28 +395,25 @@ MBX_Result _MDrv_MBX_InitConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32
     //Set eMbxRole2Cpu, eMbxCpu2Role
     _eMbxRole2Cpu[E_MBX_ROLE_HK] = eHKCPU;
     _eMbxRole2Cpu[E_MBX_ROLE_PM] = E_MBX_CPU_PM;
+#if defined(CONFIG_MSTAR_M5621)
+    //_eMbxRole2Cpu[E_MBX_CPU_MIPS_VPE1] = E_MBX_CPU_MIPS_VPE1; //it is a wrong usage
+#else
     _eMbxRole2Cpu[E_MBX_CPU_MIPS_VPE1] = E_MBX_CPU_MIPS_VPE1;
-    _eMbxRole2Cpu[E_MBX_ROLE_FRC] = E_MBX_CPU_R2FRC;//frcr2_integration###
+#endif /* CONFIG_MSTAR_M5621 */
+    _eMbxRole2Cpu[E_MBX_ROLE_FRC] = E_MBX_CPU_R2FRC; //frcr2_integration###
 
     _eMbxCpu2Role[E_MBX_CPU_PM] = E_MBX_ROLE_PM;
-    _eMbxCpu2Role[E_MBX_CPU_R2FRC] = E_MBX_ROLE_FRC;//frcr2_integration###
+    _eMbxCpu2Role[E_MBX_CPU_R2FRC] = E_MBX_ROLE_FRC; //frcr2_integration###
 
-    if(E_MBX_CPU_AEON == eHKCPU)
-    {
+    if (E_MBX_CPU_AEON == eHKCPU) {
         _eMbxRole2Cpu[E_MBX_ROLE_CP] = E_MBX_CPU_MIPS;
-
         _eMbxCpu2Role[E_MBX_CPU_AEON] = E_MBX_ROLE_HK;
         _eMbxCpu2Role[E_MBX_CPU_MIPS] = E_MBX_ROLE_CP;
-    }
-    else if(E_MBX_CPU_MIPS == eHKCPU)
-    {
+    } else if (E_MBX_CPU_MIPS == eHKCPU) {
         _eMbxRole2Cpu[E_MBX_ROLE_CP] = E_MBX_CPU_AEON;
-
         _eMbxCpu2Role[E_MBX_CPU_AEON] = E_MBX_ROLE_CP;
         _eMbxCpu2Role[E_MBX_CPU_MIPS] = E_MBX_ROLE_HK;
-    }
-    else
-    {
+    } else {
         return E_MBX_ERR_INVALID_PARAM;
     }
 
@@ -432,28 +430,23 @@ MBX_Result _MDrv_MBX_InitConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32
 // @attention
 // <b>[MXLIB] <em>Pls Set Config in MDrv_MBX_Init, or After MDrv_MBX_Init</em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  _MDrv_MBX_SetConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
+static MBX_Result _MDrv_MBX_SetConfig(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
 
-    //Config MBX:]
-    if(u32TimeoutMillSecs == 0)
-    {
+    //Config MBX
+    if (u32TimeoutMillSecs == 0)
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
-    if((_eMbxHostRole != eHostRole) || (_eMbxRole2Cpu[E_MBX_ROLE_HK] != eHKCPU))
-    {
+    if ((_eMbxHostRole != eHostRole) || (_eMbxRole2Cpu[E_MBX_ROLE_HK] != eHKCPU)) {
         //Config MBX Hardware
         LOCK_RECV_HW_SEM();
         MHAL_MBX_SetConfig(eHostRole);
         UNLOCK_RECV_HW_SEM();
 
         mbxResult = MHAL_MBXINT_ResetHostCPU(_eMbxRole2Cpu[_eMbxHostRole], _eMbxRole2Cpu[eHostRole]);
-        if(E_MBX_SUCCESS != mbxResult)
-        {
+        if (E_MBX_SUCCESS != mbxResult)
             return mbxResult;
-        }
 
         return _MDrv_MBX_InitConfig(eHKCPU, eHostRole, u32TimeoutMillSecs);
     }
@@ -485,57 +478,57 @@ MS_U32 _MDrv_MBX_GetSystemTime(void)
 /// @attention
 /// <b>[OBAMA] <em> Use spin lock to protect co-access </em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole)
+static MBX_Result _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MBXHAL_Fire_Status mbxHalFireStatus;
     MS_U32 u32WaitCnt = 0;
     MS_U32 u32TimeTicket;
 
+#if 1 //no R2 and PM's lock due to incorrect enum usage
+    if (pMsg->eRoleID == E_MBX_ROLE_FRC)
+        DRV_MBX_LockSendFRC();
+    else
+        DRV_MBX_LockSend();
+#else
     DRV_MBX_LockSend();
+#endif
 
     LOCK_SEND_HW_SEM();
     mbxResult = MHAL_MBX_Fire(pMsg, eSrcRole);
     UNLOCK_SEND_HW_SEM();
-    if(E_MBX_SUCCESS == mbxResult)
-    {//fire interrupt
+
+    if (E_MBX_SUCCESS == mbxResult) {
+        //fire interrupt
         MHAL_MBXINT_Fire(_eMbxRole2Cpu[pMsg->eRoleID], _eMbxRole2Cpu[eSrcRole]);
         u32TimeTicket = _MDrv_MBX_GetSystemTime();
-        do
-        {
+        do {
             LOCK_SEND_HW_SEM();
             mbxResult = MHAL_MBX_GetFireStatus(eSrcRole, pMsg->eRoleID, &mbxHalFireStatus);
             UNLOCK_SEND_HW_SEM();
 
-            if(E_MBX_SUCCESS != mbxResult)
-            {
+            if (E_MBX_SUCCESS != mbxResult)
                 break;
-            }
 
-            if(E_MBXHAL_FIRE_OVERFLOW == mbxHalFireStatus)
-            {
+            if (E_MBXHAL_FIRE_OVERFLOW == mbxHalFireStatus) {
                 mbxResult = E_MBX_ERR_PEER_CPU_OVERFLOW;
                 break;
             }
 
-            if(E_MBXHAL_FIRE_DISABLED == mbxHalFireStatus)
-            {
+            if (E_MBXHAL_FIRE_DISABLED == mbxHalFireStatus) {
                 mbxResult = E_MBX_ERR_PEER_CPU_NOTREADY;
                 break;
             }
 
-            if(E_MBXHAL_FIRE_SUCCESS == mbxHalFireStatus)
-            {
+            if (E_MBXHAL_FIRE_SUCCESS == mbxHalFireStatus) {
                 mbxResult = E_MBX_SUCCESS;
                 break;
             }
 
             //check If Timeout:
             u32WaitCnt++;
-            if(u32WaitCnt >= 0x10000)
-            {
-                if((_MDrv_MBX_GetSystemTime()-u32TimeTicket) >= _u32TimeoutMillSecs)
-                {
+            if (u32WaitCnt >= 0x10000) {
+                if ((_MDrv_MBX_GetSystemTime()-u32TimeTicket) >= _u32TimeoutMillSecs) {
                     LOCK_SEND_HW_SEM();
                     MHAL_MBX_SetConfig(_eMbxHostRole);
                     UNLOCK_SEND_HW_SEM();
@@ -544,17 +537,42 @@ MBX_Result  _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole)
                 }
                 u32WaitCnt = 0;
             }
-        }while(TRUE);
+        } while (TRUE);
     }
 
-    LOCK_SEND_HW_SEM();
-    if (mbxResult != E_MBX_SUCCESS)
+    if (mbxResult != E_MBX_SUCCESS) {
+        LOCK_SEND_HW_SEM();
         MHAL_MBX_ClearStatus(pMsg, eSrcRole);
-    UNLOCK_SEND_HW_SEM();
+        UNLOCK_SEND_HW_SEM();
+    }
 
+#if 1 //no R2 and PM's lock due to incorrect enum usage
+    if (pMsg->eRoleID == E_MBX_ROLE_FRC)
+        DRV_MBX_UnLockSendFRC();
+    else
+        DRV_MBX_UnLockSend();
+#else
     DRV_MBX_UnLockSend();
+#endif
 
     return mbxResult;
+}
+
+static void _MDrv_MBX_DequeueMsg(MBX_Class eTargetClass, MS_BOOL bInstantMsg, MS_U16 u16MsgIDRemove)
+{
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
+    MS_U16 u16QStatus = 0;
+
+    for (pMbxAsyncNotifier = _mbxAsyncNotifierMBX; pMbxAsyncNotifier < (_mbxAsyncNotifierMBX + (_lastNotifierIndex + 1)); pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u16Usage == TRUE) {
+            u16QStatus = MDrv_MSGQ_GetQStatusByQID(pMbxAsyncNotifier, eTargetClass);
+            if (u16QStatus != E_MSGQ_INVALID) {
+                if (pMbxAsyncNotifier->bEnable == TRUE) {
+                    MDrv_MSGQ_DequeueMsg(pMbxAsyncNotifier, eTargetClass, bInstantMsg, u16MsgIDRemove);
+                }
+            }
+        }
+    }
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -569,63 +587,57 @@ MBX_Result  _MDrv_MBX_SendMsg(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRole)
 /// @attention
 /// <b>[OBAMA] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag)
+static MBX_Result _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag)
 {
     MBX_Result mbxResult = E_MBX_ERR_INVALID_PARAM;
     MS_S16 s16MsgQIdx;
+    MS_U16 u16MsgRecvID = 0;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-   // DRV_MBX_LockRecv();
-
-    if(u32Flag == MBX_CHECK_ALL_MSG_CLASS)
-    {
+    //DRV_MBX_LockRecv();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    if (u32Flag == MBX_CHECK_ALL_MSG_CLASS) {
         //check Instance Msg for All registered class:
-        s16MsgQIdx = _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst;
-        if (u32Flag & MBX_CHECK_INSTANT_MSG)
-        {
-            while(IS_VALID_PTR(s16MsgQIdx))
-            {
-                mbxResult = MDrv_MSGQ_RecvMsg(s16MsgQIdx, pMsg, TRUE);
-                if(mbxResult == E_MBX_SUCCESS)
-                {
-                   // DRV_MBX_UnLockRecv();
+        s16MsgQIdx = pMbxAsyncNotifier->s16MsgQFirst;
+        if (u32Flag & MBX_CHECK_INSTANT_MSG) {
+            while (IS_VALID_PTR(s16MsgQIdx)) {
+                mbxResult = MDrv_MSGQ_RecvMsg(pMbxAsyncNotifier, s16MsgQIdx, pMsg, TRUE, &u16MsgRecvID);
+                if (mbxResult == E_MBX_SUCCESS) {
+                    _MDrv_MBX_DequeueMsg(s16MsgQIdx, TRUE, u16MsgRecvID);
+                    _u16MsgIDCounter--;
+                    // DRV_MBX_UnLockRecv();
                     return mbxResult;
                 }
-
-                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(s16MsgQIdx);
+                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(pMbxAsyncNotifier, s16MsgQIdx);
             }
         }
 
         //check Normal Msg for All registered class:
-        s16MsgQIdx = _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst;
+        s16MsgQIdx = pMbxAsyncNotifier->s16MsgQFirst;
 
-        if (u32Flag & MBX_CHECK_NORMAL_MSG)
-        {
-            while(IS_VALID_PTR(s16MsgQIdx))
-            {
-                mbxResult = MDrv_MSGQ_RecvMsg(s16MsgQIdx, pMsg, FALSE);
-                if(mbxResult == E_MBX_SUCCESS)
-                {
+        if (u32Flag & MBX_CHECK_NORMAL_MSG) {
+            while (IS_VALID_PTR(s16MsgQIdx)) {
+                mbxResult = MDrv_MSGQ_RecvMsg(pMbxAsyncNotifier, s16MsgQIdx, pMsg, FALSE, &u16MsgRecvID);
+                if (mbxResult == E_MBX_SUCCESS) {
+                    _MDrv_MBX_DequeueMsg(s16MsgQIdx, FALSE, u16MsgRecvID);
+                    _u16MsgIDCounter--;
                     //DRV_MBX_UnLockRecv();
                     return mbxResult;
                 }
 
-                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(s16MsgQIdx);
+                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(pMbxAsyncNotifier, s16MsgQIdx);
             }
         }
 
         //DRV_MBX_UnLockRecv();
         return mbxResult;
-    }
-    else
-    {
-
-        if(!IS_VALID_PTR(MDrv_MSGQ_GetNotiferIDByQID(eTargetClass)))
-        {
+    } else {
+        if (!IS_VALID_PTR(MDrv_MSGQ_GetNotiferIDByQID(pMbxAsyncNotifier, eTargetClass))) {
             //DRV_MBX_UnLockRecv();
             return E_MBX_ERR_SLOT_NOT_OPENNED;
         }
 
-		/*
+        /*
         if(mbxAsyncNotifierID != MDrv_MSGQ_GetNotiferIDByQID(eTargetClass))
         {
             DRV_MBX_UnLockRecv();
@@ -633,21 +645,26 @@ MBX_Result  _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass,
         }
         */
 
-        if(u32Flag & MBX_CHECK_INSTANT_MSG)
-        {
+        if (u32Flag & MBX_CHECK_INSTANT_MSG) {
             //check Instance Msg for All registered class:
-            mbxResult = MDrv_MSGQ_RecvMsg(eTargetClass, pMsg, TRUE);
-            if(mbxResult == E_MBX_SUCCESS)
-            {
+            mbxResult = MDrv_MSGQ_RecvMsg(pMbxAsyncNotifier, eTargetClass, pMsg, TRUE, &u16MsgRecvID);
+            if (mbxResult == E_MBX_SUCCESS) {
+                _MDrv_MBX_DequeueMsg(eTargetClass, TRUE, u16MsgRecvID);
+                _u16MsgIDCounter--;
                 //DRV_MBX_UnLockRecv();
                 return mbxResult;
             }
          }
 
-        if(u32Flag & MBX_CHECK_NORMAL_MSG)
-        {
+        if (u32Flag & MBX_CHECK_NORMAL_MSG) {
             //check Instance Msg for All registered class:
-            mbxResult = MDrv_MSGQ_RecvMsg(eTargetClass, pMsg, FALSE);
+            mbxResult = MDrv_MSGQ_RecvMsg(pMbxAsyncNotifier, eTargetClass, pMsg, FALSE, &u16MsgRecvID);
+            if (mbxResult == E_MBX_SUCCESS) {
+                _MDrv_MBX_DequeueMsg(eTargetClass, FALSE, u16MsgRecvID);
+                _u16MsgIDCounter--;
+                //DRV_MBX_UnLockRecv();
+                return mbxResult;
+            }
         }
     }
 
@@ -667,47 +684,40 @@ MBX_Result  _MDrv_MBX_RecvMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass,
 /// @attention
 /// <b>[OBAMA] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag)
+static MBX_Result  _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32Flag)
 {
     MBX_Result mbxResult = E_MBX_ERR_INVALID_PARAM;
     MS_S16 s16MsgQIdx;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     DRV_MBX_LockRecv();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
 
-    if(u32Flag & MBX_CHECK_ALL_MSG_CLASS)
-    {
+    if (u32Flag & MBX_CHECK_ALL_MSG_CLASS) {
         //check Instance Msg for All registered class:
-        s16MsgQIdx = _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst;
-        if (u32Flag & MBX_CHECK_INSTANT_MSG)
-        {
-            while(IS_VALID_PTR(s16MsgQIdx))
-            {
-                mbxResult = MDrv_MSGQ_CheckMsg(s16MsgQIdx, pMsg, TRUE);
-                if(mbxResult == E_MBX_SUCCESS)
-                {
+        s16MsgQIdx = pMbxAsyncNotifier->s16MsgQFirst;
+        if (u32Flag & MBX_CHECK_INSTANT_MSG) {
+            while (IS_VALID_PTR(s16MsgQIdx)) {
+                mbxResult = MDrv_MSGQ_CheckMsg(pMbxAsyncNotifier, s16MsgQIdx, pMsg, TRUE);
+                if (mbxResult == E_MBX_SUCCESS) {
                     DRV_MBX_UnLockRecv();
                     return mbxResult;
                 }
-
-                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(s16MsgQIdx);
+                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(pMbxAsyncNotifier, s16MsgQIdx);
             }
         }
 
         //check Normal Msg for All registered class:
-        s16MsgQIdx = _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst;
+        s16MsgQIdx = pMbxAsyncNotifier->s16MsgQFirst;
 
-        if (u32Flag & MBX_CHECK_NORMAL_MSG)
-        {
-            while(IS_VALID_PTR(s16MsgQIdx))
-            {
-                mbxResult = MDrv_MSGQ_CheckMsg(s16MsgQIdx, pMsg, FALSE);
-                if(mbxResult == E_MBX_SUCCESS)
-                {
+        if (u32Flag & MBX_CHECK_NORMAL_MSG) {
+            while (IS_VALID_PTR(s16MsgQIdx)) {
+                mbxResult = MDrv_MSGQ_CheckMsg(pMbxAsyncNotifier, s16MsgQIdx, pMsg, FALSE);
+                if(mbxResult == E_MBX_SUCCESS) {
                     DRV_MBX_UnLockRecv();
                     return mbxResult;
                 }
-
-                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(s16MsgQIdx);
+                s16MsgQIdx = MDrv_MSGQ_GetNextMsgQ(pMbxAsyncNotifier, s16MsgQIdx);
             }
         }
 
@@ -715,35 +725,31 @@ MBX_Result  _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass
         return mbxResult;
     }
 
-    if(!IS_VALID_PTR(MDrv_MSGQ_GetNotiferIDByQID(eTargetClass)))
-    {
+    if (!IS_VALID_PTR(MDrv_MSGQ_GetNotiferIDByQID(pMbxAsyncNotifier, eTargetClass))) {
         DRV_MBX_UnLockRecv();
         return E_MBX_ERR_SLOT_NOT_OPENNED;
     }
 
-	/*
+    /*
     if(mbxAsyncNotifierID != MDrv_MSGQ_GetNotiferIDByQID(eTargetClass))
     {
         DRV_MBX_UnLockRecv();
         return E_MBX_ERR_SLOT_BUSY;
     }
-	*/
+    */
 
-    if(u32Flag & MBX_CHECK_INSTANT_MSG)
-    {
+    if (u32Flag & MBX_CHECK_INSTANT_MSG) {
         //check Instance Msg for All registered class:
-        mbxResult = MDrv_MSGQ_CheckMsg(eTargetClass, pMsg, TRUE);
-        if(mbxResult == E_MBX_SUCCESS)
-        {
+        mbxResult = MDrv_MSGQ_CheckMsg(pMbxAsyncNotifier, eTargetClass, pMsg, TRUE);
+        if (mbxResult == E_MBX_SUCCESS) {
             DRV_MBX_UnLockRecv();
             return mbxResult;
         }
      }
 
-    if(u32Flag & MBX_CHECK_NORMAL_MSG)
-    {
+    if (u32Flag & MBX_CHECK_NORMAL_MSG) {
         //check Instance Msg for All registered class:
-        mbxResult = MDrv_MSGQ_CheckMsg(eTargetClass, pMsg, FALSE);
+        mbxResult = MDrv_MSGQ_CheckMsg(pMbxAsyncNotifier, eTargetClass, pMsg, FALSE);
     }
 
     DRV_MBX_UnLockRecv();
@@ -762,20 +768,26 @@ MBX_Result  _MDrv_MBX_CheckMsg(MS_S16 mbxAsyncNotifierID, MBX_Class eTargetClass
 /// @attention
 /// <b>[OBAMA] <em>get message class information from signal information. </em></b>
 //-------------------------------------------------------------------------------------------------
-void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
+static void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
 {
     MBX_Msg mbxMsg;
-    MS_S16 s16MbxAsyncNotifierID;
     MBX_Result mbxResult;
-    MS_U8 u8Trigger = 0;
+    MS_BOOL bTrigger;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
+    MS_U16 u16QStatus = 0;
+    bool is_class_valid = FALSE;
 
-	struct fasync_struct  **ppTempFasync = NULL;
+    struct fasync_struct  **ppTempFasync = NULL;
 
     //DRV_MBX_LockRecv();
-    switch(s32Irq)
-    {
+    switch (s32Irq) {
         case MBX_INT_AEON2PM:
         case MBX_INT_AEON2MIPS:
+#if defined(CONFIG_MSTAR_M5621)
+        case MBX_INT_R2MIPS:
+#else
+        //case MBX_INT_R2MPIS:
+#endif /* CONFIG_MSTAR_M5621 */
             mbxMsg.eRoleID = _eMbxCpu2Role[E_MBX_CPU_AEON];
             break;
         case MBX_INT_MIPS2PM:
@@ -786,11 +798,11 @@ void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
         case MBX_INT_PM2MIPS:
             mbxMsg.eRoleID = _eMbxCpu2Role[E_MBX_CPU_PM];
             break;
-        case MBX_INT_FRC2MIPS://frcr2_integration###
+        case MBX_INT_FRC2MIPS: //frcr2_integration###
             mbxMsg.eRoleID = _eMbxCpu2Role[E_MBX_CPU_R2FRC];
             break;
         default:
-            mbxMsg.eRoleID = 2;//_eMbxCpu2Role[E_MBX_CPU_AEON]; //(### IMPORTANT ###) needs to be reviewed
+            mbxMsg.eRoleID = 2; //_eMbxCpu2Role[E_MBX_CPU_AEON]; //(### IMPORTANT ###) needs to be reviewed
             //DRV_MBX_UnLockRecv();
             //return;
     }
@@ -798,18 +810,66 @@ void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
     LOCK_RECV_HW_SEM();
     mbxResult = MHAL_MBX_Recv(&mbxMsg, _eMbxHostRole);
     UNLOCK_RECV_HW_SEM();
-    if(E_MBX_SUCCESS != mbxResult) //receive message failed, just skip it.
-    {
+
+    if (E_MBX_SUCCESS != mbxResult) {
+        //receive message failed, just skip it.
         //DRV_MBX_UnLockRecv();
         return;
     }
 
-    u8Trigger = MBX_Trigger_Tab[mbxMsg.u8MsgClass];
+    /* give an ID for this received message */
+    _u16MsgIDCounter++;
 
-    s16MbxAsyncNotifierID = MDrv_MSGQ_GetNotiferIDByQID(mbxMsg.u8MsgClass);
+    if (_u16MsgIDCounter > _infoMSGP.u16Slots) {
+        /* msgpool is full */
+        _u16MsgIDCounter--;
+        LOCK_RECV_HW_SEM();
+        MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_DISABLED);
+        UNLOCK_RECV_HW_SEM();
 
-    if(!IS_VALID_PTR(s16MbxAsyncNotifierID))
-    {//the slot not registered yet, just skip the msg.
+        return;
+    }
+
+    for (pMbxAsyncNotifier = _mbxAsyncNotifierMBX; pMbxAsyncNotifier < (_mbxAsyncNotifierMBX + (_lastNotifierIndex + 1)); pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u16Usage == TRUE) {
+            u16QStatus = MDrv_MSGQ_GetQStatusByQID(pMbxAsyncNotifier, mbxMsg.u8MsgClass);
+            if (u16QStatus != E_MSGQ_INVALID) {
+                if (pMbxAsyncNotifier->bEnable == TRUE) {
+                    is_class_valid = TRUE;
+
+                    mbxResult = MDrv_MSGQ_AddMSG(pMbxAsyncNotifier, &mbxMsg, _u16MsgIDCounter); //add to msg queue, maybe failed when overflow.
+
+                    LOCK_RECV_HW_SEM();
+                    switch (mbxResult) {
+                        case E_MSGPOOL_ERR_NOT_INITIALIZED:
+                            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_DISABLED);
+                            break;
+                        //case E_MSGPOOL_ERR_NO_MORE_MSG:
+                        case E_MSGPOOL_ERR_NO_MORE_MEMORY:
+                            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_OVERFLOW);
+                            break;
+                        default:
+                            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_SUCCESS);
+                            break;
+                    }
+                    UNLOCK_RECV_HW_SEM();
+
+                    ppTempFasync = (struct fasync_struct  **) &(pMbxAsyncNotifier->async_queue);
+
+                    //DRV_MBX_UnLockRecv();
+                    //notify the application:
+                    bTrigger = pMbxAsyncNotifier->bTrigger[mbxMsg.u8MsgClass];
+
+                    if (bTrigger == TRUE)
+                        kill_fasync(ppTempFasync, SIGIO, POLL_IN | (mbxMsg.u8MsgClass << MBXCLASS_IN_SIGNAL_SHIFT));
+                }
+            }
+        }
+    }
+
+    if (is_class_valid == FALSE) {
+        //the slot is not registered and not enable yet, just skip the msg.
+        _u16MsgIDCounter--;
         LOCK_RECV_HW_SEM();
         MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_DISABLED);
         UNLOCK_RECV_HW_SEM();
@@ -817,44 +877,8 @@ void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
         return;
     }
 
-    if(_mbxAsyncNotifierMBX[s16MbxAsyncNotifierID].bEnable == FALSE)
-    {//application do not want to recv. the msg:
-        LOCK_RECV_HW_SEM();
-        MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_DISABLED);
-        UNLOCK_RECV_HW_SEM();
-        //DRV_MBX_UnLockRecv();
-        return;
-    }
-
-    mbxResult = MDrv_MSGQ_AddMSG(&mbxMsg); //Add to msg queue, maybe failed when overflow.
-
-    LOCK_RECV_HW_SEM();
-    switch(mbxResult)
-    {
-        case E_MSGPOOL_ERR_NOT_INITIALIZED:
-            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_DISABLED);
-            break;
-//        case E_MSGPOOL_ERR_NO_MORE_MSG:
-        case E_MSGPOOL_ERR_NO_MORE_MEMORY:
-            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_OVERFLOW);
-            break;
-        default:
-            MHAL_MBX_RecvEnd(mbxMsg.eRoleID, _eMbxHostRole, E_MBXHAL_RECV_SUCCESS);
-            break;
-    }
-    UNLOCK_RECV_HW_SEM();
-
-	ppTempFasync = (struct fasync_struct  **) &_mbxAsyncNotifierMBX[s16MbxAsyncNotifierID].async_queue;
-
-    //DRV_MBX_UnLockRecv();
-    //notify the application:
-    if (u8Trigger == 0)
-    	kill_fasync(ppTempFasync, SIGIO, POLL_IN | (mbxMsg.u8MsgClass<<MBXCLASS_IN_SIGNAL_SHIFT));
-
-    #if 1//def CONFIG_MSTAR_PM_SWIR
     if (MDrv_MBX_MsgCbFunc) //To-do: function pointer array
         MDrv_MBX_MsgCbFunc();
-    #endif
 
     complete(&(mbx_completion[mbxMsg.u8MsgClass]));
 }
@@ -869,24 +893,22 @@ void _MDrv_MBX_MsgRecvCb(MS_S32 s32Irq)
         MBX_ERR_NO_MORE_MEMORY-->Not enough memory
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_Startup(void)
+MBX_Result MDrv_MBX_Startup(void)
 {
     //init msg pool:
-    if(E_MBX_SUCCESS != (MBX_Result)MDrv_MSGPOOL_Init())
-    {
+    if (E_MBX_SUCCESS != (MBX_Result)MDrv_MSGPOOL_Init())
         return E_MBX_ERR_NO_MORE_MEMORY;
-    }
 
     //init msg queue:
-    MDrv_MSGQ_Init();
+    //MDrv_MSGQ_Init();
 
     //init spin lock:
     //DRV_MBX_LockAsync_Init();
     DRV_MBX_LockSend_Init();
+    DRV_MBX_LockSend_FRC_Init();
     DRV_MBX_LockRecv_Init();
-	DRV_MBX_Lock_Init();
+    DRV_MBX_Lock_Init();
     DRV_PM_Lock_Init();     //  for MDrv_PM_Get_BrickTerminator_Info  (pm bank dummy register)
-
 
     //init async Notifier:
     memset((void*)_mbxAsyncNotifierMBX, 0, (sizeof(MBX_ASYNC_NOTIFIER)*MBX_ASYNCNOTIFIER_MAX));
@@ -904,7 +926,7 @@ MBX_Result  MDrv_MBX_Startup(void)
         MBX_ERR_NO_MORE_MEMORY-->Not enough memory
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_Exit(void)
+MBX_Result MDrv_MBX_Exit(void)
 {
     //DE-INIT MBX pool
     MDrv_MSGPOOL_DeInit();
@@ -915,7 +937,6 @@ MBX_Result  MDrv_MBX_Exit(void)
     return E_MBX_SUCCESS;
 }
 
-#if 1//def CONFIG_MSTAR_PM_SWIR
 /*
   Function: MDrv_MBX_NotifyMsgRecCbFunc()
   brief: notify MBX receive callback function
@@ -930,7 +951,6 @@ int MDrv_MBX_NotifyMsgRecCbFunc(void (*p)(void))
     MDrv_MBX_MsgCbFunc = p; //warning messg to avoid repeat
     return TRUE;
 }
-#endif
 
 //-------------------------------------------------------------------------------------------------
 /// Init Mailbox driver
@@ -942,7 +962,7 @@ int MDrv_MBX_NotifyMsgRecCbFunc(void (*p)(void))
 /// @attention
 /// <b>[MXLIB] <em></em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  MDrv_MBX_Init(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
+MBX_Result MDrv_MBX_Init(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -954,25 +974,25 @@ MBX_Result  MDrv_MBX_Init(MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32Ti
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_Init_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
+MBX_Result MDrv_MBX_Init_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_CPU_ID eHKCPU, MBX_ROLE_ID eHostRole, MS_U32 u32TimeoutMillSecs)
 {
-	int i = 0;
+    int i = 0;
     MBX_Result result;
+    MS_U16 idx = 0;
+
     DRV_MBX_LockRecv();
 
     if (INVALID_CPUID(eHKCPU))
-	return E_MBX_ERR_INVALID_PARAM;
+        return E_MBX_ERR_INVALID_PARAM;
 
     if (INVALID_ROLEID(eHostRole))
-	return E_MBX_ERR_INVALID_PARAM;
+        return E_MBX_ERR_INVALID_PARAM;
 
-    if(IS_VALID_PTR(_MDrv_MBX_AllocateAsyncNotifier(u32AsyncID)))
-    {
-	MS_U16 idx = 0;
-        if(E_MBX_ROLE_MAX ==_eMbxHostRole) //Init
-        {
-            if(E_MBX_SUCCESS != _MDrv_MBX_InitConfig(eHKCPU, eHostRole, u32TimeoutMillSecs))
-            {
+    if (IS_VALID_PTR(_MDrv_MBX_AllocateAsyncNotifier(u32AsyncID))) {
+        idx = 0;
+        if (E_MBX_ROLE_MAX ==_eMbxHostRole) {
+            //Init
+            if (E_MBX_SUCCESS != _MDrv_MBX_InitConfig(eHKCPU, eHostRole, u32TimeoutMillSecs)) {
                 DRV_MBX_UnLockRecv();
                 return E_MBX_ERR_INVALID_PARAM;
             }
@@ -981,40 +1001,37 @@ MBX_Result  MDrv_MBX_Init_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_CPU_ID eHKCPU, MB
             MHAL_MBX_Init(_eMbxHostRole);
 
             //Set mbx int hardware:
-            if(E_MBX_SUCCESS != MHAL_MBXINT_Init(_eMbxRole2Cpu[eHostRole], _MDrv_MBX_MsgRecvCb))
-            {
+            if (E_MBX_SUCCESS != MHAL_MBXINT_Init(_eMbxRole2Cpu[eHostRole], _MDrv_MBX_MsgRecvCb)) {
                 DRV_MBX_UnLockRecv();
                 return E_MBX_ERR_INVALID_CPU_ID;
             }
-        }
-        else
-        {
-            result=_MDrv_MBX_SetConfig(eHKCPU, eHostRole, u32TimeoutMillSecs);
+        } else {
+            result = _MDrv_MBX_SetConfig(eHKCPU, eHostRole, u32TimeoutMillSecs);
             g_u32AMBXAsyncID = u32AsyncID;
             DRV_MBX_UnLockRecv();
             return result;
         }
-        #if (defined(CONFIG_MSTAR_HW_SEM) && (CONFIG_MSTAR_HW_SEM == 1) && (USE_HW_SEM == 1))
-        MDrv_SEM_Init();
-        #endif
-		if (completionInit == 0) {
-			for (i = 0; i<E_MBX_CLASS_MAX; i++)
-				init_completion(&(mbx_completion[i]));
-			completionInit = 1;
-		}
-	    g_u32AMBXAsyncID = u32AsyncID;
 
-	    for (idx = 0; idx < E_MBX_CLASS_MAX; idx++)
-	        MBX_Trigger_Tab[idx] = 0;
+#if (defined(CONFIG_MSTAR_HW_SEM) && (CONFIG_MSTAR_HW_SEM == 1) && (USE_HW_SEM == 1))
+        MDrv_SEM_Init();
+#endif
+
+        if (completionInit == 0) {
+            for (i = 0; i<E_MBX_CLASS_MAX; i++)
+                init_completion(&(mbx_completion[i]));
+            completionInit = 1;
+        }
+        g_u32AMBXAsyncID = u32AsyncID;
 
         DRV_MBX_UnLockRecv();
-	return E_MBX_SUCCESS;
+
+        return E_MBX_SUCCESS;
     }
+
     DRV_MBX_UnLockRecv();
+
     return E_MBX_ERR_NO_MORE_MEMORY;
 }
-
-
 
 /*
   Function: MDrv_MBX_DeInit()
@@ -1027,7 +1044,7 @@ MBX_Result  MDrv_MBX_Init_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_CPU_ID eHKCPU, MB
         MBX_ERR_HAS_MSG_PENDING-->Has unprocessed message.if bForceDiscardPendingMsg is set to TRUE, this  value never be returned
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_DeInit(MS_BOOL bForceDiscardPendingMsg)
+MBX_Result MDrv_MBX_DeInit(MS_BOOL bForceDiscardPendingMsg)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1039,82 +1056,89 @@ MBX_Result  MDrv_MBX_DeInit(MS_BOOL bForceDiscardPendingMsg)
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_DeInit_Async(TYPE_MBX_C_U64 u32AsyncID, MS_BOOL bForceDiscardPendingMsg)
+MBX_Result MDrv_MBX_DeInit_Async(TYPE_MBX_C_U64 u32AsyncID, MS_BOOL bForceDiscardPendingMsg)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
+
     DRV_MBX_LockRecv();
+
     mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
 
     //handle msg q DeInit:
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID)) {
         DRV_MBX_UnLockRecv();
         return E_MBX_ERR_NOT_INITIALIZED;
     }
 
-    if(!bForceDiscardPendingMsg) //false
-    {
-            if(!IS_VALID_PTR(_mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst)) //no any msg queue.
-            {
-                DRV_MBX_UnLockRecv();
-                return E_MBX_SUCCESS;
-            }
-
-            mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSGQ(_mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst, bForceDiscardPendingMsg);
-
-            if(mbxResult == E_MBX_SUCCESS)
-            {
-                _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst = INVALID_PTR; //there has no mail message, just
-            }
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    if (!bForceDiscardPendingMsg) {
+        //false
+        if (!IS_VALID_PTR(pMbxAsyncNotifier->s16MsgQFirst)) {
+            //no any msg queue.
             DRV_MBX_UnLockRecv();
-            return mbxResult;
-    }
+            return E_MBX_SUCCESS;
+        }
 
-    if(!IS_VALID_PTR(_mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst)) //no any msg queue.
-    {
-        _MDrv_MBX_FreeAsyncNotifierByID(mbxAsyncNotifierID);
-    }
-    else
-    {
-        mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSGQ(_mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst, bForceDiscardPendingMsg);
+        mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSGQ(pMbxAsyncNotifier, pMbxAsyncNotifier->s16MsgQFirst, bForceDiscardPendingMsg);
 
         if(mbxResult == E_MBX_SUCCESS)
-        {
+            pMbxAsyncNotifier->s16MsgQFirst = INVALID_PTR; //there is no mail message
+
+        DRV_MBX_UnLockRecv();
+        return mbxResult;
+    }
+
+    if (!IS_VALID_PTR(pMbxAsyncNotifier->s16MsgQFirst)) {
+        //no any msg queue.
+        _MDrv_MBX_FreeAsyncNotifierByID(mbxAsyncNotifierID);
+    } else {
+        mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSGQ(pMbxAsyncNotifier, pMbxAsyncNotifier->s16MsgQFirst, bForceDiscardPendingMsg);
+
+        if(mbxResult == E_MBX_SUCCESS) {
             _MDrv_MBX_FreeAsyncNotifierByID(mbxAsyncNotifierID);
-        }
-        else
-        {
-             DRV_MBX_UnLockRecv();
-             return mbxResult;
+        } else {
+            DRV_MBX_UnLockRecv();
+            return mbxResult;
         }
     }
 
     //handle other DeInit:
     DRV_MBX_UnLockRecv();
+
     return mbxResult;
 }
 
 int MDrv_MBX_Suspend(MSTAR_MBX_DEV *pmbx_dev)
 {
     MBX_CPU_ID eHostCPU;
-    if(!pmbx_dev)
+
+    if (!pmbx_dev)
         return -1;
-    eHostCPU=_eMbxRole2Cpu[_eMbxHostRole];
+
+    eHostCPU = _eMbxRole2Cpu[_eMbxHostRole];
     MHAL_MBXINT_Suspend(eHostCPU);
+
     return 0;
 }
+
 int MDrv_MBX_Resume(MSTAR_MBX_DEV *pmbx_dev)
 {
     MBX_CPU_ID eHostCPU;
-    if(!pmbx_dev)
+
+    if (!pmbx_dev)
         return -1;
-    if(_eMbxHostRole<E_MBX_ROLE_MAX)
+
+    if (_eMbxHostRole < E_MBX_ROLE_MAX)
         MHAL_MBX_SetConfig(_eMbxHostRole);
-    eHostCPU=_eMbxRole2Cpu[_eMbxHostRole];
+
+    eHostCPU = _eMbxRole2Cpu[_eMbxHostRole];
     MHAL_MBXINT_Resume(eHostCPU);
+
     return 0;
 }
+
 //-------------------------------------------------------------------------------------------------
 /// register for real time signal notification.
 /// @param  s32Fd      \b IN: s32Fd for fasync_helper
@@ -1129,27 +1153,27 @@ MBX_Result MDrv_MBX_FASYNC(MS_S32 s32Fd, TYPE_MBX_C_U64 u32AsyncID, MS_S32 s32Mo
 {
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
     MS_U16 i = 0;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
-	DRV_MBX_Lock();
+    DRV_MBX_Lock();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
     //register the async queue:
-    if(fasync_helper(s32Fd, (struct file *)u32AsyncID, s32Mode, &_mbxAsyncNotifierMBX[mbxAsyncNotifierID].async_queue)<0)
-    {
-    	DRV_MBX_UnLock();
+    if (fasync_helper(s32Fd, (struct file *)u32AsyncID, s32Mode, &(pMbxAsyncNotifier->async_queue)) < 0) {
+        DRV_MBX_UnLock();
         return E_MBX_UNKNOW_ERROR;
     }
 
-	if (completionInit == 0) {
-		for (i = 0; i<E_MBX_CLASS_MAX; i++)
-			init_completion(&(mbx_completion[i]));
-		completionInit = 1;
-	}
+    if (completionInit == 0) {
+        for (i = 0; i < E_MBX_CLASS_MAX; i++)
+            init_completion(&(mbx_completion[i]));
+        completionInit = 1;
+    }
 
-	DRV_MBX_UnLock();
+    DRV_MBX_UnLock();
+
     return E_MBX_SUCCESS;
 }
 
@@ -1164,20 +1188,20 @@ MBX_Result MDrv_MBX_FASYNC(MS_S32 s32Fd, TYPE_MBX_C_U64 u32AsyncID, MS_S32 s32Mo
 MBX_Result MDrv_MBX_ReleaseFASYNC(TYPE_MBX_C_U64 u32AsyncID)
 {
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
-	DRV_MBX_Lock();
+    DRV_MBX_Lock();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
      //un register the async queue:
-    if(fasync_helper(-1, (struct file *)u32AsyncID, 0, &_mbxAsyncNotifierMBX[mbxAsyncNotifierID].async_queue)<0)
-    {
-    	DRV_MBX_UnLock();
+    if (fasync_helper(-1, (struct file *)u32AsyncID, 0, &(pMbxAsyncNotifier->async_queue)) < 0) {
+        DRV_MBX_UnLock();
         return E_MBX_UNKNOW_ERROR;
     }
-	DRV_MBX_UnLock();
+
+    DRV_MBX_UnLock();
     return E_MBX_SUCCESS;
 }
 
@@ -1196,41 +1220,41 @@ MBX_Result MDrv_MBX_ReleaseFASYNC(TYPE_MBX_C_U64 u32AsyncID)
         MBX_ERR_INVALID_PARAM-->Invalid parameter, please check if u8Class is to valid or u16MsgQueueSize is not larger than MAX_MBX_QUEUE_SIZE.
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_RegisterMSG(MBX_Class eMsgClass, MS_U16 u16MsgQueueSize)
+MBX_Result MDrv_MBX_RegisterMSG(MBX_Class eMsgClass, MS_U16 u16MsgQueueSize)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
 
     /* use fixed fd in kernel mode */
     u32AsyncID = MBX_KERNEL_FD;
+
+    //DRV_MBX_Lock();
     mbxResult = MDrv_MBX_RegisterMSG_Async(u32AsyncID, eMsgClass, u16MsgQueueSize);
+    //DRV_MBX_UnLock();
 
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_RegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass, MS_U16 u16MsgQueueSize)
+MBX_Result MDrv_MBX_RegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass, MS_U16 u16MsgQueueSize)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     if (INVALID_MBXCLASS(eMsgClass))
         return E_MBX_ERR_INVALID_PARAM;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
-    DRV_MBX_Lock();
+    //DRV_MBX_Lock();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    mbxResult = (MBX_Result)MDrv_MSGQ_RegisterMSG(pMbxAsyncNotifier, mbxAsyncNotifierID, pMbxAsyncNotifier->s16MsgQFirst, (MS_S16)eMsgClass, u16MsgQueueSize);
 
-    mbxResult = (MBX_Result)MDrv_MSGQ_RegisterMSG(mbxAsyncNotifierID, _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst, (MS_S16)eMsgClass, u16MsgQueueSize);
+    if (mbxResult == E_MBX_SUCCESS)
+        pMbxAsyncNotifier->s16MsgQFirst = (MS_S16)eMsgClass;
 
-    if(mbxResult == E_MBX_SUCCESS)
-    {
-        _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst = (MS_S16)eMsgClass;
-    }
-
-	DRV_MBX_UnLock();
+    //DRV_MBX_UnLock();
 
     return mbxResult;
 }
@@ -1250,42 +1274,43 @@ MBX_Result  MDrv_MBX_RegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsg
         MBX_ERR_INVALID_PARAM-->Invalid parameter, please check if u8Class is to valid.
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_UnRegisterMSG(MBX_Class eMsgClass, MS_BOOL bForceDiscardMsgQueue)
+MBX_Result MDrv_MBX_UnRegisterMSG(MBX_Class eMsgClass, MS_BOOL bForceDiscardMsgQueue)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
 
     /* use fixed fd in kernel mode */
     u32AsyncID = MBX_KERNEL_FD;
+
+    //DRV_MBX_Lock();
     mbxResult = MDrv_MBX_UnRegisterMSG_Async(u32AsyncID, eMsgClass, bForceDiscardMsgQueue);
+    //DRV_MBX_UnLock();
 
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_UnRegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass, MS_BOOL bForceDiscardMsgQueue)
+MBX_Result MDrv_MBX_UnRegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass, MS_BOOL bForceDiscardMsgQueue)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
     MS_S16 s16MsgQFirst;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     if (INVALID_MBXCLASS(eMsgClass))
         return E_MBX_ERR_INVALID_PARAM;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
-    s16MsgQFirst = _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst;
+    //DRV_MBX_Lock();
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    s16MsgQFirst = pMbxAsyncNotifier->s16MsgQFirst;
+    mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSG(pMbxAsyncNotifier, mbxAsyncNotifierID, &s16MsgQFirst, (MS_S16)eMsgClass, bForceDiscardMsgQueue);
 
-    DRV_MBX_Lock();
+    if (mbxResult == E_MBX_SUCCESS)
+        pMbxAsyncNotifier->s16MsgQFirst = s16MsgQFirst;
 
-    mbxResult = (MBX_Result)MDrv_MSGQ_UnRegisterMSG(mbxAsyncNotifierID, &s16MsgQFirst, (MS_S16)eMsgClass, bForceDiscardMsgQueue);
-
-    if(mbxResult == E_MBX_SUCCESS)
-        _mbxAsyncNotifierMBX[mbxAsyncNotifierID].s16MsgQFirst = s16MsgQFirst;
-
-	DRV_MBX_UnLock();
+    //DRV_MBX_UnLock();
 
     return mbxResult;
 }
@@ -1301,7 +1326,7 @@ MBX_Result  MDrv_MBX_UnRegisterMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eM
 /// @attention
 /// <b>[MXLIB] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MBX_Result  MDrv_MBX_ClearMSG(MBX_Class eMsgClass)
+MBX_Result MDrv_MBX_ClearMSG(MBX_Class eMsgClass)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1313,22 +1338,22 @@ MBX_Result  MDrv_MBX_ClearMSG(MBX_Class eMsgClass)
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_ClearMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass)
+MBX_Result MDrv_MBX_ClearMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgClass)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     if (INVALID_MBXCLASS(eMsgClass))
         return E_MBX_ERR_INVALID_PARAM;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
     DRV_MBX_LockRecv();
 
-    mbxResult = (MBX_Result)MDrv_MSGQ_ClearMSG(mbxAsyncNotifierID, (MS_S16)eMsgClass);
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    mbxResult = (MBX_Result)MDrv_MSGQ_ClearMSG(pMbxAsyncNotifier, (MS_S16)eMsgClass);
 
     DRV_MBX_UnLockRecv();
 
@@ -1348,7 +1373,7 @@ MBX_Result  MDrv_MBX_ClearMSG_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eMsgCla
         MBX_ERR_SLOT_NOT_OPENNED-->this class is never regisitered
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_GetMsgQueueStatus(MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus)
+MBX_Result MDrv_MBX_GetMsgQueueStatus(MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1360,22 +1385,22 @@ MBX_Result  MDrv_MBX_GetMsgQueueStatus(MBX_Class eTargetClass, MBX_MSGQ_Status *
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_GetMsgQueueStatus_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus)
+MBX_Result MDrv_MBX_GetMsgQueueStatus_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_MSGQ_Status *pMsgQueueStatus)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     if (INVALID_MBXCLASS(eTargetClass))
         return E_MBX_ERR_INVALID_PARAM;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
     DRV_MBX_LockRecv();
 
-    mbxResult = MDrv_MSGQ_GetMsgQStatus(mbxAsyncNotifierID, (MS_S16)eTargetClass, pMsgQueueStatus);
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    mbxResult = MDrv_MSGQ_GetMsgQStatus(pMbxAsyncNotifier, (MS_S16)eTargetClass, pMsgQueueStatus);
 
     DRV_MBX_UnLockRecv();
 
@@ -1400,28 +1425,29 @@ MBX_Result  MDrv_MBX_GetMsgQueueStatus_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Clas
         MBX_ERR_TIME_OUT-->timeout if bWaitPeerIdle is set to TRUE
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_SendMsg(MBX_Msg *pMsg)
+MBX_Result MDrv_MBX_SendMsg(MBX_Msg *pMsg)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
-    MS_U8 u8Trigger;
+    MS_BOOL bTrigger;
 
     /* use fixed fd in kernel mode */
     u32AsyncID = MBX_KERNEL_FD;
     /* use fixed trigger value in kernel mode */
-    u8Trigger = MBX_KERNEL_TRIGGER;
-    mbxResult = MDrv_MBX_SendMsg_Async(u32AsyncID, pMsg, u8Trigger);
+    bTrigger = MBX_KERNEL_TRIGGER;
+    mbxResult = MDrv_MBX_SendMsg_Async(u32AsyncID, pMsg, bTrigger);
 
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_SendMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MS_U8 u8Trigger)
+MBX_Result MDrv_MBX_SendMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MS_BOOL bTrigger)
 {
+    MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
+
     //parameter check:
-    if(NULL==pMsg)
-    {
+    if (NULL == pMsg)
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
     if ((pMsg->u8ParameterCount < 0) || (pMsg->u8ParameterCount > MAX_MBX_PARAM_SIZE))
         return E_MBX_ERR_INVALID_PARAM;
@@ -1429,8 +1455,12 @@ MBX_Result  MDrv_MBX_SendMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MS_
     if (INVALID_ROLEID(pMsg->eRoleID))
         return E_MBX_ERR_INVALID_PARAM;
 
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
+        return E_MBX_ERR_NOT_INITIALIZED;
+
     if (!(INVALID_MBXCLASS(pMsg->u8MsgClass))) {
-	MBX_Trigger_Tab[pMsg->u8MsgClass] = u8Trigger;
+        pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+        pMbxAsyncNotifier->bTrigger[pMsg->u8MsgClass] = bTrigger;
     }
 
     return  _MDrv_MBX_SendMsg(pMsg, _eMbxHostRole);
@@ -1455,7 +1485,7 @@ MBX_Result  MDrv_MBX_SendMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MS_
         MBX_ERR_TIME_OUT-->timeout if bWaitPeerIdle is set to TRUE
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_SendMsgLoopback(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRoleId)
+MBX_Result MDrv_MBX_SendMsgLoopback(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRoleId)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1467,19 +1497,17 @@ MBX_Result  MDrv_MBX_SendMsgLoopback(MBX_Msg *pMsg, MBX_ROLE_ID eSrcRoleId)
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_SendMsgLoopback_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MBX_ROLE_ID eSrcRoleId)
+MBX_Result MDrv_MBX_SendMsgLoopback_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *pMsg, MBX_ROLE_ID eSrcRoleId)
 {
     //parameter check:
-    if(NULL==pMsg)
-    {
+    if (NULL == pMsg)
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
     if ((pMsg->u8ParameterCount < 0) || (pMsg->u8ParameterCount > MAX_MBX_PARAM_SIZE))
         return E_MBX_ERR_INVALID_PARAM;
 
     if (INVALID_ROLEID(pMsg->eRoleID))
-	return E_MBX_ERR_INVALID_PARAM;
+        return E_MBX_ERR_INVALID_PARAM;
 
     if (INVALID_ROLEID(eSrcRoleId))
         return E_MBX_ERR_INVALID_PARAM;
@@ -1508,44 +1536,39 @@ MBX_Result  MDrv_MBX_SendMsgLoopback_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Msg *p
         MBX_ERR_TIME_OUT-->timeout if MBX_CHECK_BLOCK_RECV is set to int u32Flag
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_RecvMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
+MBX_Result MDrv_MBX_RecvMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
-    MS_U8 u8Trigger;
+    MS_BOOL bTrigger;
 
     /* use fixed fd in kernel mode */
     u32AsyncID = MBX_KERNEL_FD;
     /* use fixed trigger value in kernel mode */
-    u8Trigger = MBX_KERNEL_TRIGGER;
-    mbxResult = MDrv_MBX_RecvMsg_Async(u32AsyncID, eTargetClass, pMsg, u32WaitMillSecs, u32Flag, u8Trigger);
+    bTrigger = MBX_KERNEL_TRIGGER;
+    mbxResult = MDrv_MBX_RecvMsg_Async(u32AsyncID, eTargetClass, pMsg, u32WaitMillSecs, u32Flag, bTrigger);
 
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_RecvMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag, MS_U8 u8Trigger)
+MBX_Result MDrv_MBX_RecvMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag, MS_BOOL bTrigger)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
     long ret;
 
-    if(INVALID_MBXCLASS(eTargetClass))
-    {
+    if (INVALID_MBXCLASS(eTargetClass))
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
-    if(!_bCalledFromDriver)
-    {
-        if((u32Flag!=MBX_CHECK_INSTANT_MSG)&&(u32Flag!=MBX_CHECK_NORMAL_MSG))
-        {
+    if (!_bCalledFromDriver) {
+        if ((u32Flag != MBX_CHECK_INSTANT_MSG) && (u32Flag != MBX_CHECK_NORMAL_MSG))
             return E_MBX_ERR_INVALID_PARAM;
-        }
-        _bCalledFromDriver=FALSE;
+
+        _bCalledFromDriver = FALSE;
     }
 
     ret = wait_for_completion_interruptible_timeout(&(mbx_completion[eTargetClass]), msecs_to_jiffies((u32WaitMillSecs)));
@@ -1556,7 +1579,8 @@ MBX_Result  MDrv_MBX_RecvMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetC
     }
 
     DRV_MBX_LockRecv();
-    MBX_Trigger_Tab[eTargetClass] = u8Trigger;
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    pMbxAsyncNotifier->bTrigger[eTargetClass] = bTrigger;
     mbxResult = _MDrv_MBX_RecvMsg(mbxAsyncNotifierID, eTargetClass, pMsg, u32Flag);
     DRV_MBX_UnLockRecv();
 
@@ -1583,7 +1607,7 @@ MBX_Result  MDrv_MBX_RecvMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetC
         MBX_ERR_TIME_OUT-->timeout if MBX_CHECK_BLOCK_RECV is set to int u32Flag
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_CheckMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
+MBX_Result MDrv_MBX_CheckMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1595,7 +1619,7 @@ MBX_Result  MDrv_MBX_CheckMsg(MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32W
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_CheckMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
+MBX_Result MDrv_MBX_CheckMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTargetClass, MBX_Msg *pMsg, MS_U32 u32WaitMillSecs, MS_U32 u32Flag)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
@@ -1604,35 +1628,25 @@ MBX_Result  MDrv_MBX_CheckMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTarget
     if (INVALID_MBXCLASS(eTargetClass))
         return E_MBX_ERR_INVALID_PARAM;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return E_MBX_ERR_NOT_INITIALIZED;
-    }
 
     if ((u32Flag & MBX_CHECK_ALL_MSG_CLASS) == 0)
-    {
         return E_MBX_ERR_INVALID_PARAM;
-    }
 
     mbxResult = _MDrv_MBX_CheckMsg(mbxAsyncNotifierID, eTargetClass, pMsg, u32Flag);
-    if((mbxResult == E_MBX_ERR_NO_MORE_MSG) && (u32Flag&MBX_CHECK_BLOCK_RECV))
-    {
-        for(u32Idx=0; u32Idx<u32WaitMillSecs; u32Idx++)
-        {
+    if ((mbxResult == E_MBX_ERR_NO_MORE_MSG) && (u32Flag & MBX_CHECK_BLOCK_RECV)) {
+        for (u32Idx = 0; u32Idx < u32WaitMillSecs; u32Idx++) {
             mbxResult = _MDrv_MBX_CheckMsg(mbxAsyncNotifierID, eTargetClass, pMsg, u32Flag);
 
-            if(mbxResult != E_MBX_ERR_NO_MORE_MSG)
-            {
+            if (mbxResult != E_MBX_ERR_NO_MORE_MSG)
                 break;
-            }
 
             msleep(1);
         }
 
-        if(mbxResult == E_MBX_ERR_NO_MORE_MSG)
-        {
+        if (mbxResult == E_MBX_ERR_NO_MORE_MSG)
             mbxResult = E_MBX_ERR_TIME_OUT;
-        }
     }
 
     return mbxResult;
@@ -1646,13 +1660,21 @@ MBX_Result  MDrv_MBX_CheckMsg_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_Class eTarget
         MBX_SUCCESS-->Successed
         E_MBX_ERR_NO_MORE_MSG-->no message to be removed
 */
-MBX_Result  MDrv_MBX_RemoveLatestMsg(void)
+MBX_Result MDrv_MBX_RemoveLatestMsg(TYPE_MBX_C_U64 u32AsyncID)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
+    MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
     DRV_MBX_LockRecv();
 
-    mbxResult = MDrv_MSGQ_RemoveLatestMsg();
+    if (!IS_VALID_PTR(mbxAsyncNotifierID)) {
+        DRV_MBX_UnLockRecv();
+        return E_MBX_ERR_NOT_INITIALIZED;
+    }
+
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+    mbxResult = MDrv_MSGQ_RemoveLatestMsg(pMbxAsyncNotifier);
 
     DRV_MBX_UnLockRecv();
 
@@ -1660,7 +1682,7 @@ MBX_Result  MDrv_MBX_RemoveLatestMsg(void)
 }
 
 //The u32AsyncID is useless since SetInformation could be called before Init.
-MBX_Result  MDrv_MBX_SetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
+MBX_Result MDrv_MBX_SetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1672,16 +1694,16 @@ MBX_Result  MDrv_MBX_SetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_SetInformation_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
+MBX_Result MDrv_MBX_SetInformation_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
 {
-	if (INVALID_ROLEID(eTargetRole))
-	return E_MBX_ERR_INVALID_PARAM;
+    if (INVALID_ROLEID(eTargetRole))
+        return E_MBX_ERR_INVALID_PARAM;
 
     return MHAL_MBX_SetInformation(eTargetRole, pU8Info, u8Size);
 }
 
 //The u32AsyncID is useless since SetInformation could be called before Init.
-MBX_Result  MDrv_MBX_GetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
+MBX_Result MDrv_MBX_GetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1693,10 +1715,10 @@ MBX_Result  MDrv_MBX_GetInformation(MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_GetInformation_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
+MBX_Result MDrv_MBX_GetInformation_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_ROLE_ID eTargetRole, MS_U8 *pU8Info, MS_U8 u8Size)
 {
-	if (INVALID_ROLEID(eTargetRole))
-	return E_MBX_ERR_INVALID_PARAM;
+    if (INVALID_ROLEID(eTargetRole))
+        return E_MBX_ERR_INVALID_PARAM;
 
     return MHAL_MBX_GetInformation(eTargetRole, pU8Info, u8Size);
 }
@@ -1711,7 +1733,7 @@ MBX_Result  MDrv_MBX_GetInformation_Async(TYPE_MBX_C_U64 u32AsyncID, MBX_ROLE_ID
         MBX_ERR_NOT_INITIALIZED-->MB drv is not initialized
         MBX_UNKNOW_ERROR-->Other undefined errors
 */
-MBX_Result  MDrv_MBX_Enable(MS_BOOL bEnable)
+MBX_Result MDrv_MBX_Enable(MS_BOOL bEnable)
 {
     MBX_Result mbxResult = E_MBX_SUCCESS;
     TYPE_MBX_C_U64 u32AsyncID;
@@ -1723,114 +1745,121 @@ MBX_Result  MDrv_MBX_Enable(MS_BOOL bEnable)
     return mbxResult;
 }
 
-MBX_Result  MDrv_MBX_Enable_Async(TYPE_MBX_C_U64 u32AsyncID, MS_BOOL bEnable)
+MBX_Result MDrv_MBX_Enable_Async(TYPE_MBX_C_U64 u32AsyncID, MS_BOOL bEnable)
 {
     MS_S16 mbxAsyncNotifierID;
-    DRV_MBX_Lock();
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
+
     mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    DRV_MBX_Lock();
+    if (!IS_VALID_PTR(mbxAsyncNotifierID)) {
         DRV_MBX_UnLock();
         return E_MBX_ERR_NOT_INITIALIZED;
     }
 
-    _mbxAsyncNotifierMBX[mbxAsyncNotifierID].bEnable = bEnable;
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+
+    pMbxAsyncNotifier->bEnable = bEnable;
+
     DRV_MBX_UnLock();
+
     return E_MBX_SUCCESS;
 }
 
-
 TYPE_MBX_C_U64 MDrv_MBX_GetAsyncID(void)
 {
-    MS_S16 s16Idx;
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    DRV_MBX_Lock();
+    //DRV_MBX_Lock();
 
-    for(s16Idx = MBX_ASYNCNOTIFIER_MAX - 1; s16Idx>=0; s16Idx--)
-    {
-        if(_mbxAsyncNotifierMBX[s16Idx].u16Usage == TRUE)
-        {
-            DRV_MBX_UnLock();
-            return _mbxAsyncNotifierMBX[s16Idx].u32AsyncID;
+    for (pMbxAsyncNotifier = _mbxAsyncNotifierMBX; pMbxAsyncNotifier < _mbxAsyncNotifierMBX + MBX_ASYNCNOTIFIER_MAX; pMbxAsyncNotifier++) {
+        if (pMbxAsyncNotifier->u16Usage == TRUE) {
+            //DRV_MBX_UnLock();
+
+            return pMbxAsyncNotifier->u32AsyncID;
         }
     }
 
-    DRV_MBX_UnLock();
+    //DRV_MBX_UnLock();
 
     return 0;
 }
 EXPORT_SYMBOL(MDrv_MBX_GetAsyncID);
 
-MS_BOOL  MDrv_MBX_GetEnableStatus(TYPE_MBX_C_U64 u32AsyncID)
+MS_BOOL MDrv_MBX_GetEnableStatus(TYPE_MBX_C_U64 u32AsyncID)
 {
     MS_S16 mbxAsyncNotifierID = _MDrv_MBX_GetAsyncNotifierIDByAsyncID(u32AsyncID);
+    MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier;
 
-    if(!IS_VALID_PTR(mbxAsyncNotifierID))
-    {
+    if (!IS_VALID_PTR(mbxAsyncNotifierID))
         return FALSE;
-    }
 
-    return _mbxAsyncNotifierMBX[mbxAsyncNotifierID].bEnable;
+    pMbxAsyncNotifier = &_mbxAsyncNotifierMBX[mbxAsyncNotifierID];
+
+    return pMbxAsyncNotifier->bEnable;
 }
 
-void  MDrv_MBX_NotifyPMtoSetPowerdown(void)
+void MDrv_MBX_NotifyPMtoSetPowerdown(void)
 {
     //write MB RIU to notify 51 to poweroff mips
-    MS_U16 grp=MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
-    if(grp==0xFF)
+    MS_U16 grp;
+
+    grp = MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
+    if (grp == 0xFF)
         return;
-	LOCK_SEND_HW_SEM();
 
-		#ifdef CONFIG_MSTAR_PM_WDT
-		if (kernel_level(__LINE__, __FUNCTION__)) { /* debug mode */
-			REG8_MBX_GROUP(grp, 0x0) = 0xDD;
-			REG8_MBX_GROUP(grp, 0x1) = 0xDD;
-		} else /* release mode */
+    LOCK_SEND_HW_SEM();
+
+#ifdef CONFIG_MSTAR_PM_WDT
+    if (kernel_level(__LINE__, __FUNCTION__)) { /* debug mode */
+        REG8_MBX_GROUP(grp, 0x0) = 0xDD;
+        REG8_MBX_GROUP(grp, 0x1) = 0xDD;
+    } else /* release mode */
 #endif
-		{
-			REG8_MBX_GROUP(grp, 0x0) = 0x99;
-			REG8_MBX_GROUP(grp, 0x1) = 0x88;
-		}
+    {
+        REG8_MBX_GROUP(grp, 0x0) = 0x99;
+        REG8_MBX_GROUP(grp, 0x1) = 0x88;
+    }
 
-		REG8_MBX_GROUP(grp, 0x2) = 0x77;
-		REG8_MBX_GROUP(grp, 0x3) = 0x66;
-		REG8_MBX_GROUP(grp, 0x4) = 0x55;
-		REG8_MBX_GROUP(grp, 0x5) = 0x44;
-		REG8_MBX_GROUP(grp, 0x6) = 0x33;
-		REG8_MBX_GROUP(grp, 0x7) = 0x22;
-		REG8_MBX_GROUP(grp, 0x8) = 0x11;
-		REG8_MBX_GROUP(grp, 0x9) = 0x00;
-		REG8_MBX_GROUP(grp, 0xA) = 0xFF;
-		REG8_MBX_GROUP(grp, 0xB) = 0xEE;
-		REG8_MBX_GROUP(grp, 0xC) = 0xDD;
-		REG8_MBX_GROUP(grp, 0xD) = 0xCC;
-		REG8_MBX_GROUP(grp, 0xE) = 0xBB;
-		REG8_MBX_GROUP(grp, 0xF) = 0xAA;
+    REG8_MBX_GROUP(grp, 0x2) = 0x77;
+    REG8_MBX_GROUP(grp, 0x3) = 0x66;
+    REG8_MBX_GROUP(grp, 0x4) = 0x55;
+    REG8_MBX_GROUP(grp, 0x5) = 0x44;
+    REG8_MBX_GROUP(grp, 0x6) = 0x33;
+    REG8_MBX_GROUP(grp, 0x7) = 0x22;
+    REG8_MBX_GROUP(grp, 0x8) = 0x11;
+    REG8_MBX_GROUP(grp, 0x9) = 0x00;
+    REG8_MBX_GROUP(grp, 0xA) = 0xFF;
+    REG8_MBX_GROUP(grp, 0xB) = 0xEE;
+    REG8_MBX_GROUP(grp, 0xC) = 0xDD;
+    REG8_MBX_GROUP(grp, 0xD) = 0xCC;
+    REG8_MBX_GROUP(grp, 0xE) = 0xBB;
+    REG8_MBX_GROUP(grp, 0xF) = 0xAA;
 
     UNLOCK_SEND_HW_SEM();
 }
 EXPORT_SYMBOL(MDrv_MBX_NotifyPMtoSetPowerdown);
 
-void  MDrv_MBX_NotifyPMtoSetPowerOff(void)
+void MDrv_MBX_NotifyPMtoSetPowerOff(void)
 {
     //write MB RIU to notify 51 to poweroff mips
-    MS_U16 grp=MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
-    if(grp==0xFF)
+    MS_U16 grp;
+
+    grp = MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
+    if (grp == 0xFF)
         return;
-	LOCK_SEND_HW_SEM();
+
+    LOCK_SEND_HW_SEM();
 #if (defined CONFIG_MP_PLATFORM_ARM_64bit_PORTING)||(defined CONFIG_MP_PLATFORM_ARM_32bit_PORTING)
     extern uint32_t isPSCI;
-    if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE && isPSCI == PSCI_RET_SUCCESS)
+    if ((TEEINFO_TYPTE == SECURITY_TEEINFO_OSTYPE_OPTEE) && (isPSCI == PSCI_RET_SUCCESS))
 #else
-    if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE)
+    if (TEEINFO_TYPTE == SECURITY_TEEINFO_OSTYPE_OPTEE)
 #endif
     {
         printk(" PMtoSetPowerOff OPTEE flow\n");
-
-    }
-    else
-    {
+    } else {
         printk(" PMtoSetPowerOff Not OPTEE flow(TYPE:%d)\n", TEEINFO_TYPTE);
 #ifdef CONFIG_MSTAR_PM_WDT
         if (kernel_level(__LINE__, __FUNCTION__)) { /* debug mode */
@@ -1865,9 +1894,12 @@ EXPORT_SYMBOL(MDrv_MBX_NotifyPMtoSetPowerOff);
 
 void  MDrv_MBX_NotifyPMPassword(unsigned char passwd[16])
 {
-    MS_U16 grp=MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
-    if(grp==0xFF)
+    MS_U16 grp;
+
+    grp = MHAL_MBX_RegGroup(E_MBX_ROLE_HK,E_MBX_ROLE_PM);
+    if (grp == 0xFF)
         return;
+
     LOCK_SEND_HW_SEM();
     REG8_MBX_GROUP(grp, 0x0) = passwd[0];
     REG8_MBX_GROUP(grp, 0x1) = passwd[1];
@@ -1889,8 +1921,6 @@ void  MDrv_MBX_NotifyPMPassword(unsigned char passwd[16])
 }
 EXPORT_SYMBOL(MDrv_MBX_NotifyPMPassword);
 
-
-
 MS_U8 MDrv_PM_Get_BrickTerminator_Info(void)
 {
     MS_U8 u8Info;
@@ -1910,7 +1940,7 @@ void MDrv_PM_Set_BrickTerminator_Info(MS_U8 u8Value)
 EXPORT_SYMBOL(MDrv_PM_Set_BrickTerminator_Info);
 
 /* MDrv API sync with utpa */
-MBX_Result  MDrv_MBX_RegisterMSGWithCallBack(MBX_Class eMsgClass, MS_U16 u16MsgQueueSize, MBX_MAIL_ARRIVE_NOTIFY_FUNC notifier)
+MBX_Result MDrv_MBX_RegisterMSGWithCallBack(MBX_Class eMsgClass, MS_U16 u16MsgQueueSize, MBX_MAIL_ARRIVE_NOTIFY_FUNC notifier)
 {
     return E_MBX_SUCCESS;
 }
@@ -1928,7 +1958,6 @@ MS_BOOL MDrv_MBX_GetCallDrvFlag(void)
     return TRUE;
 }
 
-#if 1//def CONFIG_MSTAR_PM_SWIR
 EXPORT_SYMBOL(MDrv_MBX_Init);
 EXPORT_SYMBOL(MDrv_MBX_Init_Async);
 EXPORT_SYMBOL(MDrv_MBX_DeInit);
@@ -1962,13 +1991,12 @@ EXPORT_SYMBOL(MDrv_MBX_RegisterMSGWithCallBack);
 EXPORT_SYMBOL(MDrv_MBX_SetDbgLevel);
 EXPORT_SYMBOL(MDrv_MBX_SetCallDrvFlag);
 EXPORT_SYMBOL(MDrv_MBX_GetCallDrvFlag);
-#endif
 
 #if defined(CONFIG_MSTAR_UTOPIA2K_MDEBUG)
-static int mdb_mbx_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+static ssize_t mdb_mbx_node_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
     char tmpString[20] = {};
-    MS_U32 i;
+    MS_U32 i, j;
 
     if (!count)
     {
@@ -2218,6 +2246,57 @@ static int mdb_mbx_node_write(struct file *file, const char __user *buf, size_t 
 #endif
         DRV_MBX_UnLock();
     }
+    else if (!strncmp(tmpString, "async", 5))
+    {
+        for (i = 0; i < MBX_ASYNCNOTIFIER_MAX; i++)
+        {
+            if (_mbxAsyncNotifierMBX[i].u32AsyncID != 0)
+            {
+                printk(KERN_ERR "\n MBX _mbxAsyncNotifierMBX[%u]: u32AsyncID = 0x%llx, s16MsgQFirst = 0x%x, u16Usage = 0x%x, bEnable = 0x%x\n",
+                       i, (u64) _mbxAsyncNotifierMBX[i].u32AsyncID, _mbxAsyncNotifierMBX[i].s16MsgQFirst, _mbxAsyncNotifierMBX[i].u16Usage, _mbxAsyncNotifierMBX[i].bEnable);
+            }
+        }
+    }
+    else if (!strncmp(tmpString, "class", 5))
+    {
+        for (i = 0; i < MBX_ASYNCNOTIFIER_MAX; i++)
+        {
+            for (j = 0; j < E_MBX_CLASS_MAX; j++)
+            {
+                if (_mbxAsyncNotifierMBX[i].msgQmgr[j].u16MsgQStatus != E_MSGQ_INVALID)
+                {
+                    printk(KERN_ERR "\n MBX _mbxAsyncNotifierMBX[%d].msgQmgr[%d]: s16MsgFirst = 0x%x, s16MsgEnd = 0x%x, s16InstantMsgFirst = 0x%x, s16InstantMsgEnd = 0x%x, u16MsgNum = 0x%x, u16InstantMsgNum = 0x%x, u16MsgQStatus = 0x%x, u16MsgQSize = 0x%x, s16MsgQNotifierID = 0x%x, s16NextMsgQ = 0x%x\n",
+                           i, j, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16MsgFirst, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16MsgEnd, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16InstantMsgFirst, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16InstantMsgEnd, _mbxAsyncNotifierMBX[i].msgQmgr[j].u16MsgNum, _mbxAsyncNotifierMBX[i].msgQmgr[j].u16InstantMsgNum, _mbxAsyncNotifierMBX[i].msgQmgr[j].u16MsgQStatus, _mbxAsyncNotifierMBX[i].msgQmgr[j].u16MsgQSize, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16MsgQNotifierID, _mbxAsyncNotifierMBX[i].msgQmgr[j].s16NextMsgQ);
+                }
+            }
+        }
+    }
+    else if (!strncmp(tmpString, "latest", 6))
+    {
+        printk(KERN_ERR "\n MBX _infoLatestMSGP: bInstantMsg = 0x%x, s16MsgQIdx = 0x%x, s16MsgSlotIdx = 0x%x\n",
+               _infoLatestMSGP.bInstantMsg, _infoLatestMSGP.s16MsgQIdx, _infoLatestMSGP.s16MsgSlotIdx);
+    }
+    else if (!strncmp(tmpString, "pool", 4))
+    {
+        printk(KERN_ERR "\n MBX _infoMSGP: u16Slots = 0x%x, u16FreeSlots = 0x%x, u16RegistedSlots = 0x%x\n",
+               _infoMSGP.u16Slots, _infoMSGP.u16FreeSlots, _infoMSGP.u16RegistedSlots);
+        for (i = 0; i < _infoMSGP.u16Slots; i++)
+        {
+            if (_infoMSGP.pMsgPool[i].u16Usage != FALSE)
+            {
+                printk(KERN_ERR "\n MBX _infoMSGP.pMsgPool[%d]: s16Next = 0x%x, u16Usage = 0x%x, u16MsgID=0x%x, _u16MsgIDCounter=0x%x, msgclass=0x%x\n",
+                       i, _infoMSGP.pMsgPool[i].s16Next, _infoMSGP.pMsgPool[i].u16Usage, _infoMSGP.pMsgPool[i].u16MsgID, _u16MsgIDCounter, _infoMSGP.pMsgPool[i].mbxMsg.u8MsgClass);
+            }
+        }
+    }
+    else if (!strncmp(tmpString, "complete", 8))
+    {
+        for (i = 0; i < E_MBX_CLASS_MAX; i++)
+        {
+            printk(KERN_ERR "\n MBX mbx_completion[%d].done = %d\n", i, mbx_completion[i].done);
+        }
+    }
+
 
     return count;
 }
@@ -2225,7 +2304,6 @@ static int mdb_mbx_node_write(struct file *file, const char __user *buf, size_t 
 static int mdb_mbx_node_show(struct seq_file *m, void *v)
 {
     MS_U32 i;
-    MS_U32 count = 0;
 
     seq_printf(m, "\n--------- MStar MBX Info ---------\n");
 

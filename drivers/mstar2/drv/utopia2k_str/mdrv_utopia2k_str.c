@@ -81,15 +81,12 @@
 #include <power.h>
 
 #include "mdrv_utopia2k_str_io.h"
-#include <linux/debugfs.h>
 
 #define UTOPIA2K_STR_SELF_TEST 0
 #define WAKUP_ANDROID_FROM_KERNEL 0
 
-#define UTOPIA2K_STR_NAME "Mstar-utopia2k-str"
-#define POWERON_REASON_NAME "Mstar-poweron-reason"
-
-
+#if WAKUP_ANDROID_FROM_KERNEL || defined(CONFIG_AMZ_MISC)
+// From PM51
 #define WKUP_SRC_NONE    0x00
 #define WKUP_SRC_IR    0x01
 #define WKUP_SRC_DVI    0x02
@@ -117,72 +114,18 @@ extern ptrdiff_t mstar_pm_base;
 #define REG_PM_DUMMY_WAKEUP_SOURCE             ((PM_REG_BASE + 0x39 * 2))
 #define WAKEUP_SOURCE *((volatile unsigned short*)(mstar_pm_base + ((REG_PM_DUMMY_WAKEUP_SOURCE)<<1)))
 
-#define MCU_REG_BASE                            (0x1000UL)
-#define REG_MCU_DUMMY_POWERON_KEY             ((MCU_REG_BASE + (0x53 * 2)))
-#define POWERON_KEY  \
-	(*((unsigned char *)(mstar_pm_base + ((REG_MCU_DUMMY_POWERON_KEY)<<1)+1)))
-
-// From PM51
-static unsigned short pm_wakeup_source;
-static unsigned short pm_wakeup_key;
-static char power_on_src_name[32] = {};
 static DEFINE_MUTEX(event_lock);
+static unsigned short pm_wakeup_source = WKUP_SRC_NONE;
+#endif
 
-static void get_wakeup_reason(void)
-{
-	pm_wakeup_source = WAKEUP_SOURCE;
-	pm_wakeup_key = POWERON_KEY;
-	strcpy(power_on_src_name, "unknonw");
-	switch (pm_wakeup_source & 0x0F) {
-	case WKUP_SRC_IR:
-		switch (pm_wakeup_key) {
-		case 0x0C:
-			pr_info("System is woken up by Power button \n");
-		case 0x29:
-			pr_info("System is waken up by Home button \n");
-		case 0x2B:
-			pr_info("System is woken up by Enter button \n");
-		case 0x3F:
-			pr_info("System is woken up by Voice button \n");
-
-			sprintf(power_on_src_name, "%s", "power");
-			break;
-		case 0x39:
-			pr_info("System is woken up by Netflix key \n");
-			sprintf(power_on_src_name, "%s", "app_1");
-			break;
-		case 0x05:
-			pr_info("System is woken up by Amazon Video  key \n");
-			sprintf(power_on_src_name, "%s", "app_2");
-			break;
-		case 0x25:
-			pr_info("System is woken up by CUSTOM_3  key \n");
-			sprintf(power_on_src_name, "%s", "app_3");
-			break;
-		case 0x15:
-			pr_info("System is woken up by CUSTOM_4 key \n");
-			sprintf(power_on_src_name, "%s", "app_4");
-			break;
-		}
-		break;
-	case WKUP_SRC_SAR:
-		pr_info("System is woken up by Keypad on TV \n");
-		sprintf(power_on_src_name, "%s", "power");
-		break;
-	default:
-		pr_info("Error System is woken up by unknown reason \n");
-		sprintf(power_on_src_name, "%s", "unknown_source");
-		break;
-	}
-	return;
-}
-
+#ifdef CONFIG_AMZ_MISC
 unsigned short get_wakeup_source(void)
 {
 	pm_wakeup_source = WAKEUP_SOURCE;
 	return pm_wakeup_source;
 }
 EXPORT_SYMBOL(get_wakeup_source);
+#endif
 
 #define utopia2k_str_dbg(fmt, ...)              \
 do {                                    \
@@ -200,12 +143,8 @@ do {                                    \
 #define TRACE_POINT_UTPA_END(name, ck, err)   do {} while(0)
 #endif
 
+
 #ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
-enum stage_nr {
-    STR_STAGE_NONE,
-    STR_STAGE_1,
-    STR_STAGE_2,
-};
 static enum stage_nr current_stage;
 #endif
 
@@ -215,15 +154,13 @@ static spinlock_t data_lock;
 static unsigned int current_mode;
 static pm_message_t pm_transition;
 
-static unsigned int rtc_str_wake;
-
 struct utopia2k_str_module {
     struct list_head list;
     struct task_struct *p;
     struct timer_list timer;
     FUtopiaSTR fpSTR;
     int selftest;
-    int mode;
+    unsigned int mode;
 #ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
     enum stage_nr stage;
 #endif
@@ -269,9 +206,19 @@ static int __init utopia2k_str_debug_enable(char *str)
 }
 __setup("utopia2k_str_debug", utopia2k_str_debug_enable);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void utopia2k_str_module_timeout(struct timer_list *t)
+{
+    struct utopia2k_str_module *um = from_timer(um, t, timer);
+#else
 static void utopia2k_str_module_timeout(unsigned long data)
 {
     struct utopia2k_str_module *um = (struct utopia2k_str_module *)data;
+#endif
+    console_verbose();
+    pr_err("***** STR module timeout, utopia2k %pf %s timeout *****\n",
+            um->fpSTR, power_mode[current_mode]);
+
     show_stack(um->p, NULL);
 }
 
@@ -317,7 +264,8 @@ static int utopia2k_str_should_report_wakeup_event(void)
             ret = 1;
             break;
         case WKUP_SRC_RTC:
-		ret = rtc_str_wake ? 1 : 0;
+            //need customer policy
+            ret = 1;
             break;
         default:
             break;
@@ -338,41 +286,7 @@ static void utopia2k_str_time_debug_report(ktime_t calltime, struct utopia2k_str
             (unsigned long long)ktime_to_ns(delta) >> 10);
 }
 
-#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
-static enum stage_nr check_stage(const char *name)
-{
-    int i, rc;
-    struct device_node *nproot, *np;
-    const char *strings[32];
-
-    nproot = of_find_node_by_name(NULL, UTOPIA2K_STR_NAME);
-    if (!nproot) {
-        pr_err("Utopia2k-STR: cannot find [%s] node in dts\n", UTOPIA2K_STR_NAME);
-        return STR_STAGE_1;
-    }
-
-    np = of_find_node_by_name(nproot, "str-stage2");
-    if (!np) {
-        pr_err("Utopia2k-STR: cannot find [str-stage2] node in dts\n");
-        return STR_STAGE_1;
-    }
-
-    rc = of_property_read_string_array(np, "functions", strings, ARRAY_SIZE(strings));
-
-    /* This is a ugly way to register STR stage 2 */
-    for (i = 0; i < rc; ++i) {
-        /* find it! register to stage2 */
-        if (!strncmp(name, strings[i], strlen(strings[i]))) {
-            pr_info("Utopia2k-STR: register %s to STR stage 2\n", name);
-            return STR_STAGE_2;
-        }
-    }
-
-    return STR_STAGE_1;
-}
-#endif
-
-int mdrv_utopia2k_str_setup_function_ptr(void* pModuleTmp, FUtopiaSTR fpSTR)
+int utopia2k_str_setup_function_ptr(void* pModuleTmp, FUtopiaSTR fpSTR)
 {
     struct utopia2k_str_module *um;
     char name[32];
@@ -394,9 +308,8 @@ int mdrv_utopia2k_str_setup_function_ptr(void* pModuleTmp, FUtopiaSTR fpSTR)
 #endif
     return 0;
 }
-EXPORT_SYMBOL(mdrv_utopia2k_str_setup_function_ptr);
 
-int mdrv_utopia2k_str_wait_condition(const char* name, MS_U32 mode, MS_U32 stage)
+int utopia2k_str_wait_condition(const char* name, MS_U32 mode, MS_U32 stage)
 {
     int ret = 0;
 #ifdef CONFIG_OF
@@ -486,9 +399,8 @@ wait_out_np:
 #endif
     return ret;
 }
-EXPORT_SYMBOL(mdrv_utopia2k_str_wait_condition);
 
-int mdrv_utopia2k_str_send_condition(const char* name, MS_U32 mode, MS_U32 stage)
+int utopia2k_str_send_condition(const char* name, MS_U32 mode, MS_U32 stage)
 {
     int ret = 0;
 #ifdef CONFIG_OF
@@ -554,9 +466,8 @@ send_out_np:
 #endif
     return ret;
 }
-EXPORT_SYMBOL(mdrv_utopia2k_str_send_condition);
 
-int mdrv_utopia2k_str_set_data(char *key, char *value)
+int utopia2k_str_set_data(char *key, char *value)
 {
     struct utopia2k_str_data *data, *m;
     bool found = false;
@@ -623,9 +534,8 @@ int mdrv_utopia2k_str_set_data(char *key, char *value)
 
     return 0;
 }
-EXPORT_SYMBOL(mdrv_utopia2k_str_set_data);
 
-int mdrv_utopia2k_str_get_data(char *key, char *value)
+int utopia2k_str_get_data(char *key, char *value)
 {
     struct utopia2k_str_data *data;
 
@@ -643,7 +553,6 @@ int mdrv_utopia2k_str_get_data(char *key, char *value)
     spin_unlock(&data_lock);
     return 0;
 }
-EXPORT_SYMBOL(mdrv_utopia2k_str_get_data);
 
 #if UTOPIA2K_STR_SELF_TEST
 int vdecStr(int u32PowerState, void* pModule)
@@ -688,9 +597,13 @@ static void mdrv_utopia2k_str_async_scheduler(void *data, async_cookie_t cookie)
         snprintf(name, sizeof(name), "%pf", module->fpSTR);
         /* 2s timeout */
         module->p = current;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+        timer_setup(&module->timer, utopia2k_str_module_timeout, 0);
+#else
         init_timer(&module->timer);
         module->timer.function = utopia2k_str_module_timeout;
         module->timer.data = (unsigned long)module;
+#endif
         mod_timer(&module->timer, jiffies + 2 * HZ);
         /* debug module time start */
         starttime = utopia2k_str_time_debug_start(module);
@@ -913,7 +826,6 @@ static int mstar_utopia2k_str_drv_probe(struct platform_device *pdev)
 		&of_utopia2k_str_resume_stage2);
 #endif
 out:
-	get_wakeup_reason();
     return error;
 }
 
@@ -973,27 +885,11 @@ static const struct file_operations mstar_utopia2k_str_fops = {
     .read       = mstar_utopia2k_str_read,
     .write      = mstar_utopia2k_str_write,
     .unlocked_ioctl = mstar_utopia2k_str_ioctl,
-#if defined(CONFIG_COMPAT)
+#ifdef CONFIG_COMPAT
     .compat_ioctl = mstar_utopia2k_str_ioctl,
 #endif
     .open       = mstar_utopia2k_str_open,
     .release    = mstar_utopia2k_str_release,
-};
-
-static int show_power_on_reason(struct seq_file *m, void *v)
-{
-	pr_info("system is powered on by %s \n", power_on_src_name);
-	seq_printf(m, "%s", power_on_src_name);
-}
-
-static int mstar_poweron_reason_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, show_power_on_reason, NULL);
-}
-static const struct file_operations mstar_poweron_reason_fops = {
-	.read = seq_read,
-	.open = mstar_poweron_reason_open,
-	.release = single_release,
 };
 
 #if defined (CONFIG_OF)
@@ -1023,8 +919,9 @@ static struct platform_driver Mstar_utopia2k_str_driver = {
     }
 };
 
-static int __init mstar_utopia2k_str_init(void)
+int __init utopia2k_str_init(void)
 {
+    pr_info("Utopia2k STR init\n");
     platform_driver_register(&Mstar_utopia2k_str_driver);
 
     INIT_LIST_HEAD(&dts_post_condition_head);
@@ -1035,7 +932,6 @@ static int __init mstar_utopia2k_str_init(void)
 
 #ifdef CONFIG_PROC_FS
     proc_create(UTOPIA2K_STR_NAME, S_IRUGO | S_IWUGO, NULL, &mstar_utopia2k_str_fops);
-	proc_create(POWERON_REASON_NAME, S_IRUSR, NULL, &mstar_poweron_reason_fops);
 #endif
 
 #if UTOPIA2K_STR_SELF_TEST
@@ -1047,7 +943,7 @@ static int __init mstar_utopia2k_str_init(void)
     return 0;
 }
 
-static void __exit mstar_utopia2k_str_exit(void)
+void __exit utopia2k_str_exit(void)
 {
     struct utopia2k_str_module *module, *n;
     list_for_each_entry_safe(module, n, &utopia2k_str_head, list) {
@@ -1063,60 +959,3 @@ static void __exit mstar_utopia2k_str_exit(void)
     }
     platform_driver_unregister(&Mstar_utopia2k_str_driver);
 }
-
-static int rtc_str_wake_debug_show(struct seq_file *s, void *data)
-{
-	seq_printf(s, "%d\n", rtc_str_wake);
-}
-
-static int rtc_str_wake_debug_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, rtc_str_wake_debug_show, NULL);
-}
-
-static int rtc_str_wake_debug_write(struct file *file, const char __user *userbuf, size_t count, loff_t *ppos)
-{
-	char buf[64];
-	unsigned int set;
-	count = min_t(size_t, count, (sizeof(buf)-1));
-	if (copy_from_user(buf, userbuf, count))
-		return -EFAULT;
-
-	buf[count] = '\0';
-
-	if (strict_strtol(buf, 0, &set) != 0)
-		return -EINVAL;
-	pr_info("RTC Alarm %s turn on the screen \n", set ? "will" : "won't");
-	rtc_str_wake = set;
-	return count;
-}
-
-static const struct file_operations rtc_str_wake_debug_fops = {
-	.open           = rtc_str_wake_debug_open,
-	.read           = seq_read,
-	.write          = rtc_str_wake_debug_write,
-	.llseek         = seq_lseek,
-	.release        = single_release,
-};
-
-static int __init rtc_str_wake_debug_init(void)
-{
-	struct deentry *d;
-
-	d = debugfs_create_file("rtc_str_wake", 0664, NULL, NULL,
-		&rtc_str_wake_debug_fops);
-	if (!d) {
-		pr_err("Failed to create rtc_str_wake debug file \n");
-		return -ENOMEM;
-	}
-
-	return 0;
-}
-
-late_initcall(rtc_str_wake_debug_init);
-module_init(mstar_utopia2k_str_init);
-module_exit(mstar_utopia2k_str_exit);
-
-MODULE_DESCRIPTION("Mstar utopia2k STR Device Driver");
-MODULE_LICENSE("GPL");
-

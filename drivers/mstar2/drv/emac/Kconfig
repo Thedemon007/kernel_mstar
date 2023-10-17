@@ -152,6 +152,32 @@ depends on EMAC_TX_DESC_MODE
 help
     MAX 1024
 
+config EMAC_FORCE_SPEED
+bool "Force SPEED"
+default n
+help
+    FPGA need Force Speed in 10M or 100M
+
+choice
+    prompt "Force SPEED in"
+    default EMAC_FORCE_100
+    depends on EMAC_FORCE_SPEED
+    help
+        FPGA need Force Speed in 10M or 100M
+
+config EMAC_FORCE_10
+bool "Force 10M"
+default n
+help
+    Force Speed in 10M
+
+config EMAC_FORCE_100
+bool "Force 100M"
+default n
+help
+    Force Speed in 100M
+
+endchoice
 
 config EMAC_10T_RANDOM_WAVEFORM
 bool "EMAC 10T random waveform test"
@@ -221,5 +247,17 @@ bool "Enable Rx speed limit feature"
 default n
 help
     Enable Rx speed limit feature
+
+config EMAC_STR_SLOW_SPEED
+bool "Slow down PHY speed to 10T in standby"
+default n
+help
+    Slow down PHY speed to 10T in standby
+
+config EMAC_TR_PN_SWAP
+bool "Support TR PN swap feature"
+default n
+help
+    Support TR PN swap feature, choose whether to do it or not by dts
 
 endif

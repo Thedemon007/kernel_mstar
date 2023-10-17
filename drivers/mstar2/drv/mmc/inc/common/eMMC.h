@@ -52,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #ifndef eMMC_DRIVER_H
 #define eMMC_DRIVER_H
 
@@ -126,6 +127,7 @@ extern U32 gu32_eMMCDrvExtFlag;
 #define eMMC_SECTOR_512BYTE_MASK  (eMMC_SECTOR_512BYTE-1)
 
 #define eMMC_SECTOR_BUF_16KB      (eMMC_SECTOR_512BYTE * 0x20)
+#define eMMC_SECTOR_BUF_4KB       (eMMC_SECTOR_512BYTE * 8)
 
 #define eMMC_SECTOR_BYTECNT       eMMC_SECTOR_512BYTE
 #define eMMC_SECTOR_BYTECNT_BITS  eMMC_SECTOR_512BYTE_BITS
@@ -346,7 +348,7 @@ typedef eMMC_PACK0 struct _eMMC_GP_Part{
 
 #define DRV_FLAG_RSPFROMRAM_SAVE    BIT10
 #define DRV_FLAG_ERROR_RETRY        BIT11
-
+#define DRV_FLAG_SAR5_HANDLE_DONE   BIT12
 
 typedef struct _eMMC_DRIVER
 {
@@ -366,8 +368,8 @@ typedef struct _eMMC_DRIVER
 	U32 u32_ClkKHz;
 	U16 u16_ClkRegVal;
 	eMMC_FCIE_TIMING_TABLE_t TimingTable_t;
-        eMMC_FCIE_TIMING_EXT_TABLE_t TimingTable_Ext_t;
-        eMMC_FCIE_GEN_TIMING_TABLE_t TimingTable_G_t;
+    eMMC_FCIE_TIMING_EXT_TABLE_t TimingTable_Ext_t;
+    eMMC_FCIE_GEN_TIMING_TABLE_t TimingTable_G_t;
 
     // ----------------------------------------
     // eMMC
@@ -402,6 +404,7 @@ typedef struct _eMMC_DRIVER
 	U8	u8_ECSD159_MaxEnhSize_2, u8_ECSD158_MaxEnhSize_1, u8_ECSD157_MaxEnhSize_0;
 	U8	u8_u8_ECSD155_PartSetComplete, u8_ECSD166_WrRelParam;
     U8  u8_ECSD184_Stroe_Support;
+    U8  u8_bootbus_condition;
 
     // ----------------------------------------
     // CIS
@@ -429,19 +432,7 @@ typedef struct _eMMC_DRIVER
 	#endif
 
 	// ----------------------
-	#if defined(eMMC_PROFILE_WR) && eMMC_PROFILE_WR
-	U32 u32_CNT_CMD17, u32_CNT_CMD24, u32_CNT_CMD18, u32_CNT_CMD25;
-	U64 u64_CNT_TotalRBlk, u64_CNT_TotalWBlk;
 
-	U32 u32_CNT_MinRBlk, u32_CNT_MinWBlk, u32_CNT_MaxRBlk, u32_CNT_MaxWBlk;
-	U32 u32_RBlk_tmp, u32_WBlk_tmp;
-	U32 au32_CNT_MinRBlk[0x200], au32_CNT_MinWBlk[0x200]; // for blk count < 0x200, how many times
-
-	U32 u32_Addr_RLast, u32_Addr_WLast;
-	U32 u32_Addr_RHitCnt, u32_Addr_WHitCnt;
-
-	U32 u32_temp_count;
-	#endif
 
 	eMMC_GP_Part_t	GP_Part[4];
 
@@ -481,15 +472,16 @@ typedef struct _eMMC_DRIVER
 
 extern eMMC_DRIVER g_eMMCDrv;
 
+
 // ADMA Descriptor
 struct  _AdmaDescriptor{
-	U32	u32_End     : 1;
-	U32	u32_MiuSel  : 2;
-	U32             : 13;
-	U32 u32_JobCnt  : 16;
-	U32 u32_Address;
-	U32 u32_DmaLen;
-	U32 u32_Address2;
+    U32 u32_End     : 1;
+    U32 u32_MiuSel  : 2;
+    U32             : 13;
+    U32 u32_JobCnt  : 16;
+    U32 u32_Address;
+    U32 u32_DmaLen;
+    U32 u32_Address2;
 };
 
 

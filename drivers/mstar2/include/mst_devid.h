@@ -331,4 +331,8 @@
 #define MDRV_MAJOR_UTIL                 0xc3
 #define MDRV_MINOR_UTIL                 0x00
 
+#define MDRV_NAME_DISH                  "dish"
+#define MDRV_MAJOR_DISH                 0xc4
+#define MDRV_MINOR_DISH                 0x00
+
 #endif // __DEV_ID_H__

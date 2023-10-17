@@ -161,13 +161,19 @@ void tee_shm_free(struct tee_shm *shm)
 		shm->tee->ops->free(shm);
 	}
 }
+
 #ifndef CONFIG_TEE_2_4
 EXPORT_SYMBOL(tee_shm_free);
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static int _tee_shm_attach_dma_buf(struct dma_buf *dmabuf,
+					struct dma_buf_attachment *attach)
+#else
 static int _tee_shm_attach_dma_buf(struct dma_buf *dmabuf,
 					struct device *dev,
 					struct dma_buf_attachment *attach)
+#endif
 {
 	struct tee_shm_attach *tee_shm_attach;
 	struct tee_shm *shm;
@@ -340,7 +346,7 @@ static int _tee_shm_dma_buf_mmap(struct dma_buf *dmabuf,
 	return ret;
 }
 
-static void *_tee_shm_dma_buf_kmap_atomic(struct dma_buf *dmabuf,
+static __attribute__((unused)) void *_tee_shm_dma_buf_kmap_atomic(struct dma_buf *dmabuf,
 					 unsigned long pgnum)
 {
 	return NULL;
@@ -373,7 +379,9 @@ struct dma_buf_ops _tee_shm_dma_buf_ops = {
 	.unmap_dma_buf = _tee_shm_dma_buf_unmap_dma_buf,
 	.release = _tee_shm_dma_buf_release,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,53)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
 	.map_atomic = _tee_shm_dma_buf_kmap_atomic,
+#endif
 	.map = _tee_shm_dma_buf_kmap,
 	.unmap = _tee_shm_dma_buf_kunmap,
 #else

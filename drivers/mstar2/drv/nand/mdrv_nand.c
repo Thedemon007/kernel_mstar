@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 #include "inc/common/drvNAND.h"
 #include <linux/of.h>
 
@@ -323,6 +377,8 @@ void nand_lock_fcie(void)
 
     PF_MODE_SEM(down(&PfModeSem));
 
+	NC_Get_REE_Grant();
+
 #if (defined(IF_FCIE_SHARE_IP) && IF_FCIE_SHARE_IP) || (defined(IF_FCIE_SHARE_PINS) && IF_FCIE_SHARE_PINS)
     nand_pads_switch(pNandDrv->u8_PadMode);
 #endif
@@ -368,6 +424,8 @@ void nand_unlock_fcie(void)
 #if (defined(IF_FCIE_SHARE_IP) && IF_FCIE_SHARE_IP) || (defined(IF_FCIE_SHARE_PINS) && IF_FCIE_SHARE_PINS)
     nand_pads_release();
 #endif
+	NC_Release_REE_Grant();
+
     PF_MODE_SEM(up(&PfModeSem));
 
     //printk("nand_unlock_fcie\n");
@@ -2279,7 +2337,9 @@ static int _unfd_erase_nand(struct mtd_info *mtd, struct erase_info *instr, int 
 
     /* Loop through the pages */
     len = instr->len;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
     instr->state = MTD_ERASING;
+#endif
 
     while (len) {
         /*
@@ -2290,7 +2350,11 @@ static int _unfd_erase_nand(struct mtd_info *mtd, struct erase_info *instr, int 
                         chip->page_shift, 0, allowbbt)) {
                 printk(KERN_WARNING "%s: attempt to erase a bad block "
                         "at page 0x%08x\n", __func__, page);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
                 instr->state = MTD_ERASE_FAILED;
+#else
+                ret = -EIO;
+#endif
                 goto erase_exit;
             }
         }
@@ -2351,7 +2415,11 @@ static int _unfd_erase_nand(struct mtd_info *mtd, struct erase_info *instr, int 
 
         /* See if block erase succeeded */
         if (u32_Err != UNFD_ST_SUCCESS) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
             instr->state = MTD_ERASE_FAILED;
+#else
+            ret = -EIO;
+#endif
             instr->fail_addr =
                 ((loff_t)page << chip->page_shift);
             goto erase_exit;
@@ -2361,7 +2429,11 @@ static int _unfd_erase_nand(struct mtd_info *mtd, struct erase_info *instr, int 
         len -= (1 << chip->phys_erase_shift);
         page += pages_per_block;
     }
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
     instr->state = MTD_ERASE_DONE;
+#else
+    ret = 0;
+#endif
 
     #if defined(MSTAR_BLK_FREE_PAGE_CHECK) && MSTAR_BLK_FREE_PAGE_CHECK
     u16_BlkIdx = ((int)(instr->addr >> chip->page_shift)) / pNandDrv->u16_BlkPageCnt;
@@ -2369,16 +2441,19 @@ static int _unfd_erase_nand(struct mtd_info *mtd, struct erase_info *instr, int 
     #endif
 
 erase_exit:
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
     ret = instr->state == MTD_ERASE_DONE ? 0 : -EIO;
+#endif
 
     /* Deselect and wake up anyone waiting on the device */
     nand_unlock_fcie();
     nand_release_device(mtd);
-
+    
+    #if LINUX_VERSION_CODE < KERNEL_VERSION(4,19,0)
     /* Do call back function */
     if (!ret)
         mtd_erase_callback(instr);
+    #endif
 
     return ret;
 }
@@ -2841,9 +2916,9 @@ static ssize_t fcie_nand_id_show(struct device *dev,
     u32_off += scnprintf(buf, PAGE_SIZE - u32_off, "NAND ID:0x%x ",pNandDrv->au8_ID[0]);
     for(u8_i=1;u8_i< pNandDrv->u8_IDByteCnt;u8_i++)
     {
-        u32_off += scnprintf(buf+u32_off, PAGE_SIZE - u32_off, ",0x%x ", pNandDrv->au8_ID[u8_i]);
+        u32_off += scnprintf(buf+u32_off, PAGE_SIZE -u32_off, ",0x%x ", pNandDrv->au8_ID[u8_i]);
     }
-    u32_off += scnprintf(buf+u32_off, PAGE_SIZE - u32_off, "\n");
+    u32_off += scnprintf(buf+u32_off, PAGE_SIZE-u32_off, "\n");
     return u32_off;
 }
 
@@ -2965,7 +3040,11 @@ static int __devinit mstar_nand_probe(struct platform_device *pdev)
     pNandDrv->PlatCtx_t.pu8_PageSpareBuf = u8SpareBuf;
 
     #if defined(__GFP_NORMAL_MIU1) && (defined(CONFIG_ARM) || defined(CONFIG_ARM64))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    miu1SparePage = alloc_pages(GFP_HIGHUSER | __GFP_ZERO | __GFP_REPEAT | __GFP_NOWARN | __GFP_NORMAL_MIU1, 0);
+#else
     miu1SparePage = alloc_pages(GFP_HIGHUSER | __GFP_ZERO | __GFP_REPEAT | __GFP_NOWARN | __GFP_COLD | __GFP_NORMAL_MIU1, 0);
+#endif
     if(!miu1SparePage)
     {
         printk("Allocate MIU1 Spare Page Fail\n");

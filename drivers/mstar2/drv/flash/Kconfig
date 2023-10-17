@@ -45,5 +45,5 @@ config ADD_WRITE_PROTECT
 
 endchoice
 
-endmenu	
-	
+endmenu
+

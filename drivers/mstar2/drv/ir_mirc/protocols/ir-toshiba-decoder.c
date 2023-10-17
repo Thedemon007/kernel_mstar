@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 /* ir-toshiba-decoder.c - handle NEC IR Pulse/Space protocol
  *
  * Copyright (C) 2010 by Mauro Carvalho Chehab <mchehab@redhat.com>
@@ -24,12 +78,27 @@ static u32 speed = 0;
 static u32 mapnum = 0;
 static unsigned long  KeyTime = 0;
 static IR_Toshiba_Spec_t toshiba;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+struct ir_timer {
+	struct timer_list timer;
+	struct mstar_ir_dev *dev;
+};
+static struct ir_timer RepeatCheckTimer;
+#else
 static struct timer_list RepeatCheckTimer;
+#endif
 static bool RepeatCheckFlag = FALSE;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void _toshiba_timer_proc(struct timer_list *t)
+{
+    struct ir_timer *RepeatCheckTimer = from_timer(RepeatCheckTimer, t, timer);
+    struct mstar_ir_dev *dev = RepeatCheckTimer->dev;
+#else
 static void _toshiba_timer_proc(unsigned long data)
 {
     struct mstar_ir_dev *dev = (struct mstar_ir_dev *)data;
+#endif
     DEFINE_IR_RAW_DATA(ev);
     ev.duration = REPEAT_CHECK_TIMEOUT*1000;
     ev.pulse = 0;
@@ -41,7 +110,6 @@ static void _toshiba_timer_proc(unsigned long data)
     MIRC_Data_Wakeup(dev);
     return;
 }
-
 /**
  * ir_nec_decode() - Decode one NEC pulse or space
  * @dev:	the struct rc_dev descriptor of the device
@@ -97,15 +165,22 @@ static int ir_toshiba_decode(struct mstar_ir_dev *dev, struct ir_raw_data ev)
         {
             if((prevsc->scancode_protocol == (1<<IR_TYPE_TOSHIBA))&&(((u32)(MIRC_Get_System_Time()-KeyTime)) <= TOSHIBA_REPEAT_TIMEOUT))//repeat
             {
-                IRDBG_INFO("[Toshiba Repeat Match] Repeat Time = %d\n",(MIRC_Get_System_Time()-KeyTime));
+                IRDBG_INFO("[Toshiba Repeat Match] Repeat Time = %lu\n",(MIRC_Get_System_Time()-KeyTime));
                 KeyTime = MIRC_Get_System_Time();
                 //check repeat time spec going
                 if(RepeatCheckFlag == FALSE)
                 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+                    del_timer(&RepeatCheckTimer.timer);
+                    RepeatCheckTimer.timer.expires = jiffies+ msecs_to_jiffies(REPEAT_CHECK_TIMEOUT);
+                    RepeatCheckTimer.dev = dev;
+                    add_timer(&RepeatCheckTimer.timer);
+#else
                     del_timer(&RepeatCheckTimer);
                     RepeatCheckTimer.expires =jiffies+ msecs_to_jiffies(REPEAT_CHECK_TIMEOUT);
                     RepeatCheckTimer.data = (unsigned long)dev;
                     add_timer(&RepeatCheckTimer);
+#endif
                     RepeatCheckFlag = TRUE;
                 }
             }
@@ -152,7 +227,11 @@ static int ir_toshiba_decode(struct mstar_ir_dev *dev, struct ir_raw_data ev)
         if(RepeatCheckFlag == TRUE)
         {
             RepeatCheckFlag = FALSE;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+            del_timer(&RepeatCheckTimer.timer);
+#else
             del_timer(&RepeatCheckTimer);
+#endif
         }
         data->u8BitCount++;
 
@@ -188,7 +267,10 @@ static int ir_toshiba_decode(struct mstar_ir_dev *dev, struct ir_raw_data ev)
                             speed = dev->support_ir[i].u32IRSpeed;
 #endif
                             KeyTime = MIRC_Get_System_Time();
-                            memset(data,0,sizeof(IR_Toshiba_Spec_t));
+                            data->eStatus = STATE_INACTIVE;
+                            data->u32DataBits = 0;
+                            data->u8BitCount = 0;
+                            data->u8RepeatTimes = 0;
                             return 1;
                         }
                     }
@@ -224,10 +306,15 @@ int toshiba_decode_init(void)
         MIRC_Decoder_Register(&toshiba_handler);
         IR_PRINT("[IR Log] Toshiba Spec Protocol Init\n");
         u8InitFlag_toshiba = TRUE;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	timer_setup(&RepeatCheckTimer.timer, _toshiba_timer_proc, 0);
+	RepeatCheckTimer.timer.expires = jiffies+ msecs_to_jiffies(REPEAT_CHECK_TIMEOUT);
+#else
         init_timer(&RepeatCheckTimer);
         RepeatCheckTimer.function = _toshiba_timer_proc;
-        RepeatCheckTimer.expires =jiffies+ msecs_to_jiffies(REPEAT_CHECK_TIMEOUT);
         RepeatCheckTimer.data = NULL;
+	RepeatCheckTimer.expires = jiffies+ msecs_to_jiffies(REPEAT_CHECK_TIMEOUT);
+#endif
     }
     else
     {
@@ -242,6 +329,10 @@ void toshiba_decode_exit(void)
     {
         MIRC_Decoder_UnRegister(&toshiba_handler);
         u8InitFlag_toshiba = FALSE;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+        del_timer(&RepeatCheckTimer.timer);
+#else
         del_timer(&RepeatCheckTimer);
+#endif
     }
 }

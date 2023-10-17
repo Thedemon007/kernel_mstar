@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 /*-----------------------------------------------------------------------------
     Include Files
 ------------------------------------------------------------------------------*/
@@ -28,6 +82,9 @@
 #include <mach/system.h>
 #include <asm/suspend.h>
 
+#ifdef CONFIG_MP_MSTAR_STR_BASE
+#include "mdrv_mpm.h"
+#endif
 #include "mdrv_types.h"
 #include "mdrv_tee_general.h"
 #include "uapi/linux/psci.h"
@@ -50,7 +107,6 @@ extern void save_performance_monitors(void *pointer);
 extern void restore_performance_monitors(void *pointer);
 extern void  MDrv_MBX_NotifyPMtoSetPowerOff(void);
 extern void  MDrv_MBX_NotifyPMPassword(unsigned char passwd[16]);
-extern int get_str_max_cnt(void);
 extern int is_mstar_str(void);
 #define PMREG(a) (*(volatile unsigned short*)(((unsigned long)mstar_pm_base)+(a)))
 #define PMREG_BYTEMASK(s) (((unsigned int)0xFF)<<(s))
@@ -63,25 +119,15 @@ DEFINE_SPINLOCK(ser_printf_lock);
 static unsigned char pass_wd[16]={0x99,0x88,0x77,0x66,0x55,0x44,0x33,0x22,
                                    0x11,0x00,0xFF,0xEE,0xDD,0xCC,0xBB,0xAA};
 
-int mstr_cnt;
-static int pre_str_max_cnt=0;
 static u32 MStar_IntMaskSave[8];
 static u32 MStar_HypIntMaskSave[8];
 
 void SerPrintChar(char ch)
 {
-    __asm__ volatile (
-        "MOV X5, #0x2013\n"
-        "LSL X5, X5, #8\n"
-        "LDR X4, %0\n"
-        "ADD X5, X5, X4\n"
-        "1: LDR W4, [X5, #0x28]\n"
-        "TST W4, #0x20\n"
-        "BEQ 1b\n"
-        "LDRB W4, %1\n"
-        "STRB W4,[X5]\n"
-        ::"m"(mstar_pm_base),"m"(ch):"r4","r5","cc","memory"
-        );
+	unsigned long uart_base = 0x100980;
+	while(!(*((volatile unsigned long*)(mstar_pm_base + uart_base* 2 + 0xA * 4)) & 0x20))
+		;
+	*(volatile unsigned long*)(mstar_pm_base + uart_base * 2) = ch;
 }
 void SerPrintStr(char *p)
 {
@@ -304,6 +350,7 @@ void mstar_suspend_save(void)
 	unsigned int BIG_CLUSTER_CPUFREQ = *((volatile unsigned int *)(mstar_pm_base + (0x10050a << 1)));
 #endif
 	unsigned int LITTLE_CLUSTER_CPUFREQ = *((volatile unsigned int *)(mstar_pm_base + (0x100502 << 1)));
+
 	SerPrintf("\nMStar STR Suspending...\n");
 
 	LITTLE_CLUSTER_CPUFREQ &= 0xFFF;
@@ -314,12 +361,6 @@ void mstar_suspend_save(void)
 	SerPrintf("\nSTR Suspending BIG_CLUSTER CPU FREQ %d\n", BIG_CLUSTER_CPUFREQ);
 #endif
 
-	if(pre_str_max_cnt!=get_str_max_cnt())
-    {
-        pre_str_max_cnt=get_str_max_cnt();
-        mstr_cnt=0;
-    }
-    mstr_cnt++;
     mstar_save_int_mask();
     save_performance_monitors(pmon_save_buf);
 }
@@ -333,6 +374,8 @@ void mstar_resume_restore(void)
 #endif
 	unsigned int LITTLE_CLUSTER_CPUFREQ = *((volatile unsigned int *)(mstar_pm_base + (0x100502 << 1)));
 	SerPrintf("\nMStar STR Resuming...\n");
+
+    MDrv_MPM_Set_Cnt(MDRV_MPM_KEY_STR_CNT, NULL);
 
 	LITTLE_CLUSTER_CPUFREQ &= 0xFFF;
 	SerPrintf("\nSTR Resuming LITTLE_CLUSTER CPU FREQ %d\n", LITTLE_CLUSTER_CPUFREQ);
@@ -377,39 +420,44 @@ void mstar_resume_restore(void)
     mstar_restore_int_mask();
     mstar_prepare_secondary();
 }
+
+static void _mstar_str_enter_tee(void *pWakeup)
+{
+    extern uint32_t isPSCI;
+
+    if ((TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE) &&
+        (isPSCI == PSCI_RET_SUCCESS))
+    {
+        printk("\033[0;32;31m [PSCI] %s %d %d %d %s %lx\033[m\n",__func__,__LINE__,current->pid,current->tgid,current->comm,KSTK_ESP(current));
+        #if LINUX_VERSION_CODE > KERNEL_VERSION(3,10,86)
+        psci_cpu_suspend_enter(1);
+        #else
+        cpu_psci_cpu_suspend(0);
+        #endif
+        while(1);
+    }
+}
+
 void mstar_str_power_off(void)
 {
-    SerPrintf("\nMStar STR waiting power off...[%d]\n", mstr_cnt);
-    if(get_str_max_cnt()>0 && mstr_cnt>=get_str_max_cnt())
+    SerPrintf("\nMStar STR waiting power off...[%d]\n", MDrv_MPM_Get_Cnt(MDRV_MPM_KEY_STR_CNT));
+
+    if (MDrv_MPM_Check_DC())
     {
-        SerPrintf("Max Cnt Ac off...\n");
-        if (is_mstar_str())
-        {
-            mstar_str_notifypmmaxcnt_off();
-        }
-        else
-        {
+		SerPrintf("Max Cnt Ac off...\n");
+		if (is_mstar_str())
+			mstar_str_notifypmmaxcnt_off();
+	} else {
+		SerPrintf("\ndo MDrv_MBX_NotifyPMtoSetPowerOff\n");
+		if (is_mstar_str()) {
+			SerPrintf("\nUser Mode STR, send password to 51...\n");
+			MDrv_MBX_NotifyPMtoSetPowerOff();
+		} else {
 #if defined(CONFIG_MSTAR_PM)
-            MDrv_PM_Suspend(E_PM_STATE_POWER_OFF_AC);
+			SerPrintf("\nKernel Mode STR, run 51...\n");
 #endif
-        }
-    }
-    else
-    {
-        SerPrintf("\ndo MDrv_MBX_NotifyPMtoSetPowerOff\n");
-        if (is_mstar_str())
-        {
-            SerPrintf("\nUser Mode STR, send password to 51...\n");
-            MDrv_MBX_NotifyPMtoSetPowerOff();
-        }
-        else
-        {
-#if defined(CONFIG_MSTAR_PM)
-            SerPrintf("\nKernel Mode STR, run 51...\n");
-            MDrv_PM_Suspend(E_PM_STATE_POWER_OFF_DC);
-#endif
-        }
-    }
+		}
+	}
 }
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(3,10,86)
@@ -433,6 +481,7 @@ unsigned long strsavearea[STRSAVE_AREA_COUNT];
 static int mstar_pm_enter(suspend_state_t state)
 {
     void *pWakeup=0;
+
     __asm__ volatile (
         "LDR X1, =MSTAR_WAKEUP_ENTRY\n"
         "STR X1, %0\n"
@@ -442,26 +491,11 @@ static int mstar_pm_enter(suspend_state_t state)
     sleep_save_cpu_registers();
     sleep_prepare_last();
     mstar_sleep_cur_cpu_flush();
-#if defined(CONFIG_MSTAR_PM)
-    if(!is_mstar_str())
-    {
-        MDrv_PM_SetPMCfg(PM_STR_MODE);
-    }
-#endif
+
     mstar_str_power_off();
-    if(TEEINFO_TYPTE==SECURITY_TEEINFO_OSTYPE_OPTEE)
-    {
-        extern uint32_t isPSCI;
-        if(isPSCI == PSCI_RET_SUCCESS) {
-		printk("\033[0;32;31m [PSCI] %s %d %d %d %s %llx\033[m\n",__func__,__LINE__,current->pid,current->tgid,current->comm,KSTK_ESP(current));
-	#if LINUX_VERSION_CODE > KERNEL_VERSION(3,10,86)
-		psci_cpu_suspend_enter(1);
-	#else
-		cpu_psci_cpu_suspend(0);
-	#endif
-		while(1);
-	}
-    }
+
+    _mstar_str_enter_tee(pWakeup);
+
     __asm__ volatile(
         "WAITHERE: B WAITHERE\n"
         "MSTAR_WAKEUP_ENTRY:\n"
@@ -474,21 +508,16 @@ static int mstar_pm_enter(suspend_state_t state)
 
 static void mstar_pm_power_off_prepare(void)
 {
-#ifdef CONFIG_MSTAR_SYSFS_BACKLIGHT
-    //Turn off backlight
-    MDrv_PM_TurnoffBacklight();
-#endif
-    //PM_Cfg_t stPMCfg;
     SerPrintf("mstar set pm power off param\n");
-    MDrv_PM_SetPMCfg(PM_STANDBY_MODE);
-    MDrv_PM_CopyBin2Sram();
+    MDrv_PM_Reboot(E_PM_STATE_POWER_OFF_PRE);
     mstar_sleep_cur_cpu_flush();
 }
 
 static void mstar_pm_power_off(void)
 {
     SerPrintf("mstar pm power down\n");
-    MDrv_PM_SetSRAMOffsetForMCU_DC();
+    MDrv_PM_Reboot(E_PM_STATE_POWER_OFF);
+    _mstar_str_enter_tee(NULL);
 }
 
 static struct platform_suspend_ops mstar_pm_ops =

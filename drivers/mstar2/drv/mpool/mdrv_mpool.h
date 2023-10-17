@@ -81,7 +81,7 @@
 //-------------------------------------------------------------------------------------------------
 //  Function and Variable
 //-------------------------------------------------------------------------------------------------
-int MDrv_MPOOL_IOC_FlushDache(unsigned long arg);
+int MDrv_MPOOL_IOC_FlushDache(DrvMPool_Info_t i);
 
 
 #endif // _DRV_MPOOL_H_

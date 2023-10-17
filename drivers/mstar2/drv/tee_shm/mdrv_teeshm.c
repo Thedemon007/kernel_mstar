@@ -219,7 +219,11 @@ static TEE_SHM_INFO tee_shm_info[SHM_CNT];
 //-------------------------------------------------------------------------------------------------
 //  Local Functions
 //-------------------------------------------------------------------------------------------------
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static vm_fault_t teeshm_vma_fault(struct vm_fault *vmf)
+#else
 static int teeshm_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+#endif
 {
 	TEESHM_DPRINTK("semutex_vma_fault!!!\n");
 	BUG();
@@ -593,9 +597,25 @@ static int _MDrv_TEESHM_Ioctl(struct inode *inode, struct file *filp, unsigned i
 
 			for (search_cnt = 0; search_cnt < SHM_CNT; search_cnt++) {
 				if (strncmp(tee_shm_info[search_cnt].name, to.name, SHM_NAME_LEN-1) == 0) {
-					printk(TEESHM_SHOW "\033[31mFunction = %s, Line = %d, TEESHM_IOC_RESOURCE_CREATE ReCreate %s failed!!\033[m\n", __PRETTY_FUNCTION__, __LINE__, to.name);
+					printk(TEESHM_SHOW "\033[31mFunction = %s, Line = %d, TEESHM_IOC_RESOURCE_CREATE ReCreate %s \033[m\n", __PRETTY_FUNCTION__, __LINE__, to.name);
+					tee_shm_info[search_cnt].create_pid = current->pid;
+					tee_shm_info[search_cnt].create_tgid = current->tgid;
+					printk(TEESHM_SHOW "\033[31mFunction = %s, Line = %d, TEESHM_IOC_RESOURCE_CREATE ReCreate %s Change owner pid %x \033[m\n", __PRETTY_FUNCTION__, __LINE__, to.name, (unsigned int)current->pid );
+					to.m_shm_id = search_cnt;	// this will return to user_mode
+					if (copy_to_user((void __user *)arg, &to, _IOC_SIZE(cmd)))
+					{
+						/* we need to reset tee_shm_info */
+						INIT_LIST_HEAD(&tee_shm_info[search_cnt].pid_va_list);
+						mutex_destroy(&tee_shm_info[search_cnt].obtain_mutex);
+
+						memset(&tee_shm_info[search_cnt], 0, sizeof(TEE_SHM_INFO));
+						tee_shm_info[search_cnt].m_shm_id = SHM_INIT_ID;
+						printk(TEESHM_SHOW "\033[35mFunction = %s, Line = %d, TEESHM_IOC_RESOURCE_CREATE copy_to_user failed!!\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+						mutex_unlock(&teeshm_mutex);
+						return -ENOTTY;
+					}
 					mutex_unlock(&teeshm_mutex);
-					return -ENOTTY;
+					return 0;
 				}
 			}
 
@@ -892,8 +912,11 @@ static int _MDrv_TEESHM_Ioctl(struct inode *inode, struct file *filp, unsigned i
 				mutex_unlock(&teeshm_mutex);
 				return -ENOTTY;
 			}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+			vm_munmap((unsigned long)unmap_start_va, (size_t)(unmap_vma->vm_end - unmap_vma->vm_start));
+#else
 			sys_munmap((unsigned long)unmap_start_va, (size_t)(unmap_vma->vm_end - unmap_vma->vm_start));
+#endif
 			atomic_dec(&tee_shm_info[search_cnt].vma_ref_count);
 			pdev->mmaped_vma[search_cnt] = NULL;
 

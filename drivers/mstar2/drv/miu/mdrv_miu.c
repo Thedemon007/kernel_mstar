@@ -68,6 +68,10 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+#include <linux/of.h>
+#endif
 #include "mdrv_miu.h"
 #include "mhal_miu.h"
 #include "chip_int.h"
@@ -76,10 +80,10 @@
 //  Function prototype with weak symbol
 //-------------------------------------------------------------------------------------------------
 
-MS_BOOL HAL_MIU_Protect(MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY phy64Start, MS_PHY phy64End, MS_BOOL bSetFlag) __attribute__((weak));
+MS_BOOL HAL_MIU_Kernel_Protect(MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY phy64Start, MS_PHY phy64End, MS_BOOL bSetFlag) __attribute__((weak));
 
-MS_BOOL HAL_MIU_ParseOccupiedResource(void) __attribute__((weak));
-MS_U32* HAL_MIU_GetDefaultClientID_KernelProtect(void) __attribute__((weak));
+MS_BOOL HAL_MIU_Kernel_ParseOccupiedResource(void) __attribute__((weak));
+MS_U32* HAL_MIU_Kernel_GetDefaultClientID_KernelProtect(void) __attribute__((weak));
 
 //--------------------------------------------------------------------------------------------------
 //  Local variable
@@ -88,11 +92,16 @@ MS_U32* HAL_MIU_GetDefaultClientID_KernelProtect(void) __attribute__((weak));
 static MS_BOOL bMiuInit = FALSE;
 static MS_U32 mstar_debug = E_MIU_DBGLV_ERR;
 static MS_U32 miu_hit_panic = 0;
+static MS_U32 u32MIUHitCount = 0;
+static MS_U32 u32HitInterrupt = 0;
+static MS_U32 u32HitIRQDynCtrl = 1;
+static MS_U32 u32HitMaxCount = 100;
+static MS_BOOL bGotHitPanicInBootargs = FALSE;
 
 //-------------------------------------------------------------------------------------------------
 //  Local functions
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function  \b Name: MDrv_MIU_Init
+/// @brief \b Function  \b Name: MDrv_MIU_Kernel_Init
 /// @brief \b Function  \b Description: parse occupied resource to software structure
 /// @param None         \b IN :
 /// @param None         \b OUT :
@@ -100,7 +109,7 @@ static MS_U32 miu_hit_panic = 0;
 /// @param None         \b GLOBAL :
 ////////////////////////////////////////////////////////////////////////////////
 
-MS_BOOL MDrv_MIU_Init(void)
+MS_BOOL MDrv_MIU_Kernel_Init(void)
 {
     MS_BOOL ret = FALSE;
 
@@ -108,9 +117,9 @@ MS_BOOL MDrv_MIU_Init(void)
         return TRUE;
 
     /* Parse the used client ID in hardware into software data structure */
-    if(HAL_MIU_ParseOccupiedResource)
+    if(HAL_MIU_Kernel_ParseOccupiedResource)
     {
-        ret = HAL_MIU_ParseOccupiedResource();
+        ret = HAL_MIU_Kernel_ParseOccupiedResource();
     }
     else
     {
@@ -124,15 +133,15 @@ MS_BOOL MDrv_MIU_Init(void)
 
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function \b Name: MDrv_MIU_GetDefaultClientID_KernelProtect()
+/// @brief \b Function \b Name: MDrv_MIU_Kernel_GetDefaultClientID_KernelProtect()
 /// @brief \b Function \b Description:  Get default client id array pointer for protect kernel
 /// @param <RET>           \b     : The pointer of Array of client IDs
 ////////////////////////////////////////////////////////////////////////////////
-MS_U32* MDrv_MIU_GetDefaultClientID_KernelProtect(void)
+MS_U32* MDrv_MIU_Kernel_GetDefaultClientID_KernelProtect(void)
 {
-    if( HAL_MIU_GetDefaultClientID_KernelProtect )
+    if( HAL_MIU_Kernel_GetDefaultClientID_KernelProtect )
     {
-        return HAL_MIU_GetDefaultClientID_KernelProtect();
+        return HAL_MIU_Kernel_GetDefaultClientID_KernelProtect();
     }
     else
     {
@@ -141,7 +150,7 @@ MS_U32* MDrv_MIU_GetDefaultClientID_KernelProtect(void)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function \b Name: MDrv_MIU_Protect()
+/// @brief \b Function \b Name: MDrv_MIU_Kernel_Protect()
 /// @brief \b Function \b Description:  Enable/Disable MIU Protection mode
 /// @param u8Blockx        \b IN     : MIU Block to protect (0 ~ 3)
 /// @param *pu8ProtectId   \b IN     : Allow specified client IDs to write
@@ -154,16 +163,16 @@ MS_U32* MDrv_MIU_GetDefaultClientID_KernelProtect(void)
 /// @param <RET>           \b None    :
 /// @param <GLOBAL>        \b None    :
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL MDrv_MIU_Protect( MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY u64BusStart, MS_PHY u64BusEnd, MS_BOOL bSetFlag)
+MS_BOOL MDrv_MIU_Kernel_Protect( MS_U8 u8Blockx, MS_U32 *pu32ProtectId, MS_PHY u64BusStart, MS_PHY u64BusEnd, MS_BOOL bSetFlag)
 {
     MS_BOOL Result = FALSE;
 
     /*Case of former MIU protect*/
     if((u8Blockx >= E_PROTECT_0))
     {
-        if(HAL_MIU_Protect)
+        if(HAL_MIU_Kernel_Protect)
         {
-            Result = HAL_MIU_Protect(u8Blockx, pu32ProtectId, u64BusStart, u64BusEnd, bSetFlag);
+            Result = HAL_MIU_Kernel_Protect(u8Blockx, pu32ProtectId, u64BusStart, u64BusEnd, bSetFlag);
         }
     }
 
@@ -185,16 +194,16 @@ MS_BOOL MDrv_MIU_Restore(void)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-/// @brief \b Function  \b Name: MDrv_MIU_GetProtectInfo()
+/// @brief \b Function  \b Name: MDrv_MIU_Kernel_GetProtectInfo()
 /// @brief \b Function  \b Description:  This function for querying client ID info
 /// @param u8MiuDev     \b IN   : select MIU0 or MIU1
 /// @param eClientID    \b IN   : Client ID
 /// @param pInfo        \b OUT  : Client Info
 /// @param None \b RET:   0: Fail 1: Ok
 ////////////////////////////////////////////////////////////////////////////////
-MS_BOOL MDrv_MIU_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo)
+MS_BOOL MDrv_MIU_Kernel_GetProtectInfo(MS_U8 u8MiuDev, MIU_PortectInfo *pInfo)
 {
-    return HAL_MIU_GetProtectInfo(u8MiuDev, pInfo);
+    return HAL_MIU_Kernel_GetProtectInfo(u8MiuDev, pInfo);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -216,6 +225,7 @@ MS_BOOL MDrv_MIU_Slits(MS_U8 u8Blockx, MS_PHY u64SlitsStart, MS_PHY u64SlitsEnd,
     return TRUE;
 }
 
+#ifndef CONFIG_MSTAR_UTOPIA2K_BUILTIN
 ////////////////////////////////////////////////////////////////////////////////
 /// @brief \b Function \b Name: MDrv_MIU_Dram_ReadSize()
 /// @brief \b Function \b Description:  Get DRAM size
@@ -224,42 +234,59 @@ MS_BOOL MDrv_MIU_Slits(MS_U8 u8Blockx, MS_PHY u64SlitsStart, MS_PHY u64SlitsEnd,
 ////////////////////////////////////////////////////////////////////////////////
 MS_BOOL MDrv_MIU_Dram_ReadSize(MS_U8 MiuID, MIU_DDR_SIZE *pDramSize)
 {
-    return HAL_MIU_Dram_ReadSize(MiuID, pDramSize);
+    return HAL_MIU_Kernel_Dram_ReadSize(MiuID, pDramSize);
 }
 
 EXPORT_SYMBOL(MDrv_MIU_Dram_ReadSize);
+#endif
 
+#if defined(MIU_HIT_INTERRUPT) && (MIU_HIT_INTERRUPT == 1)
 irqreturn_t MDrv_MIU_ProtectInterrupt(int irq, void *devid);
 
 irqreturn_t MDrv_MIU_ProtectInterrupt(int irq, void *devid)
 {
     MS_U8 u8MiuDev;
     MIU_PortectInfo pInfo;
+
+    u32MIUHitCount++;
+    if( u32MIUHitCount > u32HitMaxCount)
+    {
+        u32HitInterrupt = 0;
+        disable_irq_nosync(MIU_IRQ);
+        return IRQ_HANDLED;
+    }
+
     for(u8MiuDev = 0; u8MiuDev < MIU_MAX_DEVICE; u8MiuDev++)
     {
-        HAL_MIU_GetProtectInfo(u8MiuDev, &pInfo);
+        HAL_MIU_Kernel_GetProtectInfo(u8MiuDev, &pInfo);
     }
 
     return IRQ_HANDLED;
 }
+#endif
 
 static int mstar_miu_drv_probe(struct platform_device *pdev)
 {
-    if( MDrv_MIU_Init() == FALSE )
+    if( MDrv_MIU_Kernel_Init() == FALSE )
     {
         MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU Init fail\n");
     }
 
+    if(u32HitIRQDynCtrl == 1)
+    {
 #if defined(MIU_HIT_INTERRUPT) && (MIU_HIT_INTERRUPT == 1)
-    if (request_irq(MIU_IRQ, MDrv_MIU_ProtectInterrupt, SA_INTERRUPT, "MIU_IRQ", NULL))
-    {
-        MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU IRQ registration ERROR\n");
-    }
-    else
-    {
-        MIU_DEBUG_LOG(KERN_NOTICE, E_MIU_DBGLV_NOTICE, "MIU IRQ registration OK\n");
-    }
+        if (request_irq(MIU_IRQ, MDrv_MIU_ProtectInterrupt, SA_INTERRUPT, "MIU_IRQ", NULL))
+        {
+            MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU IRQ registration ERROR\n");
+        }
+        else
+        {
+            u32HitInterrupt = 1;
+            MIU_DEBUG_LOG(KERN_NOTICE, E_MIU_DBGLV_NOTICE, "MIU IRQ registration OK\n");
+        }
 #endif
+    }
+    miu_hit_panic = HAL_MIU_Get_Hitkernelpanic();
 
     return 0;
 }
@@ -272,7 +299,7 @@ static int mstar_miu_drv_remove(struct platform_device *pdev)
 static int mstar_miu_drv_suspend(struct platform_device *dev, pm_message_t state)
 {
 #ifndef CONFIG_MSTAR_CMAPOOL
-    MDrv_MIU_Init();
+    MDrv_MIU_Kernel_Init();
     HAL_MIU_Save();
 #endif
     return 0;
@@ -384,16 +411,44 @@ static int __init MIU_Set_DebugLevel(char *str)
 }
 static int __init MIU_Enable_Hitkernelpanic(char *str)
 {
-    if(strcmp(str, "ON") == 0)
+    if(strcmp(str, "ON") == 0 || strcmp(str, "1") == 0)
     {
         miu_hit_panic = 1;
         HAL_MIU_Enable_Hitkernelpanic(miu_hit_panic);
         MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU HIT KERNEL PANIC=ON");
     }
+    else if(strcmp(str, "OFF") == 0 || strcmp(str, "0") == 0)
+    {
+        miu_hit_panic = 0;
+        HAL_MIU_Enable_Hitkernelpanic(miu_hit_panic);
+        MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU HIT KERNEL PANIC=OFF");
+    }
+    else
+    {
+        MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "Set KERNEL PANIC FAIL");
+    }
+
+    return 0;
+}
+static int __init MIU_Enable_HitInterupt(char *str)
+{
+    if(strcmp(str, "OFF") == 0)
+    {
+        u32HitIRQDynCtrl = 0;
+        MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU HIT KERNEL INTERRUPT=OFF");
+    }
+    return 0;
+}
+static int __init MIU_Hit_MaxCount(char *str)
+{
+    u32HitMaxCount = (MS_U32)simple_strtol(str, NULL, 10);
+    MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "SET MIU HIT MAX COUNT TO %lu", (unsigned long int)u32HitMaxCount);
     return 0;
 }
 early_param("MIU_DEBUG_LEVEL", MIU_Set_DebugLevel);
 early_param("MIU_HIT_PANIC", MIU_Enable_Hitkernelpanic);
+early_param("MIU_HIT_INTERRUPT", MIU_Enable_HitInterupt);
+early_param("MIU_HIT_MAX_COUNT", MIU_Hit_MaxCount);
 
 module_init(mstar_miu_drv_init_module);
 module_exit(mstar_miu_drv_exit_module);
@@ -500,6 +555,90 @@ static int set_miu_hit_panic(const char *val, const struct kernel_param *kp)
     return 0;
 }
 
+static int set_miu_hit_max_count(const char *val, const struct kernel_param *kp)
+{
+    char valcp[16];
+    char *s;
+
+    strncpy(valcp, val, 16);
+    valcp[15] = '\0';
+
+    s = strstrip(valcp);
+
+    u32HitMaxCount = (MS_U32)simple_strtol(s, NULL, 10);
+
+    MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "SET MIU HIT MAX COUNT TO %lu", (unsigned long int)u32HitMaxCount);
+
+    return 0;
+}
+
+#if defined(MIU_HIT_INTERRUPT) && (MIU_HIT_INTERRUPT == 1)
+static int set_miu_hit_interrupt(const char *val, const struct kernel_param *kp)
+{
+    char valcp[16];
+    char *s;
+
+    strncpy(valcp, val, 16);
+    valcp[15] = '\0';
+
+    s = strstrip(valcp);
+
+    if(strcmp(s, "0") == 0)
+    {
+        if( u32HitInterrupt == 0 )
+        {
+            MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "HIT LOG INTERRUPT Already OFF\n");
+        }
+        else
+        {
+            free_irq(MIU_IRQ, NULL);
+            u32HitInterrupt = 0;
+            u32MIUHitCount = 0;
+            MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "HIT LOG INTERRUPT OFF\n");
+        }
+    }
+    else if(strcmp(s, "1") == 0)
+    {
+        if( u32HitInterrupt == 1 )
+        {
+            MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "HIT LOG INTERRUPT Already ON\n");
+        }
+        else
+        {
+            if( u32MIUHitCount > u32HitMaxCount)
+            {
+                free_irq(MIU_IRQ, NULL);
+            }
+            u32MIUHitCount = 0;
+
+            if (request_irq(MIU_IRQ, MDrv_MIU_ProtectInterrupt, SA_INTERRUPT, "MIU_IRQ", NULL))
+            {
+                MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "MIU IRQ registration ERROR\n");
+            }
+            else
+            {
+                u32HitInterrupt = 1;
+                MIU_DEBUG_LOG(KERN_NOTICE, E_MIU_DBGLV_NOTICE, "MIU IRQ registration OK\n");
+            }
+            MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "HIT LOG INTERRUPT ON\n");
+        }
+    }
+    else
+    {
+        MIU_DEBUG_LOG(KERN_WARNING, E_MIU_DBGLV_WARNING, "WRONG MIU HIT INTERRUPT PARAMETER\n");
+    }
+
+    return 0;
+}
+
+static const struct kernel_param_ops mstar_hit_interrupt_ops = {
+    .set    = set_miu_hit_interrupt,
+    .get    = param_get_int,
+};
+module_param_cb(miu_hit_interrupt, &mstar_hit_interrupt_ops, &u32HitInterrupt, 0644);
+
+#endif
+
 static const struct kernel_param_ops mstar_debug_ops = {
     .set    = set_mstar_debug,
     .get    = param_get_int,
@@ -510,8 +649,14 @@ static const struct kernel_param_ops miu_hit_panic_ops = {
     .get    = param_get_int,
 };
 
-module_param_cb(mstar_debug, &mstar_debug_ops, &mstar_debug, 0644);
+static const struct kernel_param_ops miu_hit_max_count_ops = {
+    .set    = set_miu_hit_max_count,
+    .get    = param_get_int,
+};
+
+module_param_cb(miu_debug_level, &mstar_debug_ops, &mstar_debug, 0644);
 module_param_cb(miu_hit_panic, &miu_hit_panic_ops, &miu_hit_panic, 0644);
+module_param_cb(miu_hit_max_count, &miu_hit_max_count_ops, &u32HitMaxCount, 0644);
 
 MODULE_AUTHOR("MSTAR");
 MODULE_DESCRIPTION("MIU driver");

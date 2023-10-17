@@ -59,7 +59,6 @@
 /// @author MStar Semiconductor Inc.
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-
 //-------------------------------------------------------------------------------------------------
 //  Include Files
 //-------------------------------------------------------------------------------------------------
@@ -158,7 +157,14 @@ static DEFINE_SPINLOCK(oad_upgrade_lock);
     defined(CONFIG_MSTAR_MOONEY) || \
     defined(CONFIG_MSTAR_M7221) || \
     defined(CONFIG_MSTAR_M7322) || \
-	defined(CONFIG_MSTAR_MANHATTAN)
+    defined(CONFIG_MSTAR_M7632) || \
+    defined(CONFIG_MSTAR_M7332) || \
+    defined(CONFIG_MSTAR_M7642) || \
+    defined(CONFIG_MSTAR_MT5862) || \
+    defined(CONFIG_MSTAR_MT5867) || \
+    defined(CONFIG_MSTAR_MT5889) || \
+    defined(CONFIG_MSTAR_MT5872) || \
+    defined(CONFIG_MSTAR_MANHATTAN)
 
 // NOTE
 // PE capability :
@@ -284,6 +290,13 @@ void MDrv_SYS_GetMIU1BusBase(unsigned long argv)
     defined(CONFIG_MSTAR_M7221) || \
     defined(CONFIG_MSTAR_M7322) || \
     defined(CONFIG_MSTAR_M3822) || \
+    defined(CONFIG_MSTAR_M7632) || \
+    defined(CONFIG_MSTAR_M7332) || \
+    defined(CONFIG_MSTAR_M7642) || \
+    defined(CONFIG_MSTAR_MT5862) || \
+    defined(CONFIG_MSTAR_MT5867) || \
+    defined(CONFIG_MSTAR_MT5889) || \
+    defined(CONFIG_MSTAR_MT5872) || \
     defined(CONFIG_MSTAR_MANHATTAN)
 
     u32Data=0x08000000;
@@ -691,7 +704,14 @@ PMST_PANEL_INFO_t MDrv_SYS_GetPanelInfo(void)
     defined(CONFIG_MSTAR_M7221) || \
     defined(CONFIG_MSTAR_M7322) || \
     defined(CONFIG_MSTAR_M3822) || \
-	defined(CONFIG_MSTAR_MANHATTAN)
+    defined(CONFIG_MSTAR_M7632) || \
+    defined(CONFIG_MSTAR_M7332) || \
+    defined(CONFIG_MSTAR_M7642) || \
+    defined(CONFIG_MSTAR_MT5862) || \
+    defined(CONFIG_MSTAR_MT5867) || \
+    defined(CONFIG_MSTAR_MT5889) || \
+    defined(CONFIG_MSTAR_MT5872) || \
+    defined(CONFIG_MSTAR_MANHATTAN)
 
 	#if defined(CONFIG_ARM)
 	#define SYS_REGOP(addr) *((volatile unsigned int*)(0xFD800000 + (addr)))
@@ -2904,7 +2924,10 @@ U32 MDrv_SYS_PCMCIA_READ_DATA(unsigned long arg,bool bKernelCopy)
             }
         }
         else
+        {
+            vfree(u8pPcmBuf);
             return -EFAULT;
+        }
     }else
         memcpy( (void *)op.u8pReadBuffer, u8pPcmBuf, op.u16DataLen );
 
@@ -3478,7 +3501,14 @@ void MDrv_SYS_GetMsBinInfo(unsigned long argv)
     defined(CONFIG_MSTAR_M7221) || \
     defined(CONFIG_MSTAR_M7322) || \
     defined(CONFIG_MSTAR_M3822) || \
-	defined(CONFIG_MSTAR_MANHATTAN)
+    defined(CONFIG_MSTAR_M7632) || \
+    defined(CONFIG_MSTAR_M7332) || \
+    defined(CONFIG_MSTAR_M7642) || \
+    defined(CONFIG_MSTAR_MT5862) || \
+    defined(CONFIG_MSTAR_MT5867) || \
+    defined(CONFIG_MSTAR_MT5889) || \
+    defined(CONFIG_MSTAR_MT5872) || \
+    defined(CONFIG_MSTAR_MANHATTAN)
 
 void Chip_Flush_Memory(void);
 void Chip_Read_Memory(void);
@@ -3544,7 +3574,14 @@ void MDrv_SYS_FlushMemory(void)
     defined(CONFIG_MSTAR_M7221) || \
     defined(CONFIG_MSTAR_M7322) || \
     defined(CONFIG_MSTAR_M3822) || \
-	defined(CONFIG_MSTAR_MANHATTAN)
+    defined(CONFIG_MSTAR_M7632) || \
+    defined(CONFIG_MSTAR_M7332) || \
+    defined(CONFIG_MSTAR_M7642) || \
+    defined(CONFIG_MSTAR_MT5862) || \
+    defined(CONFIG_MSTAR_MT5867) || \
+    defined(CONFIG_MSTAR_MT5889) || \
+    defined(CONFIG_MSTAR_MT5872) || \
+    defined(CONFIG_MSTAR_MANHATTAN)
 
     #if defined(CONFIG_MIPS)
     Chip_Flush_Memory();
@@ -3692,7 +3729,14 @@ void MDrv_SYS_StopUARTClock(void)
       defined(CONFIG_MSTAR_M7221) || \
       defined(CONFIG_MSTAR_M7322) || \
       defined(CONFIG_MSTAR_M3822) || \
-	  defined(CONFIG_MSTAR_MANHATTAN)
+      defined(CONFIG_MSTAR_M7632) || \
+      defined(CONFIG_MSTAR_M7332) || \
+      defined(CONFIG_MSTAR_M7642) || \
+      defined(CONFIG_MSTAR_MT5862) || \
+      defined(CONFIG_MSTAR_MT5867) || \
+      defined(CONFIG_MSTAR_MT5889) || \
+      defined(CONFIG_MSTAR_MT5872) || \
+      defined(CONFIG_MSTAR_MANHATTAN)
 
 	  #if defined(CONFIG_ARM)
        *((volatile unsigned int*)(0xFD200000+(0xF1F<<2))) |= 0x100 ;
@@ -3792,116 +3836,6 @@ void MDrv_SYS_HoldKernel(void)
 
 }
 
-#if defined(CONFIG_ARM) || defined(CONFIG_MIPS)
-void MDrv_SYS_ForceUpgradeOADByDRAM(U32 arg)
-#elif defined(CONFIG_ARM64)
-void MDrv_SYS_ForceUpgradeOADByDRAM(unsigned long arg)
-#endif
-{
-    IO_SYS_SPI_t spi;
-    U32 leftsize, allocatesize;
-    u8 *writebuf;
-
-    printk("\33[1;32m[%d]%s\33[0;0m\n",__LINE__,__func__);
-
-    writebuf = NULL;
-    allocatesize = 0;
-    leftsize = 0;
-
-    if(copy_from_user( &spi,(IO_SYS_SPI_t __user *)arg, sizeof(IO_SYS_SPI_t)))
-    {
-        printk("copy_from_user error\n");
-    }
-
-    allocatesize = spi.u32Len;
-    leftsize = spi.u32Len;
-
-    while(writebuf == NULL)
-    {
-        writebuf = vmalloc(allocatesize);
-        if(writebuf == NULL)
-        {
-            if(allocatesize < 0x80000)
-                allocatesize /= 2;
-            else
-                allocatesize -= 0x80000;
-
-            if(allocatesize == 0)
-            {
-                printk("Can not allocate any continuos space from kernel!\n");
-                return;
-            }
-        }
-        else
-            break;
-    }
-
-    preempt_disable();
-    //avoid to use implicit function that include sleep() function after spin_lock_irq()
-    spin_lock_irq(&oad_upgrade_lock);
-
-    if(writebuf != NULL)
-        vfree(writebuf);
-
-    //do system reset/reboot below
-    kernel_restart(NULL);
-}
-
-#if defined(CONFIG_ARM) || defined(CONFIG_MIPS)
-void MDrv_SYS_ForceUpgradeENVByDRAM(U32 arg)
-#elif defined(CONFIG_ARM64)
-void MDrv_SYS_ForceUpgradeENVByDRAM(unsigned long arg)
-#endif
-{
-    IO_SYS_SPI_t spi;
-    U32 leftsize, allocatesize;
-    u8 *writebuf;
-
-    writebuf = NULL;
-    allocatesize = 0;
-    leftsize = 0;
-
-    if(copy_from_user( &spi,(IO_SYS_SPI_t __user *)arg, sizeof(IO_SYS_SPI_t)))
-    {
-        printk("copy_from_user error\n");
-    }
-
-    allocatesize = spi.u32Len;
-    leftsize = spi.u32Len;
-
-    while(writebuf == NULL)
-    {
-        writebuf = vmalloc(allocatesize);
-        if(writebuf == NULL)
-        {
-            if(allocatesize < 0x80000)
-                allocatesize /= 2;
-            else
-                allocatesize -= 0x80000;
-
-            if(allocatesize == 0)
-            {
-                printk("Can not allocate any continuos space from kernel!\n");
-                return;
-            }
-        }
-        else
-            break;
-    }
-
-    preempt_disable();
-    //avoid to use implicit function that include sleep() function after spin_lock_irq()
-    spin_lock_irq(&oad_upgrade_lock);
-
-    if(writebuf != NULL)
-        vfree(writebuf);
-    spin_unlock_irq(&oad_upgrade_lock);
-
-    preempt_enable();
-
-}
-
-
 //early_param("MS_BIN_START", MDrv_SYS_SetMsBinAddr);
 //early_param("MS_BIN_SIZE", MDrv_SYS_SetMsBinSize);
 
@@ -3977,97 +3911,3 @@ EXPORT_SYMBOL(MDrv_SYS_GetGPIOIR);
 EXPORT_SYMBOL(MDrv_SYS_GetGPIOIRType);
 early_param("gpio_ir", MDrv_SYS_SetGPIOIR);
 early_param("irtype", MDrv_SYS_SetGPIOtype);
-
-#define UART_REG_ADDR (*(volatile unsigned short*)(RIU_VIRT_BASE+0x1C24))
-
-void MDrv_SYS_SWITCH_UART(unsigned int OnOff)
-{
-	if (OnOff)
-		UART_REG_ADDR &= ~(1<<12);
-	else
-		UART_REG_ADDR |= (1<<12);
-}
-EXPORT_SYMBOL(MDrv_SYS_SWITCH_UART);
-
-#define REG_ADDRESS(addr) (*((volatile U16*)(mstar_pm_base + (addr << 1))))
-
-int MDrv_SYS_IsSupportDolbyVision(bool * const pbSupportDolbyVision)
-{
-	bool bDisableDV = FALSE;
-	bool bIgnore = FALSE;
-	unsigned long u32RetryCount = 0;
-	unsigned long u32Timeout = 1000000;
-	unsigned long u32CheckDoneDelayUs = 5000;
-
-	if (pbSupportDolbyVision == NULL)
-		return -EINVAL;
-
-	/* address 0x6E *4 = 0x1B8 */
-	REG_ADDRESS(0x2050) = (U16)0x21B8;
-	while ((REG_ADDRESS(0x2050) & (U16)0x2000UL)) {
-		u32RetryCount++;
-		if ((u32RetryCount * u32CheckDoneDelayUs) >= u32Timeout)
-			return -EBUSY;
-		udelay(u32CheckDoneDelayUs);
-	}
-	bDisableDV = (REG_ADDRESS(0x2058) & BIT6) >> 6;
-	printk(KERN_ERR "[0x2050] = %x\t[0x2058] = %x\t[bDisableDV] = %d\n", REG_ADDRESS(0x2050), REG_ADDRESS(0x2058), bDisableDV);
-
-	/* address 0x6F *4 = 0x1BC */
-	REG_ADDRESS(0x2050) = (U16)0x21BC;
-	while ((REG_ADDRESS(0x2050) & (U16)0x2000UL)) {
-		u32RetryCount++;
-		if ((u32RetryCount * u32CheckDoneDelayUs) >= u32Timeout)
-			return -EBUSY;
-		udelay(u32CheckDoneDelayUs);
-	}
-	bIgnore = REG_ADDRESS(0x2058) & BIT0;
-	printk(KERN_ERR "[0x2050] = %x\t[0x2058] = %x\t[bIgnore] = %d\n", REG_ADDRESS(0x2050), REG_ADDRESS(0x2058), bIgnore);
-
-	if (bDisableDV & !bIgnore)
-		*pbSupportDolbyVision = FALSE;
-	else
-		*pbSupportDolbyVision = TRUE;
-
-	return 0;
-}
-EXPORT_SYMBOL(MDrv_SYS_IsSupportDolbyVision);
-
-int MDrv_SYS_IsSupportDolbyAtmos(bool * const pbSupportDolbyAtmos)
-{
-	bool bDolbyAtmos = FALSE;
-	bool bDolbyRevert = FALSE;
-	unsigned long u32RetryCount = 0;
-	unsigned long u32Timeout = 1000000;
-	unsigned long u32CheckDoneDelayUs = 5000;
-
-	if (pbSupportDolbyAtmos == NULL)
-		return -EINVAL;
-
-	/* address 0x6F *4 = 0x1BC */
-	REG_ADDRESS(0x2050) = (U16)0x21BC;
-	while ((REG_ADDRESS(0x2050) & (U16)0x2000UL)) {
-		u32RetryCount++;
-		if ((u32RetryCount * u32CheckDoneDelayUs) >= u32Timeout)
-		    return -EBUSY;
-		udelay(u32CheckDoneDelayUs);
-	}
-
-	/* 6F[15]: Dolby ATMOS */
-	bDolbyAtmos = ((REG_ADDRESS(0x2058) & BIT15) >> 15);
-	/* 6F[21]: Dolby Revert */
-	bDolbyRevert = ((REG_ADDRESS(0x205A) & BIT5) >> 5);
-
-	printk(KERN_ERR "[0x2050] = %x\t[0x2058] = %x\t[0x205A] = %x\t[bDolbyAtmos] = %d\t[bDolbyRevert] = %d\n", REG_ADDRESS(0x2050), REG_ADDRESS(0x2058), REG_ADDRESS(0x205A), bDolbyAtmos, bDolbyRevert);
-
-	if (!bDolbyAtmos)
-		*pbSupportDolbyAtmos = TRUE;
-	else {
-		if (bDolbyRevert)
-		    *pbSupportDolbyAtmos = TRUE;
-		else
-		    *pbSupportDolbyAtmos = FALSE;
-	}
-	return 0;
-}
-EXPORT_SYMBOL(MDrv_SYS_IsSupportDolbyAtmos);

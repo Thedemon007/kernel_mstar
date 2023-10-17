@@ -14,6 +14,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/version.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
@@ -35,7 +36,9 @@
 #include <tee_wait_queue.h>
 #include <linux/time.h>
 #include <linux/coda.h>
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+#include <linux/of.h>
+#endif
 #include <arm_common/teesmc.h>
 #include <arm_common/teesmc_st.h>
 
@@ -403,8 +406,9 @@ static void call_tee(struct tee_tz *ptee,
 	u32 ret;
 	u32 funcid;
 	struct smc_param param = { 0 };
+#ifdef MSTAR_MEASURE_TIME
 	struct timespec start,end;
-
+#endif
 	if (irqs_disabled())
 		funcid = TEESMC32_FASTCALL_WITH_ARG;
 	else
@@ -984,7 +988,7 @@ static int tz_pm51ctl(uint32_t cmd, struct tee *tee)
 	return 0;
 }
 
-static int tz_set_nagra_warmboot(uint32_t base,uint32_t size,uint32_t entry, struct tee *tee)
+static int tz_set_nagra_warmboot(uint32_t base, struct tee *tee)
 {
 	struct smc_param param = { 0 };
 
@@ -992,7 +996,7 @@ static int tz_set_nagra_warmboot(uint32_t base,uint32_t size,uint32_t entry, str
 
 #ifdef CONFIG_MSTAR_CHIP
 	//mutex_lock(&ptee->mutex);
-	printk("\033[0;32;31m Set nagra_warmboot base = %x size = %x entry = %x\033[m\n",base,size,entry);
+	printk("\033[0;32;31m Set nagra_warmboot address = %x\033[m\n",base);
 	param.a0 = 0x8400ee02;
 	param.a1 = base;
 	tee_smc_call(&param);
@@ -1210,6 +1214,8 @@ static struct task_struct *tee_ramlog_tsk = NULL;
 static unsigned long tee_ramlog_buf_adr;
 static unsigned long tee_ramlog_buf_len;
 
+static int tee_ramlog_loop(void *p);
+
 static int tee_ramlog_init_addr(unsigned long buf_adr,unsigned long buf_len)
 {
 	if ((buf_adr == 0) || (buf_len == 0))
@@ -1218,6 +1224,41 @@ static int tee_ramlog_init_addr(unsigned long buf_adr,unsigned long buf_len)
 	tee_ramlog_buf_adr = buf_adr;
 	tee_ramlog_buf_len = buf_len;
 	mutex_init(&tee_ramlog_lock);
+	return 0;
+}
+
+static int tz_ramlog_set_addr_len(unsigned long buf_adr,unsigned long buf_len)
+{
+	void* mapping_vaddr = NULL;
+
+	if ((buf_adr == 0) || (buf_len == 0))
+		return -EINVAL;
+
+	if (tee_ramlog_tsk) {
+		return 0;
+	}
+
+	//Check ramlog address and size were configured or not.
+	if ((tee_ramlog_buf_adr || tee_ramlog_buf_len) == 0) {
+		//Need to init ramlog_mutex
+		mutex_init(&tee_ramlog_lock);
+	}
+
+	mutex_lock(&tee_ramlog_lock);
+	mapping_vaddr = ioremap_cache(buf_adr, buf_len);
+	if (mapping_vaddr == NULL) {
+		mutex_unlock(&tee_ramlog_lock);
+		printk("\033[0;32;31m [OPTEE][RAMLOG] %s %d \033[m\n",__func__,__LINE__);
+		return -ENOMEM;
+	}
+
+	tee_ramlog_buf_adr = (unsigned long)mapping_vaddr;
+	tee_ramlog_buf_len = buf_len;
+	mutex_unlock(&tee_ramlog_lock);
+
+	if (tee_ramlog_tsk == NULL)
+		tee_ramlog_tsk = kthread_run(tee_ramlog_loop, NULL, "tee_ramlog_loop");
+
 	return 0;
 }
 
@@ -1300,14 +1341,12 @@ static int configure_ramlog(struct tee_tz *ptee)
 		return 0;
 
 	paddr = tee_shm_pool_alloc(DEV, ptee->shm_pool, dataSize, ALLOC_ALIGN);
-	if(paddr == 0)
-	{
+	if (paddr == 0)	{
 		printk(KERN_WARNING "***Fail to allocate share memory pool***\n");
 		goto fail;
 	}
 	vaddr = tee_shm_pool_p2v(DEV, ptee->shm_pool, paddr);
-       if(!vaddr)
-       {
+       if (!vaddr) {
         	printk(KERN_WARNING "***Fail to map virtual adddress***\n");
 		goto fail;
        }
@@ -1318,17 +1357,17 @@ static int configure_ramlog(struct tee_tz *ptee)
 		set_fs(KERNEL_DS);
 		read_ret = vfs_read(pRamlogEnableFile, vaddr, dataSize, &pRamlogEnableFile->f_pos);
 		set_fs(old_fs);
-		if(read_ret == dataSize){
+		if (read_ret == dataSize) {
 			param.a1 = (uint64_t)paddr;
 			param.a2 = dataSize;
 		}
-		else{
+		else {
 			printk(KERN_ERR "RAMLOG ERROR: %s size is %d, but it should be %d bytes, so do nothing\n", RAMLOG_PATH, read_ret, dataSize);
 		}
 
 		filp_close(pRamlogEnableFile,NULL);
       	}
-	else{
+	else {
 		printk(KERN_ERR "RAMLOG ERROR: cannot open %s!\n", RAMLOG_PATH);
 	}
 
@@ -1351,7 +1390,7 @@ fail:
 	if (param.a3)
 		ramlog_vaddr = ioremap_cache(param.a1, param.a2);
 	else
-	ramlog_vaddr = ioremap_nocache(param.a1, param.a2);
+		ramlog_vaddr = ioremap_nocache(param.a1, param.a2);
 
 	if (ramlog_vaddr == NULL) {
 		dev_err(DEV, "ramlog ioremap failed\n");
@@ -1452,6 +1491,7 @@ static const struct tee_ops tee_fops = {
 	.set_log_level = tz_set_log_level,
 	.configure_crc_args = tz_configure_crc_args,
 	.set_nagra_warmboot = tz_set_nagra_warmboot,
+	.set_log_addr = tz_ramlog_set_addr_len,
 #endif
 	.pm51ctl = tz_pm51ctl,
 };

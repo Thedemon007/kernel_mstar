@@ -86,6 +86,8 @@
 #include <linux/workqueue.h>
 #include <linux/slab.h>
 #include <linux/kthread.h>
+#include <linux/notifier.h>
+#include <linux/reboot.h>
 
 #if defined(CONFIG_MIPS)
 #include <asm/mips-boards/prom.h>
@@ -118,11 +120,19 @@
 //  Data structure
 //-------------------------------------------------------------------------------------------------
 static struct net_device *emac_dev;
+/* slt-test */
+static bool is_slt_test_running = false;
+static bool is_slt_test_passed = true;
+static const int slt_packet_len = 1280;
 //-------------------------------------------------------------------------------------------------
 //  EMAC Function
 //-------------------------------------------------------------------------------------------------
 static int  MDev_EMAC_tx (struct sk_buff *skb, struct net_device *dev);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void MDev_EMAC_timer_callback(struct timer_list *t);
+#else
 static void MDev_EMAC_timer_callback( unsigned long value );
+#endif
 static int  MDev_EMAC_SwReset(struct net_device *dev);
 static void MDev_EMAC_Send_PausePkt(struct net_device* dev);
 
@@ -164,6 +174,10 @@ static void MDev_EMAC_TX_Desc_Close(struct net_device *dev);
 static void _MDev_EMAC_tx_reset_TX_SW_QUEUE(struct net_device* netdev);
 #endif
 
+static int MDev_EMAC_open(struct net_device *dev);
+static int MDev_EMAC_close(struct net_device *dev);
+
+void MDrv_EMAC_DumpMem(phys_addr_t addr, u32 len);
 //-------------------------------------------------------------------------------------------------
 // PHY MANAGEMENT
 //-------------------------------------------------------------------------------------------------
@@ -706,6 +720,308 @@ static void MDev_EMAC_set_rx_mode (struct net_device *dev)
 //-------------------------------------------------------------------------------------------------
 // IOCTL
 //-------------------------------------------------------------------------------------------------
+/* slt-test */
+static void mstar_emac_slt_test_tx(struct net_device *dev)
+{
+    struct EMAC_private *LocPtr = (struct EMAC_private*) netdev_priv(dev);
+    dma_addr_t skb_addr;
+    int i, j, err_cnt_rx, err_cnt_tx, err_cnt_col;
+    char *pskb;
+    u32 reg_val;
+    u32 config3_value = 0;
+
+    printk("slt-test-eth: start mstar_emac_slt_test_tx\n");
+
+    /* stop kernel tx packet */
+    netif_stop_queue(dev);
+
+    /* enable copy all frame mode */
+    reg_val = MHal_EMAC_Read_CFG();
+    reg_val |= 0x00000010UL;
+    MHal_EMAC_Write_CFG(reg_val);
+
+    /* set delay interrupt to 1 packet 1 time */
+#ifdef RX_DELAY_INTERRUPT
+    config3_value = (0x01010000UL | EMAC_INT_DELAY_MODE_EN);
+#endif
+#ifdef RX_CHECKSUM
+    config3_value = config3_value | RX_CHECKSUM_ENABLE;
+#endif
+#ifdef RX_DESC_MODE
+    config3_value = config3_value | SOFTWARE_DESCRIPTOR_ENABLE;
+#endif
+#ifdef HW_TX_CHECKSUM
+    dev->features |= NETIF_F_IP_CSUM;
+    config3_value = config3_value | TX_CHECKSUM_ENABLE;
+#endif
+    MHal_EMAC_Write_Network_config_register3(config3_value);
+
+    /* prepare test packet */
+    skb_addr = LocPtr->TX_BUFFER_BASE + LocPtr->RAM_VA_PA_OFFSET + TX_BUFF_ENTRY_SIZE * LocPtr->tx_index;
+    pskb = skb_addr;
+    for (j = 0; j < 5; j++) {
+        for (i = 0; i < 256; i++) {
+            *pskb = i;
+            pskb++;
+        }
+    }
+
+    /* EMAC error count, read clear */
+    err_cnt_rx = (MHal_EMAC_Read_ALE() + MHal_EMAC_Read_ELR() + MHal_EMAC_Read_SEQE() + MHal_EMAC_Read_ROVR() + MHal_EMAC_Read_SE() + MHal_EMAC_Read_RJB());
+    err_cnt_tx = (MHal_EMAC_Read_TUE() + MHal_EMAC_Read_CSE() + MHal_EMAC_Read_SQEE());
+    err_cnt_col = (MHal_EMAC_Read_LCOL() + MHal_EMAC_Read_ECOL() + MHal_EMAC_Read_SCOL() + MHal_EMAC_Read_MCOL());
+
+    is_slt_test_passed = true;
+    //MDrv_EMAC_DumpMem(skb_addr, slt_packet_len);
+    MHal_EMAC_Write_TAR(skb_addr - LocPtr->RAM_VA_PA_OFFSET - MIU0_BUS_BASE);
+    MHal_EMAC_Write_TCR(slt_packet_len);
+
+    printk("slt-test-eth: end mstar_emac_slt_test_tx\n");
+}
+
+#ifdef EMAC_NEW_WOC
+static u8 woc_filter_index = 0;
+static u8 woc_sram_pattern[20][128] = {0};
+
+u8 mstar_emac_woc_index_get(void)
+{
+    return woc_filter_index;
+}
+
+void mstar_emac_woc_index_set(u8 index)
+{
+    woc_filter_index = index;
+}
+
+int mstar_emac_woc_sram_read(struct net_device *dev)
+{
+    u32 i, j, temp;
+    u8 val;
+
+    /* set to sram mode */
+    val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET);
+    val &= 0xFC;
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET, val);
+
+    for (i = 0; i < WOC_PATTERN_BYTES_MAX; i++) {
+        /* set pattern byte offset */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_CTRL_OFFSET);
+        val &= 0x80;
+        val |= (i & 0x7F);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_CTRL_OFFSET, val);
+
+        /* latch address to offset */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_H_SRAM0_ADDR_LATCH);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+
+        for (j = 0; j < WOC_FILTER_NUM_MAX; j++) {
+            woc_sram_pattern[j][i] = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, (REG_WOC_SRAM0_DOUT_OFFSET + j));
+        }
+    }
+
+    return 0;
+}
+
+int mstar_emac_woc_sram_write(struct net_device *dev)
+{
+    u32 i, j, delay;
+    u8 val;
+
+    /* set to sram mode */
+    val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET);
+    val &= 0xFC;
+    val |= 0x02;
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET, val);
+
+    for (i = 0; i < WOC_PATTERN_BYTES_MAX; i++) {
+        delay = 0;
+
+        /* set pattern byte offset */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_CTRL_OFFSET);
+        val &= 0x80;
+        val |= (i & 0x7F);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_CTRL_OFFSET, val);
+
+        /* latch address to offset */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_H_SRAM0_ADDR_LATCH);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+
+        for(j = 0; j < WOC_FILTER_NUM_MAX; j++) {
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, (REG_WOC_CHK_LENGTH_0_OFFSET + j), woc_sram_pattern[j][i]);
+        }
+
+        if ((i == ETH_PROTOCOL_NUM_OFFSET) || (i == ETH_PROTOCOL_DEST_PORT_H_OFFSET) || (i == ETH_PROTOCOL_DEST_PORT_L_OFFSET)) {
+            /* enable all pattern byte check */
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_0_7_OFFSET, 0xff);
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_8_15_OFFSET, 0xff);
+            val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET);
+            val |= 0x0f;
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET, val);
+        } else {
+            /* disable all pattern byte check */
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_0_7_OFFSET, 0x0);
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_8_15_OFFSET, 0x0);
+            val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET);
+            val &= 0xf0;
+            MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET, val);
+        }
+
+        /* write to sram */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_H_SRAM0_WE);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+        do {
+            mdelay(1);
+            val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET);
+            val &= (0x1 << BIT_WOC_CTRL_L_WOL_WRDY);
+
+            delay++;
+            if (delay == 20) {
+                printk("mstar_emac_woc_write_sram write sram0 failed 0x%x\n", val);
+                goto write_sram_fail;
+            }
+        } while (val == 0);
+
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_H_WOL_WRDY_CR);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+    }
+
+    return 0;
+
+write_sram_fail:
+    return -1;
+}
+
+int mstar_emac_woc_protocol_port_set(struct net_device *dev, char protocol_type, int *port_array, int count)
+{
+    int i;
+
+    if (woc_filter_index >= WOC_FILTER_NUM_MAX) {
+        printk("already set 20 packets!\n");
+        return -1;
+    }
+
+    if ((protocol_type != UDP_PROTOCOL) && (protocol_type != TCP_PROTOCOL)) {
+        printk("Protocol type is wrong(UDP = 17, TCP = 6).!\n");
+        return -1;
+    }
+
+    mstar_emac_woc_sram_read(dev);
+
+    for (i = 0; i < count; i++) {
+        /* byte23 is udp/tcp protocol number. */
+        woc_sram_pattern[woc_filter_index][ETH_PROTOCOL_NUM_OFFSET] = protocol_type;
+
+        /* byte36 and byte37 is udp/tcp destination port. */
+        woc_sram_pattern[woc_filter_index][ETH_PROTOCOL_DEST_PORT_H_OFFSET] = (char)(port_array[i] >> 8);
+        woc_sram_pattern[woc_filter_index][ETH_PROTOCOL_DEST_PORT_L_OFFSET] = (char)(port_array[i] & 0xff);
+        woc_filter_index++;
+    }
+
+    mstar_emac_woc_sram_write(dev);
+
+    return woc_filter_index - count;
+}
+
+int mstar_emac_woc_detect_len_set(struct net_device *dev, int len)
+{
+    u8 i, val;
+    u32 bit_mask = 0;
+
+    /* set to check length mode */
+    val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET);
+    val |= 0x03;
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET, val);
+
+    for (i = 0; i < mstar_emac_woc_index_get(); i++) {
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, (REG_WOC_CHK_LENGTH_0_OFFSET + i), len);
+        bit_mask |= (0x1 << i);
+    }
+
+    /* enable pattern length check */
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_0_7_OFFSET, (bit_mask & 0xffUL));
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_8_15_OFFSET, (bit_mask & 0xff00UL) >> 8);
+    val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET);
+    val &= 0xf0;
+    val |= ((bit_mask & 0xf0000UL) >> 16);
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET, val);
+
+    return 0;
+}
+
+void mstar_emac_woc_config(struct net_device *dev, bool enable)
+{
+    u8 val = 0;
+
+    if (enable) {
+        mstar_emac_woc_detect_len_set(dev, WOC_PATTERN_CHECK_LEN_MAX);
+
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_L_WOL_EN);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET, val);
+
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_L_STORAGE_EN);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET, val);
+
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY2, REG_WOL_MODE_OFFSET);
+        val |= (0x1 << BIT_WOL_MODE_WOL_EN);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY2, REG_WOL_MODE_OFFSET, val);
+    } else {
+        /* not disable wol here, this is for woc */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET);
+        val &= ~(0x1 << BIT_WOC_CTRL_L_WOL_EN);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET, val);
+
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET);
+        val &= ~(0x1 << BIT_WOC_CTRL_L_STORAGE_EN);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_L_OFFSET, val);
+
+        /* set to check length mode */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET);
+        val |= 0x01;
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_SRAM_STATE_OFFSET, val);
+
+        /* disable all pattern byte check */
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_0_7_OFFSET, 0x0);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_8_15_OFFSET, 0x0);
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET);
+        val &= 0xf0;
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_PAT_EN_16_19_OFFSET, val);
+    }
+}
+
+void mstar_emac_woc_auto_load_trigger(struct net_device *dev)
+{
+    u8 val_det_l, val_det_m, val_det_h, val;
+
+    val_det_l = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_DET_LA_0_7_OFFSET);
+    val_det_m = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_DET_LA_8_15_OFFSET);
+    val_det_h = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_DET_LA_16_19_OFFSET);
+    val_det_h &= 0x0f;
+
+    if ((val_det_l != 0) || (val_det_m != 0) || (val_det_h != 0)) {
+        /* pattern match hit */
+        /* trigger autoload */
+        val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+        val |= (0x1 << BIT_WOC_CTRL_H_WOL_STORAGE_AUTOLOAD);
+        MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+        printk("mstar_emac_woc_auto_load_trigger: trigger auto load\n");
+    }
+}
+
+void mstar_emac_woc_clear_irq(struct net_device *dev)
+{
+    u8 val;
+
+    val = MHal_EMAC_ReadReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET);
+    val |= (0x1 << BIT_WOC_CTRL_H_WOL_INT_CLEAR);
+    MHal_EMAC_WritReg8(REG_EPHY_ALBANY3, REG_WOC_CTRL_H_OFFSET, val);
+}
+#endif /* EMAC_NEW_WOC */
 
 //-------------------------------------------------------------------------------------------------
 // Enable/Disable MDIO
@@ -782,6 +1098,7 @@ static int MDev_EMAC_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 {
     struct EMAC_private *LocPtr = (struct EMAC_private*) netdev_priv(dev);
     struct mii_ioctl_data *data = if_mii(rq);
+    u32 tmpVal = 0;
 
     if (!netif_running(dev))
     {
@@ -800,6 +1117,10 @@ static int MDev_EMAC_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 
         case SIOCDEVON:
             MHal_EMAC_Power_On_Clk();
+#ifdef CONFIG_EMAC_TR_PN_SWAP
+            if (LocPtr->is_tr_pn_swap == true)
+                MHal_EMAC_Swap_TR_PN();
+#endif /* CONFIG_EMAC_TR_PN_SWAP */
             return 0;
 
         case SIOCDEVOFF:
@@ -817,7 +1138,8 @@ static int MDev_EMAC_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
             }
             else
             {
-                MHal_EMAC_read_phy((LocPtr->phyaddr & 0x1FUL), (data->reg_num & 0x1fUL), (u32 *)&(data->val_out));
+                MHal_EMAC_read_phy((LocPtr->phyaddr & 0x1FUL), (data->reg_num & 0x1fUL), &tmpVal);
+                data->val_out = tmpVal;
             }
             return 0;
 
@@ -829,6 +1151,297 @@ static int MDev_EMAC_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 
         case SIOCETHTOOL:
             return MDev_EMAC_ethtool_ioctl (dev, (void *) rq->ifr_data);
+
+        /* slt-test */
+        case SIOC_SLT_TEST_AN_RUN:
+        {
+            struct ioctl_slt_para_cmd slt_cmd;
+            u32 timeout = 0;
+            u32 i;
+
+            if (copy_from_user(&slt_cmd, rq->ifr_data, sizeof(slt_cmd))) {
+                printk(KERN_ERR "slt-test-eth: copy from user fail\n");
+                return -EFAULT;
+            }
+
+            printk("slt-test-eth: test adv all with auto-nego %d\n", slt_cmd.test_count);
+
+            for (i = 0; i < slt_cmd.test_count; i++) {
+                is_slt_test_running = true;
+                is_slt_test_passed = false;
+                timeout = 0;
+                mstar_emac_slt_test_tx(dev);
+                while (is_slt_test_running == true) {
+                    mdelay(1);
+                    if (timeout > 2000) {
+                        printk(KERN_ERR "slt-test-eth: adv all timeout 2 secs, no rx: %d\n", i);
+                        break;
+                    }
+                    timeout++;
+                }
+                if ((is_slt_test_running == false) && (is_slt_test_passed == true)) {
+                    printk("slt-test-eth: test adv all with auto-nego passed: %d\n", i);
+                } else {
+                    printk(KERN_ERR "slt-test-eth: test adv all with auto-nego failed: %d\n", i);
+                    is_slt_test_running = false;
+                    is_slt_test_passed = false;
+                    slt_cmd.failed_count = i;
+                    if (copy_to_user (rq->ifr_data, &slt_cmd, sizeof(slt_cmd)))
+                        printk(KERN_ERR "slt-test-eth: copy from user fail\n");
+                    return -EFAULT;
+                }
+            }
+
+            return 0;
+        }
+
+        case SIOC_SLT_TEST_FS_RUN:
+        {
+            struct ioctl_slt_para_cmd slt_cmd;
+            u32 timeout = 0;
+            u32 adv_orig = 0;
+            u32 i;
+
+            if (copy_from_user(&slt_cmd, rq->ifr_data, sizeof(slt_cmd))) {
+                printk(KERN_ERR "slt-test-eth: copy from user fail\n");
+                return -EFAULT;
+            }
+
+            MHal_EMAC_read_phy(LocPtr->phyaddr, MII_ADVERTISE, &adv_orig);
+
+            /* test adv speed 100 start */
+            printk("slt-test-eth: test adv speed 100: %d\n", slt_cmd.test_count);
+
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, BMCR_RESET);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, (ADVERTISE_CSMA | ADVERTISE_100FULL | ADVERTISE_100HALF));
+            mdelay(10);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_CTRL1000, 0x0);
+            mdelay(10);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_SPEED100 | BMCR_FULLDPLX));
+
+            LocPtr->ThisBCE.connected = 0;
+
+            LocPtr->Link_timer.expires = jiffies + (EMAC_CHECK_LINK_TIME / 1000000);
+
+            if (!(timer_pending(&LocPtr->Link_timer)))
+                add_timer(&LocPtr->Link_timer);
+
+            timeout = 0;
+
+            while (LocPtr->ThisBCE.connected == 0) {
+                mdelay(1);
+                if (timeout > 5000) {
+                    printk(KERN_ERR "slt-test-eth: adv speed 100 timeout 5 secs, no connection\n");
+                    is_slt_test_running = false;
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, adv_orig);
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART));
+                    return -EFAULT;
+                }
+                timeout++;
+            }
+
+            for (i = 0; i < slt_cmd.test_count; i++) {
+                is_slt_test_running = true;
+                is_slt_test_passed = false;
+                timeout = 0;
+                mstar_emac_slt_test_tx(dev);
+                while (is_slt_test_running == true) {
+                    mdelay(1);
+                    if (timeout > 2000) {
+                        printk(KERN_ERR "slt-test-eth: adv speed 100 timeout 2 secs, no rx: %d\n", i);
+                        break;
+                    }
+                    timeout++;
+                }
+                if ((is_slt_test_running == false) && (is_slt_test_passed == true)) {
+                    printk("slt-test-eth: test adv speed 100 passed: %d\n", i);
+                } else {
+                    printk(KERN_ERR "slt-test-eth: test adv speed 100 failed: %d\n", i);
+                    is_slt_test_running = false;
+                    is_slt_test_passed = false;
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, adv_orig);
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART));
+                    slt_cmd.failed_count = i;
+                    if (copy_to_user (rq->ifr_data, &slt_cmd, sizeof(slt_cmd)))
+                        printk(KERN_ERR "slt-test-eth: copy from user fail\n");
+                    return -EFAULT;
+                }
+            }
+
+            /* test adv speed 10 start */
+            printk("slt-test-eth: test adv speed 10: %d\n", slt_cmd.test_count);
+
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, BMCR_RESET);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, (ADVERTISE_CSMA | ADVERTISE_10FULL | ADVERTISE_10HALF));
+            mdelay(10);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_CTRL1000, 0x0);
+            mdelay(10);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_SPEED10 | BMCR_FULLDPLX));
+
+            LocPtr->ThisBCE.connected = 0;
+
+            LocPtr->Link_timer.expires = jiffies + (EMAC_CHECK_LINK_TIME / 1000000);
+
+            if (!(timer_pending(&LocPtr->Link_timer)))
+                add_timer(&LocPtr->Link_timer);
+
+            timeout = 0;
+
+            while (LocPtr->ThisBCE.connected == 0) {
+                mdelay(1);
+                if (timeout > 5000) {
+                    printk(KERN_ERR "slt-test-eth: adv speed 100 timeout 5 secs, no connection\n");
+                    is_slt_test_running = false;
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, adv_orig);
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART));
+                    return -EFAULT;
+                }
+                timeout++;
+            }
+
+            for (i = 0; i < slt_cmd.test_count; i++) {
+                is_slt_test_running = true;
+                is_slt_test_passed = false;
+                timeout = 0;
+                mstar_emac_slt_test_tx(dev);
+                while (is_slt_test_running == true) {
+                    mdelay(1);
+                    if (timeout > 2000) {
+                        printk(KERN_ERR "slt-test-eth: adv speed 10 timeout 2 secs, no rx: %d\n", i);
+                        break;
+                    }
+                    timeout++;
+                }
+                if ((is_slt_test_running == false) && (is_slt_test_passed == true)) {
+                    printk("slt-test-eth: test adv speed 10 passed: %d\n", i);
+                } else {
+                    printk(KERN_ERR "slt-test-eth: test adv speed 10 failed: %d\n", i);
+                    is_slt_test_running = false;
+                    is_slt_test_passed = false;
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, adv_orig);
+                    MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART));
+                    slt_cmd.failed_count = i;
+                    if (copy_to_user (rq->ifr_data, &slt_cmd, sizeof(slt_cmd)))
+                        printk(KERN_ERR "slt-test-eth: copy from user fail\n");
+                    return -EFAULT;
+                }
+            }
+
+            return 0;
+        }
+
+        case SIOC_SLT_TEST_CLR:
+        {
+            printk("slt-test-eth: clear test environment\n");
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, BMCR_RESET);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_ADVERTISE, (ADVERTISE_CSMA | ADVERTISE_ALL));
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_CTRL1000, 0x0);
+            MHal_EMAC_write_phy(LocPtr->phyaddr, MII_BMCR, (BMCR_ANENABLE | BMCR_ANRESTART));
+            is_slt_test_running = false;
+            return 0;
+        }
+
+#ifdef EMAC_NEW_WOC
+        case SIOC_SET_WOP_CMD:
+        {
+#ifdef CONFIG_COMPAT
+            struct ioctl_woc_para_cmd32 __user *req_ifr_data32;
+            struct ioctl_woc_para_cmd32 woc_cmd32;
+#endif /* CONFIG_COMPAT */
+            struct ioctl_woc_para_cmd __user *req_ifr_data;
+            struct ioctl_woc_para_cmd woc_cmd;
+            void __user *woc_port_array;
+            u32 *port_array;
+            int retval;
+
+#ifdef CONFIG_COMPAT
+            if (is_compat_task()) {
+                req_ifr_data32 = compat_ptr(ptr_to_compat(rq->ifr_data));
+
+                if (copy_from_user(&woc_cmd32, req_ifr_data32,
+                    sizeof(struct ioctl_woc_para_cmd32))) {
+                    printk(KERN_ERR "req_ifr_data32: 0x%p fail!\n", req_ifr_data32);
+                    return -EFAULT;
+                }
+
+                port_array = kmalloc((sizeof(u32) * woc_cmd32.port_count), GFP_KERNEL);
+                if (!port_array) {
+                    printk(KERN_ERR "port_array kmalloc fail!\n");
+                    return -EFAULT;
+                }
+
+                woc_port_array = compat_ptr(woc_cmd32.port_array);
+                if (!woc_port_array) {
+                    printk(KERN_ERR "null woc_port_array!\n");
+                    kfree(port_array);
+                    return -EFAULT;
+                }
+
+                retval = copy_from_user(port_array, woc_port_array, (sizeof(u32) * woc_cmd32.port_count));
+                if (retval) {
+                    printk(KERN_ERR "wop_port_array: 0x%p fail!"
+                           "count32 = %d, ret = %d \n",
+                           woc_port_array,
+                           woc_cmd32.port_count, retval);
+                    kfree(port_array);
+
+                    return -EFAULT;
+                }
+
+                retval = mstar_emac_woc_protocol_port_set(dev,
+                            woc_cmd32.protocol_type, port_array,
+                            woc_cmd32.port_count);
+            } else
+#endif /* CONFIG_COMPAT */
+            {
+                req_ifr_data = rq->ifr_data;
+
+                if (copy_from_user(&woc_cmd, req_ifr_data,
+                    sizeof(struct ioctl_woc_para_cmd))) {
+                    printk(KERN_ERR "req_ifr_data: 0x%p fail! \n",
+                                req_ifr_data);
+                    return -EFAULT;
+                }
+
+                port_array = kmalloc((sizeof(u32) * woc_cmd.port_count),
+                                     GFP_KERNEL);
+                if (!port_array) {
+                    printk(KERN_ERR "port_array kmalloc fail! \n");
+                    return -EFAULT;
+                }
+
+                woc_port_array = woc_cmd.port_array;
+                if (!woc_port_array) {
+                    printk(KERN_ERR "null woc_port_array!\n");
+                    kfree(port_array);
+                    return -EFAULT;
+                }
+
+                retval = copy_from_user(port_array, woc_port_array,
+                         (sizeof(u32) * woc_cmd.port_count));
+                if (retval) {
+                    printk(KERN_ERR "woc_port_array: 0x%p fail! "
+                                "count = %d, ret = %d \n",
+                                woc_port_array, woc_cmd.port_count,
+                                retval);
+                    kfree(port_array);
+
+                    return -EFAULT;
+                }
+
+                retval = mstar_emac_woc_protocol_port_set(dev,
+                         woc_cmd.protocol_type, port_array,
+                         woc_cmd.port_count);
+            }
+
+            kfree(port_array);
+
+            return retval;
+        }
+        case SIOC_CLR_WOP_CMD:
+            mstar_emac_woc_index_set(0);
+            return 0;
+#endif /* EMAC_NEW_WOC */
 
         default:
             return -EOPNOTSUPP;
@@ -891,7 +1504,7 @@ static int MDev_EMAC_open (struct net_device *dev)
     int ret;
 
 #ifdef RX_NAPI
-    EMAC_DBG("MDev_EMAC_open: stat=0x%x, stat_sch=0x%x\n", LocPtr->napi_rx.state, NAPI_STATE_SCHED);
+    EMAC_DBG("MDev_EMAC_open: stat=0x%lx, stat_sch=0x%x\n", LocPtr->napi_rx.state, NAPI_STATE_SCHED);
     if (!test_bit(NAPI_STATE_SCHED, &LocPtr->napi_rx.state)) {
         napi_disable(&LocPtr->napi_rx);
         EMAC_DBG("napi_disable RRXX!\n");
@@ -1032,7 +1645,6 @@ static int MDev_EMAC_close (struct net_device *dev)
     MDev_EMAC_RX_DESC_close_zero_copy(dev);
 #endif
     netif_stop_queue (dev);
-    netif_carrier_off(dev);
     del_timer_sync(&LocPtr->Link_timer);
 #ifdef TX_ZERO_COPY
     del_timer_sync(&LocPtr->TX_free_timer);
@@ -1133,20 +1745,18 @@ void MDrv_EMAC_DumpMem(phys_addr_t addr, u32 len)
     u8 *ptr = (u8 *)addr;
     u32 i;
 
-    printk("\n ===== Dump %lx =====\n", (long unsigned int)ptr);
-    for (i=0; i<len; i++)
-    {
-        if ((u32)i%0x10UL ==0)
-            printk("%lx: ", (long unsigned int)ptr);
-        if (*ptr < 0x10UL)
-            printk("0%x ", *ptr);
-        else
-            printk("%x ", *ptr);
-        if ((u32)i%0x10UL == 0x0fUL)
-            printk("\n");
-        ptr++;
+    printk(KERN_ERR "===== Dump %lx, len %d(%02x) =====\n",
+           (long unsigned int)ptr, len, len);
+    printk(KERN_ERR "              00 01 02 03 04 05 06 07  08 09 0a 0b 0c 0d 0e 0f\n");
+    for (i = 0; i < len; i++) {
+        printk(KERN_ERR "%lx(%02x): %02x %02x %02x %02x %02x %02x %02x %02x  %02x %02x %02x %02x %02x %02x %02x %02x\n",
+               (long unsigned int)ptr, i,
+               *ptr, *(ptr + 1), *(ptr + 2), *(ptr + 3), *(ptr + 4), *(ptr + 5), *(ptr + 6), *(ptr + 7),
+               *(ptr + 8), *(ptr + 9), *(ptr + 10), *(ptr + 11), *(ptr + 12), *(ptr + 13), *(ptr + 14), *(ptr + 15));
+        ptr += 16;
+        i += 15;
     }
-    printk("\n");
+    printk(KERN_ERR "\n");
 }
 #if 0
 //Background send
@@ -2337,6 +2947,7 @@ static int MDev_EMAC_rx (struct net_device *dev)
 #ifdef EMAC_RX_ADDRESS_34BIT
     u32 tmp_desc_high_tag = 0;
 #endif
+    int ret = 0;
 
     do {
 #ifdef CHIP_FLUSH_READ
@@ -2390,6 +3001,73 @@ static int MDev_EMAC_rx (struct net_device *dev)
 #endif
 #endif
 
+        /* slt-test */
+        if (is_slt_test_running == true) {
+            u32 reg_val;
+            u32 config3_value = 0;
+            int err_cnt_rx = 0;
+            int err_cnt_tx = 0;
+            int err_cnt_col = 0;
+            dma_addr_t skb_addr;
+
+            /* rx packet len is include 4 bytes crc */
+            if (pktlen != (slt_packet_len + 4)) {
+                printk(KERN_ERR "slt-test-eth: not test packet, skip it\n");
+                dev_kfree_skb_any(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+                goto RX_recieve_end;
+            }
+
+            /* get test packet */
+            skb_addr = LocPtr->TX_BUFFER_BASE + LocPtr->RAM_VA_PA_OFFSET + TX_BUFF_ENTRY_SIZE * LocPtr->tx_index;
+            LocPtr->tx_index++;
+            LocPtr->tx_index = LocPtr->tx_index % TX_BUFF_ENTRY_NUMBER;
+
+            /* disable copy all frame mode */
+            reg_val = MHal_EMAC_Read_CFG();
+            reg_val &= ~(0x00000010UL);
+            MHal_EMAC_Write_CFG(reg_val);
+
+            printk("slt-test-eth: rx packet\n");
+            pktlen -= 4;
+            //MDrv_EMAC_DumpMem(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]->data, pktlen);
+
+            /* EMAC error count */
+            err_cnt_rx = (MHal_EMAC_Read_ALE() + MHal_EMAC_Read_ELR() + MHal_EMAC_Read_SEQE() + MHal_EMAC_Read_ROVR() + MHal_EMAC_Read_SE() + MHal_EMAC_Read_RJB());
+            err_cnt_tx = (MHal_EMAC_Read_TUE() + MHal_EMAC_Read_CSE() + MHal_EMAC_Read_SQEE());
+            err_cnt_col = (MHal_EMAC_Read_LCOL() + MHal_EMAC_Read_ECOL() + MHal_EMAC_Read_SCOL() + MHal_EMAC_Read_MCOL());
+
+            /* compare tx rx packet data */
+            if ((memcmp(skb_addr, LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]->data, slt_packet_len) != 0) || (err_cnt_rx != 0) || (err_cnt_tx != 0) || (err_cnt_col != 0)) {
+                printk(KERN_ERR "slt-test-eth: rx failed, rx_err: %d, tx_err: %d, col_err: %d\n", err_cnt_rx, err_cnt_tx, err_cnt_col);
+                MDrv_EMAC_DumpMem(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]->data, pktlen);
+                is_slt_test_passed = false;
+            } else {
+                printk("slt-test-eth: passed\n");
+            }
+
+            dev_kfree_skb_any(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+
+            /* recovery settings */
+#ifdef RX_DELAY_INTERRUPT
+            config3_value = DELAY_INTERRUPT_CONFIG;
+#endif
+#ifdef RX_CHECKSUM
+            config3_value = config3_value | RX_CHECKSUM_ENABLE;
+#endif
+#ifdef RX_DESC_MODE
+            config3_value = config3_value | SOFTWARE_DESCRIPTOR_ENABLE;
+#endif
+#ifdef HW_TX_CHECKSUM
+            dev->features |= NETIF_F_IP_CSUM;
+            config3_value = config3_value | TX_CHECKSUM_ENABLE;
+#endif
+            MHal_EMAC_Write_Network_config_register3(config3_value);
+
+            is_slt_test_running = false;
+            netif_start_queue(dev);
+
+            goto RX_recieve_end;
+        }
         pktlen = pktlen - 4;
 
         skb_put(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index], pktlen);
@@ -2526,18 +3204,25 @@ static int MDev_EMAC_rx (struct net_device *dev)
 #ifdef RX_NAPI
 #ifdef RX_GRO
         if (field == 2)
-            netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+            ret = netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
         else
-            napi_gro_receive(&LocPtr->napi_rx,LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+            ret = napi_gro_receive(&LocPtr->napi_rx,LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
 #else
         if (field == 2)
-            netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+            ret = netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
         else
-            netif_receive_skb(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+            ret = netif_receive_skb(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
 #endif
 #else
-        netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
+        ret = netif_rx(LocPtr->rx_desc_sk_buff_list[LocPtr->rx_desc_read_index]);
 #endif
+
+        if ((ret == NET_RX_DROP) || (ret == GRO_DROP)) {
+            LocPtr->stats.rx_dropped++;
+            if (printk_ratelimit()) {
+                EMAC_NOTI("receive skb failed\n");
+            }
+        }
 
         LocPtr->stats.rx_bytes += pktlen;
 
@@ -2727,7 +3412,7 @@ static int MDev_EMAC_rx (struct net_device *dev)
     struct EMAC_private *LocPtr = (struct EMAC_private*) netdev_priv(dev);
     unsigned char *p_recv;
     u32 pktlen;
-    u32 retval=0;
+    int ret = 0;
     u32 received_number=0;
     struct sk_buff *skb;
 
@@ -2773,6 +3458,74 @@ static int MDev_EMAC_rx (struct net_device *dev)
             LocPtr->stats.rx_length_errors++;
             LocPtr->stats.rx_errors++;
             LocPtr->stats.rx_dropped++;
+
+            goto RX_recieve_memcpy_end;
+        }
+
+        /* slt-test */
+        if (is_slt_test_running == true) {
+            u32 reg_val;
+            u32 config3_value = 0;
+            int err_cnt_rx = 0;
+            int err_cnt_tx = 0;
+            int err_cnt_col = 0;
+            dma_addr_t skb_addr;
+
+            /* rx packet len is include 4 bytes crc */
+            if (pktlen != (slt_packet_len + 4)) {
+                printk(KERN_ERR "slt-test-eth: not test packet, skip it\n");
+                goto RX_recieve_memcpy_end;
+            }
+
+            /* get test packet */
+            skb_addr = LocPtr->TX_BUFFER_BASE + LocPtr->RAM_VA_PA_OFFSET + TX_BUFF_ENTRY_SIZE * LocPtr->tx_index;
+            LocPtr->tx_index++;
+            LocPtr->tx_index = LocPtr->tx_index % TX_BUFF_ENTRY_NUMBER;
+
+            /* disable copy all frame mode */
+            reg_val = MHal_EMAC_Read_CFG();
+            reg_val &= ~(0x00000010UL);
+            MHal_EMAC_Write_CFG(reg_val);
+
+            printk("slt-test-eth: rx packet\n");
+            pktlen -= 4;
+            //MDrv_EMAC_DumpMem(p_recv, pktlen);
+
+            /* EMAC error count */
+            err_cnt_rx = (MHal_EMAC_Read_ALE() + MHal_EMAC_Read_ELR() + MHal_EMAC_Read_SEQE() + MHal_EMAC_Read_ROVR() + MHal_EMAC_Read_SE() + MHal_EMAC_Read_RJB());
+            err_cnt_tx = (MHal_EMAC_Read_TUE() + MHal_EMAC_Read_CSE() + MHal_EMAC_Read_SQEE());
+            err_cnt_col = (MHal_EMAC_Read_LCOL() + MHal_EMAC_Read_ECOL() + MHal_EMAC_Read_SCOL() + MHal_EMAC_Read_MCOL());
+
+            /* compare tx rx packet data */
+            if ((memcmp(skb_addr, p_recv, slt_packet_len) != 0) || (err_cnt_rx != 0) || (err_cnt_tx != 0) || (err_cnt_col != 0)) {
+                printk(KERN_ERR "slt-test-eth: rx failed, rx_err: %d, tx_err: %d, col_err: %d\n", err_cnt_rx, err_cnt_tx, err_cnt_col);
+                printk(KERN_ERR "++++++++++++ p_recv +++++++++++\n");
+                MDrv_EMAC_DumpMem(p_recv, slt_packet_len);
+                printk(KERN_ERR "++++++++++++ skb_addr +++++++++++\n");
+                MDrv_EMAC_DumpMem(skb_addr, slt_packet_len);
+                is_slt_test_passed = false;
+            } else {
+                printk("slt-test-eth: passed\n");
+            }
+
+            /* recovery settings */
+#ifdef RX_DELAY_INTERRUPT
+            config3_value = DELAY_INTERRUPT_CONFIG;
+#endif
+#ifdef RX_CHECKSUM
+            config3_value = config3_value | RX_CHECKSUM_ENABLE;
+#endif
+#ifdef RX_DESC_MODE
+            config3_value = config3_value | SOFTWARE_DESCRIPTOR_ENABLE;
+#endif
+#ifdef HW_TX_CHECKSUM
+            dev->features |= NETIF_F_IP_CSUM;
+            config3_value = config3_value | TX_CHECKSUM_ENABLE;
+#endif
+            MHal_EMAC_Write_Network_config_register3(config3_value);
+
+            is_slt_test_running = false;
+            netif_start_queue(dev);
 
             goto RX_recieve_memcpy_end;
         }
@@ -2836,20 +3589,27 @@ static int MDev_EMAC_rx (struct net_device *dev)
         #ifdef RX_NAPI
         #ifdef RX_GRO
             if (field == 2)
-                retval = netif_rx(skb);
+                ret = netif_rx(skb);
             else
-                retval = napi_gro_receive(&LocPtr->napi_rx, skb);
+                ret = napi_gro_receive(&LocPtr->napi_rx, skb);
         #else
             if (field == 2)
-                retval = netif_rx(skb);
+                ret = netif_rx(skb);
             else
-                retval = netif_receive_skb(skb);
+                ret = netif_receive_skb(skb);
         #endif
         #else
-            retval = netif_rx(skb);
+            ret = netif_rx(skb);
         #endif
 
-        received_number++;
+            if ((ret == NET_RX_DROP) || (ret == GRO_DROP)) {
+                LocPtr->stats.rx_dropped++;
+                if (printk_ratelimit()) {
+                    EMAC_NOTI("receive skb failed\n");
+                }
+            }
+
+            received_number++;
         }
         else
         {
@@ -3265,7 +4025,7 @@ irqreturn_t MDev_EMAC_interrupt(int irq,void *dev_id)
 
         if (intstatus & EMAC_INT_RBNA)
         {
-            EMAC_DBG("RBNA!!!! read:%d, desc=0x%p\n", LocPtr->rx_desc_read_index, LocPtr->rx_desc_list[LocPtr->rx_desc_read_index].addr);
+            EMAC_DBG("RBNA!!!! read:%d, desc=0x%x\n", LocPtr->rx_desc_read_index, LocPtr->rx_desc_list[LocPtr->rx_desc_read_index].addr);
             LocPtr->stats.rx_dropped ++;
             //write 1 clear
             MHal_EMAC_Write_RSR(EMAC_BNA);
@@ -3411,6 +4171,11 @@ static u32 MDev_EMAC_HW_Reg_init(struct net_device *dev)
     if (!LocPtr->ThisUVE.initedEMAC)
     {
         MHal_EMAC_Power_On_Clk();
+#ifdef CONFIG_EMAC_TR_PN_SWAP
+        if (LocPtr->is_tr_pn_swap == true)
+            MHal_EMAC_Swap_TR_PN();
+#endif /* CONFIG_EMAC_TR_PN_SWAP */
+
         MHal_EMAC_Write_Network_config_register2(CONFIG2_VAL);
 
         if (MDev_EMAC_ScanPhyAddr(dev) < 0)
@@ -3788,7 +4553,7 @@ static void MDev_EMAC_get_strings(struct net_device *dev, u32 stringset, u8 *dat
         case ETH_SS_STATS:
             for (i = 0; i < EMAC_STATS_STRING_LEN; i++)
             {
-                sprintf(p, mstar_emac_stat_string[i]);
+                snprintf(p, ETH_GSTRING_LEN, mstar_emac_stat_string[i]);
                 p += ETH_GSTRING_LEN;
             }
             return;
@@ -3796,13 +4561,13 @@ static void MDev_EMAC_get_strings(struct net_device *dev, u32 stringset, u8 *dat
 #ifdef EMAC_10T_RANDOM_WAVEFORM
             for (i = 0; i < EMAC_PRIV_FLAGS_STRING_LEN; i++)
             {
-                sprintf(p, mstar_emac_private_flag_string[i]);
+                snprintf(p, ETH_GSTRING_LEN, mstar_emac_private_flag_string[i]);
                 p += ETH_GSTRING_LEN;
             }
 #endif
             return;
         default:
-            return -EOPNOTSUPP;
+            return;
     }
 }
 
@@ -4131,8 +4896,14 @@ static struct of_device_id mstaremac_of_device_ids[] = {
 //-------------------------------------------------------------------------------------------------
 // EMAC Timer set for Receive function
 //-------------------------------------------------------------------------------------------------
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void MDev_EMAC_timer_callback(struct timer_list *t)
+{
+    unsigned long value = EMAC_LINK_TMR;
+#else
 static void MDev_EMAC_timer_callback(unsigned long value)
 {
+#endif
     int ret = 0;
     struct EMAC_private *LocPtr = (struct EMAC_private *) netdev_priv(emac_dev);
     static u32 bmsr, time_count = 0;
@@ -4224,10 +4995,15 @@ static void MDev_EMAC_timer_callback(unsigned long value)
 }
 
 #ifdef TX_ZERO_COPY
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void MDev_EMAC_tx_free_timer_callback(struct timer_list *t)
+{
+    struct EMAC_private *LocPtr = form_timer(LocPtr, t, TX_free_timer);
+#else
 static void MDev_EMAC_tx_free_timer_callback(unsigned long value)
 {
     struct EMAC_private *LocPtr = (struct EMAC_private *) netdev_priv(value);
-
+#endif
     MDev_EMAC_TX_Free_sk_buff(value,0);
 
     LocPtr->Link_timer.expires = jiffies + (EMAC_CHECK_LINK_TIME / 1000000);
@@ -4279,11 +5055,60 @@ static int __init macaddr_auto_config_setup(char *addrs)
 __setup("macaddr=", macaddr_auto_config_setup);
 
 //-------------------------------------------------------------------------------------------------
-// EMAC init module
+// EMAC register reboot notifier
 //-------------------------------------------------------------------------------------------------
-static int MDev_EMAC_init(void)
+static int _MDev_EMAC_reboot_handler(struct notifier_block* nb, unsigned long event, void *unused)
 {
     struct EMAC_private *LocPtr;
+    u8 u8RegVal;
+
+    EMAC_DBG("[%s][%d] event=%lu\n", __func__, __LINE__, event);
+    switch (event)
+    {
+        case SYS_POWER_OFF:
+            if (!emac_dev) {
+                EMAC_DBG("no emac dev\n");
+                return NOTIFY_OK;
+            }
+
+            LocPtr = netdev_priv(emac_dev);
+
+            if (LocPtr->ep_flag & EP_FLAG_OPEND) {
+                /* write reg_emac_dummy1[10] to 0, if ifconfig up */
+                u8RegVal = MHal_EMAC_ReadReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1));
+                u8RegVal &= ~(0x04);
+                MHal_EMAC_WritReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1), u8RegVal);
+#ifdef EMAC_NEW_WOC
+                mstar_emac_woc_config(emac_dev, true);
+#endif /* EMAC_NEW_WOC */
+            } else {
+                /* write reg_emac_dummy1[10] to 1, if ifconfig down */
+                u8RegVal = MHal_EMAC_ReadReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1));
+                u8RegVal |= (0x04);
+                MHal_EMAC_WritReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1), u8RegVal);
+#ifdef EMAC_NEW_WOC
+                mstar_emac_woc_config(emac_dev, false);
+#endif /* EMAC_NEW_WOC */
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return NOTIFY_OK;
+}
+
+static struct notifier_block _MDev_EMAC_reboot_notifier = {
+    .notifier_call = _MDev_EMAC_reboot_handler,
+};
+//-------------------------------------------------------------------------------------------------
+// EMAC init module
+//-------------------------------------------------------------------------------------------------
+static int MDev_EMAC_init(struct platform_device *pdev)
+{
+    struct EMAC_private *LocPtr;
+    struct device_node *np = NULL;
 
     if(emac_dev)
         return -1;
@@ -4324,6 +5149,21 @@ static int MDev_EMAC_init(void)
     emac_dev->irq           = MAC_IRQ;
     emac_dev->netdev_ops    = &mstar_lan_netdev_ops;
 
+    np = pdev->dev.of_node;
+    if (!np) {
+        EMAC_DBG("fail to find node\n");
+        goto end;
+    }
+
+#ifdef CONFIG_EMAC_TR_PN_SWAP
+    if (of_property_read_bool(np, "tr-pn-swap") == true) {
+        EMAC_DBG("do tr pn swap setting\n");
+        LocPtr->is_tr_pn_swap = true;
+    } else {
+        LocPtr->is_tr_pn_swap = false;
+    }
+#endif /* CONFIG_EMAC_TR_PN_SWAP */
+
     if(MDev_EMAC_MemInit(emac_dev) == 0)
     {
         EMAC_DBG("Memery init fail!!\n");
@@ -4363,17 +5203,27 @@ static int MDev_EMAC_init(void)
     (void) MDev_EMAC_update_linkspeed (emac_dev);
     spin_unlock_irq (&LocPtr->irq_lock);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    timer_setup(&LocPtr->Link_timer, MDev_EMAC_timer_callback, 0);
+#else
     init_timer(&LocPtr->Link_timer);
     LocPtr->Link_timer.data = EMAC_LINK_TMR;
     LocPtr->Link_timer.function = MDev_EMAC_timer_callback;
+#endif
     LocPtr->Link_timer.expires = jiffies + EMAC_CHECK_LINK_TIME/20;
 
 #ifdef TX_ZERO_COPY
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    timer_setup(&LocPtr->TX_free_timer, MDev_EMAC_tx_free_timer_callback, 0);
+#else
     init_timer(&LocPtr->TX_free_timer);
     LocPtr->TX_free_timer.data = emac_dev;
     LocPtr->TX_free_timer.function = MDev_EMAC_tx_free_timer_callback;
+#endif
     LocPtr->TX_free_timer.expires = jiffies + (EMAC_CHECK_LINK_TIME / 1000000);
 #endif
+
+    register_reboot_notifier(&_MDev_EMAC_reboot_notifier);
 
     return register_netdev (emac_dev);
 
@@ -4451,6 +5301,9 @@ static int mstar_emac_drv_suspend(struct platform_device *dev, pm_message_t stat
         u8RegVal = MHal_EMAC_ReadReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1));
         u8RegVal &= ~(0x04);
         MHal_EMAC_WritReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1), u8RegVal);
+#ifdef EMAC_NEW_WOC
+        mstar_emac_woc_config(netdev, true);
+#endif /* EMAC_NEW_WOC */
     }
     else
     {
@@ -4458,7 +5311,14 @@ static int mstar_emac_drv_suspend(struct platform_device *dev, pm_message_t stat
         u8RegVal = MHal_EMAC_ReadReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1));
         u8RegVal |= (0x04);
         MHal_EMAC_WritReg8(REG_EMAC0_BANK, (REG_EMAC_JULIAN_0138 + 1), u8RegVal);
+#ifdef EMAC_NEW_WOC
+        mstar_emac_woc_config(netdev, false);
+#endif /* EMAC_NEW_WOC */
     }
+
+#ifdef CONFIG_EMAC_STR_SLOW_SPEED
+    MHal_EMAC_AN_10T();
+#endif /* CONFIG_EMAC_STR_SLOW_SPEED */
 
     return 0;
 }
@@ -4555,6 +5415,10 @@ static int mstar_emac_drv_resume(struct platform_device *dev)
     u32 retval;
     printk(KERN_INFO "mstar_emac_drv_resume\n");
 
+#ifdef CONFIG_EMAC_STR_SLOW_SPEED
+    MHal_EMAC_AN_100T();
+#endif /* CONFIG_EMAC_STR_SLOW_SPEED */
+
     if(!netdev)
     {
         return -1;
@@ -4563,6 +5427,10 @@ static int mstar_emac_drv_resume(struct platform_device *dev)
 #ifdef EMAC_WOC
     mstar_emac_woc_packet_get(netdev);
 #endif /* EMAC_WOC */
+
+#ifdef EMAC_NEW_WOC
+    mstar_emac_woc_config(netdev, false);
+#endif /* EMAC_NEW_WOC */
 
     LocPtr->ThisUVE.initedEMAC = 0;
     MDev_EMAC_HW_Reg_init(netdev);
@@ -4576,7 +5444,15 @@ static int mstar_emac_drv_resume(struct platform_device *dev)
             printk(KERN_WARNING "Driver Emac: open failed after resume\n");
         }
         LocPtr->ep_flag &= ~EP_FLAG_SUSPENDING_OPEND;
+#ifdef EMAC_NEW_WOC
+        mstar_emac_woc_auto_load_trigger(netdev);
+#endif /* EMAC_NEW_WOC */
     }
+
+#ifdef EMAC_NEW_WOC
+    mstar_emac_woc_clear_irq(netdev);
+#endif /* EMAC_NEW_WOC */
+
     return 0;
 }
 
@@ -4588,7 +5464,7 @@ static int mstar_emac_drv_probe(struct platform_device *pdev)
     EMAC_DBG("EMAC V3: without any phy restart anto-nego patch\n");
 #endif /* CONFIG_EMAC_PHY_RESTART_AN */
 
-    retval = MDev_EMAC_init();
+    retval = MDev_EMAC_init(pdev);
     if(!retval)
     {
         pdev->dev.platform_data=emac_dev;

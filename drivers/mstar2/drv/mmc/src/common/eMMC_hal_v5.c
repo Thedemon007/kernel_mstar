@@ -52,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #include "eMMC.h"
 #if defined(UNIFIED_eMMC_DRIVER) && UNIFIED_eMMC_DRIVER
 
@@ -88,6 +89,11 @@ void eMMC_FCIE_GetCMDFIFO(U16 u16_WordPos, U16 u16_WordCnt, U16 *pu16_Buf);
 
 static U32 (*sgpFn_eMMC_FCIE_WaitEvents_Ex)(uintptr_t, U16, U32) = NULL;
 void (*sleep_or_delay)(U32) = msleep;
+
+U16 u16_OldPLLClkParam = 0xFFFF;
+U16 u16_OldPLLDLLClkParam = 0xFFFF; 
+U8  u8_tune_overtone = 1;
+
 //========================================================
 // HAL APIs
 //========================================================
@@ -101,13 +107,16 @@ U32 eMMC_FCIE_PollingEvents(uintptr_t ulongRegAddr, U16 u16_Events, U32 u32_Micr
 	volatile U32 u32_i, u32_DelayX;
 	volatile U16 u16_val = 0;
 
-	REG_FCIE_W(FCIE_MIE_INT_EN, 0); // mask interrupts
-	if(u32_MicroSec > HW_TIMER_DELAY_100us)
-	{
-		u32_DelayX = HW_TIMER_DELAY_100us/HW_TIMER_DELAY_1us;
-		u32_MicroSec /= u32_DelayX;
-	}
-	else
+    REG_FCIE_W(FCIE_MIE_INT_EN, 0); // mask interrupts
+
+    #if 0
+    if(u32_MicroSec > HW_TIMER_DELAY_100us)
+    {
+        u32_DelayX = HW_TIMER_DELAY_100us/HW_TIMER_DELAY_1us;
+        u32_MicroSec /= u32_DelayX;
+    }
+    else
+    #endif
 		u32_DelayX = 1;
 
 	for(u32_i=0; u32_i<u32_MicroSec; u32_i++)
@@ -129,9 +138,31 @@ U32 eMMC_FCIE_PollingEvents(uintptr_t ulongRegAddr, U16 u16_Events, U32 u32_Micr
 
 		return eMMC_ST_ERR_TIMEOUT_WAIT_REG0;
 	}
+    REG_FCIE_W1C(ulongRegAddr, u16_Events); // W1C for waited Event as success
 
 	return eMMC_ST_SUCCESS;
 }
+
+
+
+void eMMC_pll_dll_retry(void)
+{
+    u16_OldPLLClkParam = 0xFFFF;
+    u16_OldPLLDLLClkParam = 0xFFFF;
+    u8_tune_overtone = 1;
+}
+
+#ifndef CONFIG_MMC_MSTAR_NO_WORK_QUEUE
+void eMMC_FCIE_Force_Polling(void)
+{
+    sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_FCIE_PollingEvents;
+}
+
+void eMMC_FCIE_Force_Intr(void)
+{
+    sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_WaitCompleteIntr;
+}
+#endif
 
 char *gDebugModeName[] =
 {
@@ -176,10 +207,8 @@ void eMMC_FCIE_DumpDebugBus(void)
 		        REG_FCIE_CLRBIT(FCIE_TEST_MODE, BIT_DEBUG_MODE_MASK);
 		        REG_FCIE_SETBIT(FCIE_TEST_MODE, u16_i<<BIT_DEBUG_MODE_SHIFT);
 
-                eMMC_debug(0, 0, "0x39 = %04Xh, ", REG_FCIE(FCIE_EMMC_DEBUG_BUS1));
-                eMMC_debug(0, 0, "0x15 = %04Xh, ", REG_FCIE(FCIE_TEST_MODE));
-                eMMC_debug(0, 0, "0x38 = %04Xh", REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
-                eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+                eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "0x39 = %04Xh, 0x15 = %04Xh, 0x38 = %04Xh\n",
+					REG_FCIE(FCIE_EMMC_DEBUG_BUS1), REG_FCIE(FCIE_TEST_MODE), REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
 	        }
         }
         #if defined(ENABLE_FCIE_MIU_DEBUG)&& ENABLE_FCIE_MIU_DEBUG
@@ -190,22 +219,23 @@ void eMMC_FCIE_DumpDebugBus(void)
 				REG_FCIE_CLRBIT(FCIE1_0X51, BIT12|BIT11|BIT10|BIT9|BIT8);
 				REG_FCIE_SETBIT(FCIE1_0X51, u16_i<<8);
 
-				 eMMC_debug(0, 0, "0x39 = %04Xh, ", REG_FCIE(FCIE_EMMC_DEBUG_BUS1));
-				 eMMC_debug(0, 0, "FCIE1 0x51 = %04Xh, ", REG_FCIE(FCIE1_0X51));
-				 eMMC_debug(0, 0, "0x38 = %04Xh", REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
-				 eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+				eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "0x39 = %04Xh, FCIE1 0x51 = %04Xh, 0x38 = %04Xh\n",
+					REG_FCIE(FCIE_EMMC_DEBUG_BUS1), REG_FCIE(FCIE1_0X51), REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
 			}
 		}
         #endif
         else
         {
-            eMMC_debug(0, 0, "0x39 = %04Xh, ", REG_FCIE(FCIE_EMMC_DEBUG_BUS1));
-            eMMC_debug(0, 0, "0x38 = %04Xh", REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
-	        eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+            eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "0x39 = %04Xh, 0x38 = %04Xh\n",
+				REG_FCIE(FCIE_EMMC_DEBUG_BUS1), REG_FCIE(FCIE_EMMC_DEBUG_BUS0));
         }
     }
 
 	eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+
+    #if defined(ENABLE_FCIE_MIU_CHECKSUM) && ENABLE_FCIE_MIU_CHECKSUM
+    eMMC_enable_miu_chksum();
+    #endif
 
 }
 
@@ -214,72 +244,99 @@ void eMMC_FCIE_DumpDebugBus(void)
 void eMMC_FCIE_DumpRegisters(void)
 {
 	volatile U16 u16_reg;
-	U16 u16_i;
+    U16 u16_reg_tmp[8];
+    U16 u16_i, u16_j;
 
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "\n\nFCIE Reg:");
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "\n\nFCIE Reg:");
 
-	for(u16_i=0 ; u16_i<0x80; u16_i++)
-	{
-		if(0 == u16_i%8)
-			eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n%02Xh:| ", u16_i);
+    for(u16_i=0 ; u16_i<0x80; u16_i+=8)
+    {
+        for(u16_j=0; u16_j<8; u16_j++) {
+            REG_FCIE_R(GET_REG_ADDR(FCIE_REG_BASE_ADDR, (u16_i+u16_j)), u16_reg);
+            u16_reg_tmp[u16_j] = u16_reg;
+        }
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n%02Xh:| %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh\n",
+            u16_i, u16_reg_tmp[0], u16_reg_tmp[1], u16_reg_tmp[2], u16_reg_tmp[3],
+            u16_reg_tmp[4], u16_reg_tmp[5], u16_reg_tmp[6], u16_reg_tmp[7]);
+    }
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n");
 
-		REG_FCIE_R(GET_REG_ADDR(FCIE_REG_BASE_ADDR, u16_i), u16_reg);
-		eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%04Xh ", u16_reg);
-	}
-    eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+    #ifdef CONFIG_MMC_MSTAR_CMDQ
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "\n\nFCIE2 Reg:");
+
+    for(u16_i=0 ; u16_i<0x80; u16_i+=8)
+    {
+        for(u16_j=0; u16_j<8; u16_j++) {
+            REG_FCIE_R(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, (u16_i+u16_j)), u16_reg);
+            u16_reg_tmp[u16_j] = u16_reg;
+        }
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n%02Xh:| %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh\n",
+            u16_i, u16_reg_tmp[0], u16_reg_tmp[1], u16_reg_tmp[2], u16_reg_tmp[3],
+            u16_reg_tmp[4], u16_reg_tmp[5], u16_reg_tmp[6], u16_reg_tmp[7]);
+    }
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n");
+    #endif
 
     #if 0
-	//eMMC_debug(eMMC_DEBUG_LEVEL, 0, "FCIE JobCnt: \n");
-	//eMMC_debug(eMMC_DEBUG_LEVEL, 0, "JobCnt: %Xh \n", REG_FCIE(FCIE_JOB_BL_CNT));
+	//eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "FCIE JobCnt: \n");
+	//eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "JobCnt: %Xh \n", REG_FCIE(FCIE_JOB_BL_CNT));
 
-	eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\nFCIE CMDFIFO:");
+	eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\nFCIE CMDFIFO:");
 	eMMC_FCIE_GetCMDFIFO(0, 0x09, (U16*)sgau16_eMMCDebugReg);
 	for(u16_i=0 ; u16_i<0x20; u16_i++)
 	{
 		if(0 == u16_i%8)
-			eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n%02Xh:| ", u16_i);
+			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,0,"\n%02Xh:| ", u16_i);
 
-		eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%04Xh ", sgau16_eMMCDebugReg[u16_i]);
+		eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "%04Xh ", sgau16_eMMCDebugReg[u16_i]);
 	}
     #endif
 
-    eMMC_debug(eMMC_DEBUG_LEVEL, 1, "\n\nEMMCPLL Reg:");
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "\n\nEMMCPLL Reg:");
 
-	for(u16_i=0 ; u16_i<0x80; u16_i++)
-	{
-		if(0 == u16_i%8)
-			eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n%02Xh:| ", u16_i);
+    for(u16_i=0 ; u16_i<0x80; u16_i+=8)
+    {
+        for(u16_j=0; u16_j<8; u16_j++) {
+            REG_FCIE_R(GET_REG_ADDR(EMMC_PLL_BASE, (u16_i+u16_j)), u16_reg);
+            u16_reg_tmp[u16_j] = u16_reg;
+        }
 
-		REG_FCIE_R(GET_REG_ADDR(EMMC_PLL_BASE, u16_i), u16_reg);
-		eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%04Xh ", u16_reg);
-	}
-    eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n%02Xh:| %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh\n",
+            u16_i, u16_reg_tmp[0], u16_reg_tmp[1], u16_reg_tmp[2], u16_reg_tmp[3],
+            u16_reg_tmp[4], u16_reg_tmp[5], u16_reg_tmp[6], u16_reg_tmp[7]);
+    }
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n");
 
 
 
-    eMMC_debug(eMMC_DEBUG_LEVEL, 1, "\n\nCHIPTOP Reg:");
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "\n\nCHIPTOP Reg:");
 
-	for(u16_i=0 ; u16_i<0x80; u16_i++)
-	{
-		if(0 == u16_i%8)
-			eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n%02Xh:| ", u16_i);
+    for(u16_i=0 ; u16_i<0x80; u16_i+=8)
+    {
+        for(u16_j=0; u16_j<8; u16_j++) {
+            REG_FCIE_R(GET_REG_ADDR(PAD_CHIPTOP_BASE, (u16_i+u16_j)), u16_reg);
+            u16_reg_tmp[u16_j] = u16_reg;
+        }
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n%02Xh:| %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh\n",
+            u16_i, u16_reg_tmp[0], u16_reg_tmp[1], u16_reg_tmp[2], u16_reg_tmp[3],
+            u16_reg_tmp[4], u16_reg_tmp[5], u16_reg_tmp[6], u16_reg_tmp[7]);
+    }
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n");
 
-		REG_FCIE_R(GET_REG_ADDR(PAD_CHIPTOP_BASE, u16_i), u16_reg);
-		eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%04Xh ", u16_reg);
-	}
-    eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "\n\nMIU Reg:");
 
-    eMMC_debug(eMMC_DEBUG_LEVEL, 1, "\n\nMIU Reg:");
+    for(u16_i=0 ; u16_i<0x80; u16_i+=8)
+    {
+        for(u16_j=0; u16_j<8; u16_j++) {
+            REG_FCIE_R(GET_REG_ADDR(MIU_BASE_ADDR, (u16_i+u16_j)), u16_reg);
+            u16_reg_tmp[u16_j] = u16_reg;
+        }
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n%02Xh:| %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh %04Xh\n",
+            u16_i, u16_reg_tmp[0], u16_reg_tmp[1], u16_reg_tmp[2], u16_reg_tmp[3],
+            u16_reg_tmp[4], u16_reg_tmp[5], u16_reg_tmp[6], u16_reg_tmp[7]);
 
-	for(u16_i=0 ; u16_i<0x80; u16_i++)
-	{
-		if(0 == u16_i%8)
-			eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n%02Xh:| ", u16_i);
-
-		REG_FCIE_R(GET_REG_ADDR(MIU_BASE_ADDR, u16_i), u16_reg);
-		eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%04Xh ", u16_reg);
-	}
-    eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n");
+    }
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n");
 
 }
 
@@ -317,7 +374,13 @@ U32 eMMC_FCIE_ErrHandler_Retry(void)
 	#endif
 	U32 u32_err;
 
-	eMMC_FCIE_Init();
+	u32_err = eMMC_FCIE_Init();
+
+	if(u32_err)
+    {
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: eMMC_FCIE_Init fail, %Xh\n", u32_err);
+        return u32_err;
+    }
 
     REG_FCIE_SETBIT(FCIE_MIE_FUNC_CTL, BIT_EMMC_ACTIVE);
 
@@ -364,7 +427,6 @@ U32 eMMC_FCIE_ErrHandler_Retry(void)
 	return eMMC_ST_SUCCESS;
 }
 
-U8 u8_tune_overtone = 0;
 
 void eMMC_FCIE_ErrHandler_RestoreClk(void)
 {
@@ -372,7 +434,6 @@ void eMMC_FCIE_ErrHandler_RestoreClk(void)
 	{
 		U32 u32_err;
 
-		u8_tune_overtone = 1;
 
 		u32_err = eMMC_FCIE_EnableFastMode_Ex(sgu8_IfNeedRestorePadType);
 		if(u32_err)
@@ -396,12 +457,36 @@ void eMMC_FCIE_ErrHandler_RestoreClk(void)
 U32 eMMC_FCIE_ErrHandler_ReInit_Ex(void)
 {
 	U32 u32_err;
+
+    char *Str_mmc_partition[8] = {
+                              "eMMC: enable R/W user partition success",   
+                              "eMMC: enable R/W boot1 partition success",
+                              "eMMC: enable R/W boot2 partition success",
+                              "eMMC: enable R/W RPMB success",
+                              "eMMC: enable Gernel Purpose partition success",
+                              "eMMC: enable Gerne2 Purpose partition success",
+                              "eMMC: enable Gerne3 Purpose partition success",
+                              "eMMC: enable Gerne4 Purpose partition success"};
+
+    char *Str_err_mmc_partition[8] = {
+                              "eMMC Err: enable R/W user partition fail",
+                              "eMMC Err: enable R/W boot1 partition fail",
+                              "eMMC Err: enable R/W boot2 partition fail",
+                              "eMMC Err: enable R/W RPMB fail",
+                              "eMMC Err: enable Gernel Purpose partition fail",
+                              "eMMC Err: enable Gerne2 Purpose partition fail",
+                              "eMMC Err: enable Gerne3 Purpose partition fail",
+                              "eMMC Err: enable Gerne4 Purpose partition fail"};
+
 	u32_err = eMMC_FCIE_Init();
 	if(u32_err)
 	{
 		eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: FCIE_Init fail, %Xh\n", u32_err);
 		return u32_err;
 	}
+
+	//disable power saving mode
+    REG_FCIE_CLRBIT(FCIE_PWR_SAVE_CTL, BIT_POWER_SAVE_MODE|BIT_POWER_SAVE_MODE_INT_EN);
 
     REG_FCIE_SETBIT(FCIE_MIE_FUNC_CTL, BIT_EMMC_ACTIVE);
 
@@ -430,42 +515,94 @@ U32 eMMC_FCIE_ErrHandler_ReInit_Ex(void)
         return u32_err;
 	}
 
-	if (g_eMMCDrv.u8_partition_config&0x7) {
+	if(g_eMMCDrv.u8_partition_config&0x7)
+	{
 		u32_err = eMMC_ModifyExtCSD(eMMC_ExtCSD_WByte, 179, g_eMMCDrv.u8_partition_config);
 
-		if (u32_err) {
-			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: enable R/W RPMB fail: %Xh\n", u32_err);
-			return u32_err;
-		}
-		eMMC_debug(eMMC_DEBUG_LEVEL, 1, "eMMC: enable R/W RPMB success\n");
+        if(u32_err)
+            eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%s, %Xh\n", Str_err_mmc_partition[g_eMMCDrv.u8_partition_config & 7], u32_err);
+        else
+            eMMC_debug(eMMC_DEBUG_LEVEL, 0, "%s\n", Str_mmc_partition[g_eMMCDrv.u8_partition_config & 7]);
 	}
 
-	if (g_eMMCDrv.u8_cache_ctrl&0x1) {
+	if(g_eMMCDrv.u8_cache_ctrl&0x1)
+	{
 		u32_err = eMMC_ModifyExtCSD(eMMC_ExtCSD_WByte, 33, g_eMMCDrv.u8_cache_ctrl);
 
-		if (u32_err) {
-			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: enable cache control fail: %Xh\n", u32_err);
+		if(u32_err)
+		{
+			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: enable cache control fail: %Xh\n", u32_err);
 			return u32_err;
 		}
-		eMMC_debug(eMMC_DEBUG_LEVEL, 1, "eMMC: enable cache control success\n");
+		eMMC_debug(eMMC_DEBUG_LEVEL,1,"eMMC: enable cache control success\n");
 	}
+
+	//init OK enable power saving mode
+    REG_FCIE_SETBIT(FCIE_PWR_SAVE_CTL, BIT_POWER_SAVE_MODE|BIT_POWER_SAVE_MODE_INT_EN);
 
 	return u32_err;
 }
+extern U16 u16_OldPLLDLLClkParam;
 void eMMC_FCIE_ErrHandler_ReInit(void)
 {
-	U32 u32_err;
+	U32 u32_err = eMMC_ST_SUCCESS;
 	U32 u32_DrvFlag = g_eMMCDrv.u32_DrvFlag;
 	U16 u16_Reg10 = g_eMMCDrv.u16_Reg10_Mode;
 	U8  u8_OriPadType = g_eMMCDrv.u8_PadType;
+	U8  u8_BUS_WIDTH = g_eMMCDrv.u8_BUS_WIDTH;
 	//U16 u16_OldClkRegVal = g_eMMCDrv.u16_ClkRegVal;
 
-	u32_err = eMMC_FCIE_ErrHandler_ReInit_Ex();
+    eMMC_debug(eMMC_DEBUG_LEVEL, 0, "\n Irwin: Reg(0x123F1A):%04Xh, Reg(0x123F45):%04Xh, Reg(0x123F46):%04Xh\n",
+        REG_FCIE(EMMC_PLL_BASE+0x1A*4), REG_FCIE(EMMC_PLL_BASE+0x45*4), REG_FCIE(EMMC_PLL_BASE+0x46*4));
+
+    eMMC_pll_dll_retry();
+
+    u32_err = eMMC_FCIE_ErrHandler_ReInit_Ex();
 	if(u32_err)
 		goto LABEL_REINIT_END;
 
 	// ---------------------------------
 	g_eMMCDrv.u32_DrvFlag = u32_DrvFlag;
+    //CMD8 error retry
+    if (g_eMMCDrv.u32_DrvFlag == 0) {
+        switch(u8_BUS_WIDTH)
+        {
+            case BIT_SD_DATA_WIDTH_8:
+            u32_err = eMMC_SetBusWidth(8, 0);
+            if(eMMC_ST_SUCCESS!=u32_err)
+            {
+                eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: set 8 bus width fail: %Xh\n", u32_err);
+                goto LABEL_REINIT_END;
+            }               
+            break;  
+            case BIT_SD_DATA_WIDTH_4:
+            u32_err = eMMC_SetBusWidth(4, 0);
+            if(eMMC_ST_SUCCESS!=u32_err)
+            {
+                eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: set 4 bus width fail: %Xh\n", u32_err);
+                goto LABEL_REINIT_END;
+            }               
+            break;  
+            case BIT_SD_DATA_WIDTH_1:
+            u32_err = eMMC_SetBusWidth(1, 0);
+            if(eMMC_ST_SUCCESS!=u32_err)
+            {
+                eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: set 1 bus width fail: %Xh\n", u32_err);
+                goto LABEL_REINIT_END;
+            }               
+            break;
+            default:
+            eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: wrong parameter for bus width\n");
+			u32_err = eMMC_ST_ERR_PARAMETER;
+            goto LABEL_REINIT_END;
+        }
+			
+    
+        g_eMMCDrv.u16_Reg10_Mode = u16_Reg10;
+        REG_FCIE_W(FCIE_SD_MODE, g_eMMCDrv.u16_Reg10_Mode);
+        return;
+    }
+
 	if(eMMC_IF_NORMAL_SDR())
 	{
 		u32_err = eMMC_FCIE_EnableSDRMode();
@@ -631,17 +768,18 @@ U32 eMMC_FCIE_Init(void)
 {
 	U32 u32_err;
 
-	// ------------------------------------------
-	// setup function pointer to wait for events
-	#if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-	if(NULL==sgpFn_eMMC_FCIE_WaitEvents_Ex)
-		sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_WaitCompleteIntr;
-	#else
+    // ------------------------------------------
+    // setup function pointer to wait for events
+    #ifndef CONFIG_MMC_MSTAR_NO_WORK_QUEUE
+    #if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
     if(NULL==sgpFn_eMMC_FCIE_WaitEvents_Ex)
-		sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_FCIE_PollingEvents;
-	#endif
-
-	// ------------------------------------------
+        sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_WaitCompleteIntr;
+    #else
+    if(NULL==sgpFn_eMMC_FCIE_WaitEvents_Ex)
+        sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_FCIE_PollingEvents;
+    #endif
+    #endif
+    // ------------------------------------------
 	eMMC_PlatformResetPre();
 
 	// ------------------------------------------
@@ -711,7 +849,9 @@ U32 eMMC_FCIE_Init(void)
 
 void eMMC_FCIE_ClearEvents(void)
 {
-	volatile U16 u16_reg;
+    volatile U16 u16_reg;
+    unsigned long flags;
+
 	while(1){
 		REG_FCIE_W(FCIE_MIE_EVENT, BIT_ALL_CARD_INT_EVENTS);
 		REG_FCIE_R(FCIE_MIE_EVENT, u16_reg);
@@ -720,6 +860,9 @@ void eMMC_FCIE_ClearEvents(void)
 		REG_FCIE_W(FCIE_MIE_EVENT, 0);
 		REG_FCIE_W(FCIE_MIE_EVENT, 0);
 	}
+    spin_lock_irqsave(&fcie_lock, flags);
+    REG_FCIE_W(FCIE_MIE_INT_EN, 0); // mask interrupts
+    spin_unlock_irqrestore(&fcie_lock, flags);
 	REG_FCIE_W1C(FCIE_SD_STATUS, BIT_SD_FCIE_ERR_FLAGS); // W1C
 }
 
@@ -794,8 +937,8 @@ U32 eMMC_FCIE_SendCmd
         u32_Timeout = TIME_WAIT_ERASE_DAT0_HIGH;
 
 	#if 0
-	eMMC_debug(0,1,"\n");
-	eMMC_debug(0,1,"cmd:%u, arg:%Xh, rspb:%Xh, mode:%Xh, ctrl:%Xh \n",
+	eMMC_debug(eMMC_DEBUG_LEVEL,1,"\n");
+	eMMC_debug(eMMC_DEBUG_LEVEL,1,"cmd:%u, arg:%Xh, rspb:%Xh, mode:%Xh, ctrl:%Xh \n",
 		u8_CmdIdx, u32_Arg, u8_RspByteCnt, u16_Mode, u16_Ctrl);
 	#endif
 
@@ -841,16 +984,12 @@ U32 eMMC_FCIE_SendCmd
 			goto LABEL_SEND_CMD_ERROR;
 	}
 
-    #if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, BIT_CMD_END);
-	#endif
-
 	REG_FCIE_W(FCIE_SD_CTRL, u16_Ctrl);
 	REG_FCIE_SETBIT(FCIE_SD_CTRL, BIT_JOB_START);
 
     #if 1//defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
 	// wait event
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT, BIT_CMD_END, HW_TIMER_DELAY_1s);
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT, BIT_CMD_END, HW_TIMER_DELAY_1s);
     #endif
 
     if(g_eMMCDrv.u32_DrvFlag & DRV_FLAG_RSP_WAIT_D0H){
@@ -1586,7 +1725,7 @@ U32 eMMC_ExtCSD_Config(void)
             case 0:  g_eMMCDrv.u8_BUS_WIDTH = BIT_SD_DATA_WIDTH_1;  break;
             case 1:  g_eMMCDrv.u8_BUS_WIDTH = BIT_SD_DATA_WIDTH_4;  break;
             case 2:  g_eMMCDrv.u8_BUS_WIDTH = BIT_SD_DATA_WIDTH_8;  break;
-            default: eMMC_debug(0,1,"eMMC Err: eMMC BUS_WIDTH not support \n");
+            default: eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: eMMC BUS_WIDTH not support \n");
             while(1);
         }
     }
@@ -1675,6 +1814,9 @@ U32 eMMC_ExtCSD_Config(void)
      if(g_eMMCDrv.u8_ECSD224_HCEraseGRPSize)
          g_eMMCDrv.u32_EraseUnitSize = (g_eMMCDrv.u8_ECSD224_HCEraseGRPSize*512*1024)>>eMMC_SECTOR_BYTECNT_BITS;
 
+     //for boot bus condidtion
+     g_eMMCDrv.u8_bootbus_condition = gau8_eMMC_SectorBuf[177];
+
      //--------------------------------
      // set HW RST
      if(0 == gau8_eMMC_SectorBuf[162])
@@ -1714,11 +1856,7 @@ U32 eMMC_CMD8_MIU(U8 *pu8_DataBuf)
 	#endif
     dma_addr_t dma_DataMapAddr;
 
-	// -------------------------------
-	#if 0
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
-    #endif
+
 	// -------------------------------
 	// send cmd
 	u32_arg =  0;
@@ -1763,10 +1901,7 @@ U32 eMMC_CMD8_MIU(U8 *pu8_DataBuf)
 
 	// -------------------------------
 	// check FCIE
-	#if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
-	#endif
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
         (BIT_DMA_END|BIT_ERR_STS), TIME_WAIT_1_BLK_END);
 
 	REG_FCIE_R(FCIE_SD_STATUS, u16_reg);
@@ -1819,10 +1954,17 @@ U32 eMMC_CMD8_MIU(U8 *pu8_DataBuf)
 U32 eMMC_CMD8_CIFD(U8 *pu8_DataBuf)
 {
 	U32 u32_err, u32_arg;
-	volatile U16 u16_mode, u16_ctrl, u16_reg, u16_j, u16_Tmp;
+	volatile U16 u16_mode, u16_ctrl, u16_reg, u16_j;
+    volatile U16 u16_reg_fcie_ddr_mode;
 	U8  u8_retry_fcie=0, u8_retry_r1=0, u8_retry_cmd=0;;
 
 //	REG_FCIE_W(FCIE_CIFD_WORD_CNT, 0);
+
+    #if 1
+    REG_FCIE_R(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+
+    REG_FCIE_SETBIT(FCIE_DDR_MODE, BIT1|BIT2|BIT3);
+    #endif
 
 	// -------------------------------
 	// send cmd
@@ -1857,9 +1999,8 @@ U32 eMMC_CMD8_CIFD(U8 *pu8_DataBuf)
 	//read for data
 	for (u16_j=0; u16_j< (eMMC_SECTOR_512BYTE >> 6); u16_j++)
 	{   // read data
-		u16_Tmp =( (eMMC_SECTOR_512BYTE - (u16_j << 6)) >= 0x40) ?
-			0x40 : (eMMC_SECTOR_512BYTE - (u16_j << 6) );
-		u32_err = eMMC_WaitGetCIFD((U8*)((uintptr_t)pu8_DataBuf + (u16_j << 6)), u16_Tmp);
+		u32_err = eMMC_WaitGetCIFD((U8*)((uintptr_t)pu8_DataBuf + (u16_j << 6)), 0x40);
+
 		if(u32_err != eMMC_ST_SUCCESS)
 		{
 			eMMC_FCIE_ErrHandler_Stop();
@@ -1869,7 +2010,7 @@ U32 eMMC_CMD8_CIFD(U8 *pu8_DataBuf)
 
 	// -------------------------------
 	// check FCIE
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    BIT_DMA_END, TIME_WAIT_1_BLK_END);
 
 	REG_FCIE_R(FCIE_SD_STATUS, u16_reg);
@@ -1915,11 +2056,15 @@ U32 eMMC_CMD8_CIFD(U8 *pu8_DataBuf)
 	//eMMC_KEEP_RSP(g_eMMCDrv.au8_Rsp, 8);
 
 	// -------------------------------
-	// CMD8 ok, do things here
-	eMMC_FCIE_GetCIFD(0, eMMC_SECTOR_512BYTE>>1, (U16*)pu8_DataBuf);
+
 
 	LABEL_END:
 	eMMC_FCIE_CLK_DIS();
+
+    #if 1
+    REG_FCIE_W(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+    #endif
+	
 	return u32_err;
 }
 
@@ -2313,7 +2458,10 @@ U32 eMMC_CMD38(void)
 
 U32 eMMC_Dump_eMMCStatus(void)
 {
-    eMMC_CMD13(g_eMMCDrv.u16_RCA);
+	U32 u32_err;
+	
+    u32_err = eMMC_CMD13(g_eMMCDrv.u16_RCA);
+	
     eMMC_debug(eMMC_DEBUG_LEVEL,0,"\n");
     eMMC_debug(eMMC_DEBUG_LEVEL,1,"eMMC St: %Xh %Xh %Xh %Xh \n",
         g_eMMCDrv.au8_Rsp[1], g_eMMCDrv.au8_Rsp[2], g_eMMCDrv.au8_Rsp[3], g_eMMCDrv.au8_Rsp[4]);
@@ -2387,7 +2535,7 @@ U32 eMMC_CMD13(U16 u16_RCA)
 				    "eMMC Err: CMD13 check R1 error: %Xh, retry: %u\n", u32_err, u8_retry_r1);
 				eMMC_FCIE_ErrHandler_Stop();
 				#else
-				eMMC_debug(0, 1,
+				eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1,
 				    "eMMC: CMD13 check R1 error: %Xh, should not retry\n", u32_err);
 				#endif
 			}
@@ -2498,9 +2646,6 @@ U32 eMMC_CMD17_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 	#endif
     dma_addr_t dma_DataMapAddr;
 
-	// -------------------------------
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
 
 	// -------------------------------
 	// send cmd
@@ -2547,10 +2692,7 @@ U32 eMMC_CMD17_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 
 	// -------------------------------
 	// check FCIE
-	#if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
-	#endif
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    (BIT_DMA_END|BIT_ERR_STS), TIME_WAIT_1_BLK_END);
 
 
@@ -2608,11 +2750,15 @@ U32 eMMC_CMD17_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 	U32 u32_err, u32_arg;
 	U16 u16_mode, u16_ctrl, u16_reg, u16_i;
 	U8  u8_retry_r1=0, u8_retry_fcie=0, u8_retry_cmd=0;
+    volatile U16 u16_reg_fcie_ddr_mode;
 
 //	REG_FCIE_W(FCIE_CIFD_WORD_CNT, 0);
 
-    //if(0 == eMMC_IF_TUNING_TTABLE())
-	//	eMMC_FCIE_ErrHandler_RestoreClk();
+    #if 1
+    REG_FCIE_R(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+
+    REG_FCIE_SETBIT(FCIE_DDR_MODE, BIT1|BIT2|BIT3);
+    #endif
 
 	// -------------------------------
 	// send cmd
@@ -2666,7 +2812,7 @@ U32 eMMC_CMD17_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 
 	// -------------------------------
 	// check FCIE
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    BIT_DMA_END, TIME_WAIT_1_BLK_END);
 
 	REG_FCIE_R(FCIE_SD_STATUS, u16_reg);
@@ -2711,11 +2857,14 @@ U32 eMMC_CMD17_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 	}
 
 	// -------------------------------
-	// CMD17 ok, do things here
-	eMMC_FCIE_GetCIFD(0, eMMC_SECTOR_512BYTE>>1, (U16*)pu8_DataBuf);
 
 	LABEL_END:
 	eMMC_FCIE_CLK_DIS();
+
+    #if 1
+    REG_FCIE_W(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+    #endif
+
 	return u32_err;
 }
 
@@ -2868,15 +3017,19 @@ U32 eMMC_CMD18_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 	#endif
     dma_addr_t dma_DataMapAddr;
 
-	// -------------------------------
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
+    LABEL_SEND_CMD:
+    u32_err = eMMC_CMD23(u16_BlkCnt);
+    if( u32_err )
+    {
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC WARN: CMD23 %Xh\n", u32_err);
+        return u32_err;
+    }
 
 	// -------------------------------
 	// send cmd
 	u16_ctrl = BIT_SD_CMD_EN | BIT_SD_RSP_EN | BIT_SD_DAT_EN | BIT_ERR_DET_ON;
 
-	LABEL_SEND_CMD:
+
 	u32_arg =  u32_eMMCBlkAddr << (g_eMMCDrv.u8_IfSectorMode?0:eMMC_SECTOR_512BYTE_BITS);
 	u16_mode = g_eMMCDrv.u16_Reg10_Mode | g_eMMCDrv.u8_BUS_WIDTH;
 
@@ -2916,10 +3069,7 @@ U32 eMMC_CMD18_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 
 	// -------------------------------
 	// check FCIE
-    #if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
-    #endif
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    (BIT_DMA_END|BIT_ERR_STS), TIME_WAIT_n_BLK_END*(1+(u16_BlkCnt>>11)));
 
 
@@ -2955,7 +3105,6 @@ U32 eMMC_CMD18_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1,
 		        "eMMC WARN: CMD18 check R1 error: %Xh, Retry: %u, Arg: %Xh\n", u32_err, u8_retry_r1, u32_arg);
 
-			eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
 			eMMC_FCIE_ErrHandler_ReInit();
 			eMMC_FCIE_ErrHandler_Retry();
 			eMMC_DMA_UNMAP_address(dma_DataMapAddr,eMMC_SECTOR_512BYTE*u16_BlkCnt,1);
@@ -2964,18 +3113,15 @@ U32 eMMC_CMD18_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 		u32_err = eMMC_ST_ERR_CMD18;
 		eMMC_debug(1, 1, "eMMC Err: CMD18 check R1 error: %Xh, Retry: %u, Arg: %Xh\n", u32_err, u8_retry_r1, u32_arg);
 	    eMMC_FCIE_ErrHandler_Stop();
-		goto LABEL_END;
-	}
+    }
 
-	LABEL_END:
+    LABEL_END:
 
-	if(eMMC_ST_SUCCESS != eMMC_CMD12(g_eMMCDrv.u16_RCA))
-		eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
+    eMMC_DMA_UNMAP_address(dma_DataMapAddr,eMMC_SECTOR_512BYTE*u16_BlkCnt,1);
 
-	eMMC_DMA_UNMAP_address(dma_DataMapAddr,eMMC_SECTOR_512BYTE*u16_BlkCnt,1);
 
-	eMMC_FCIE_CLK_DIS();
-	return u32_err;
+    eMMC_FCIE_CLK_DIS();
+    return u32_err;
 }
 
 // enable Reliable Write
@@ -3122,17 +3268,14 @@ U32 eMMC_CMD25(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 U32 eMMC_CMD25_NoSched(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 {
 	U32 u32_err=eMMC_ST_SUCCESS;
-	//U32 (*pFn)(U32, U16, U32) = sgpFn_eMMC_FCIE_WaitEvents_Ex;
-	U32 (*pFn)(uintptr_t, U16, U32) = sgpFn_eMMC_FCIE_WaitEvents_Ex;
+
 	void (*pWait)(U32)=sleep_or_delay;
 
-	sleep_or_delay=mdelay_MacroToFun;
-	sgpFn_eMMC_FCIE_WaitEvents_Ex = eMMC_FCIE_PollingEvents;
+    sleep_or_delay=mdelay_MacroToFun;
 
-	u32_err = eMMC_CMD25(u32_eMMCBlkAddr, pu8_DataBuf, u16_BlkCnt);
+    u32_err = eMMC_CMD25(u32_eMMCBlkAddr, pu8_DataBuf, u16_BlkCnt);
 
-       sleep_or_delay=pWait;
-	sgpFn_eMMC_FCIE_WaitEvents_Ex = pFn;
+    sleep_or_delay=pWait;
 
 	return u32_err;
 }
@@ -3296,20 +3439,20 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 	#endif
     dma_addr_t dma_DataMapAddr;
 
-	// -------------------------------
-	// restore clock to max
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
 
-    #if 0 //defined(eMMC_FEATURE_RELIABLE_WRITE) && eMMC_FEATURE_RELIABLE_WRITE
-    eMMC_CMD23(u16_BlkCnt);
-    #endif
+    // -------------------------------
+    LABEL_SEND_CMD:
+    u32_err = eMMC_CMD23(u16_BlkCnt);
+    if( u32_err )
+    {
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC WARN: CMD23 %Xh\n", u32_err);
+        return u32_err;
+    }
 
 	// -------------------------------
 	// send cmd
 	u16_ctrl = BIT_SD_CMD_EN | BIT_SD_RSP_EN;
 
-	LABEL_SEND_CMD:
     u16_mode = g_eMMCDrv.u16_Reg10_Mode | g_eMMCDrv.u8_BUS_WIDTH;
 	u32_arg =  u32_eMMCBlkAddr << (g_eMMCDrv.u8_IfSectorMode?0:eMMC_SECTOR_512BYTE_BITS);
 
@@ -3338,7 +3481,7 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 		{
 			u8_retry_cmd++;
 			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC WARN: CMD25 retry:%u, %Xh, Arg: %Xh \n", u8_retry_cmd, u32_err, u32_arg);
-			eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
+
 			eMMC_FCIE_ErrHandler_ReInit();
 			eMMC_FCIE_ErrHandler_Retry();
 			eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
@@ -3359,7 +3502,7 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 			u8_retry_fcie++;
 			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1,
 				"eMMC WARN: CMD25 SD_STS: %04Xh, Err: %Xh, Retry: %u, Arg: %Xh\n", u16_reg, u32_err, u8_retry_fcie, u32_arg);
-			eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
+
 			eMMC_FCIE_ErrHandler_ReInit();
 			eMMC_FCIE_ErrHandler_Retry();
 			eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
@@ -3379,7 +3522,7 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 		{
 			u8_retry_r1++;
 			eMMC_debug(1, 1, "eMMC WARN: CMD25 check R1 error: %Xh, Retry: %u, Arg: %Xh\n", u32_err, u8_retry_r1, u32_arg);
-			eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
+
 			eMMC_FCIE_ErrHandler_ReInit();
 			eMMC_FCIE_ErrHandler_Retry();
 			eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
@@ -3401,14 +3544,10 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 		goto LABEL_END;
 	}
 
-    #if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
-	#endif
-
 	REG_FCIE_W(FCIE_SD_CTRL, BIT_SD_DAT_EN|BIT_SD_DAT_DIR_W|BIT_ERR_DET_ON);
 	REG_FCIE_SETBIT(FCIE_SD_CTRL, BIT_JOB_START);
 
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    (BIT_DMA_END|BIT_ERR_STS), TIME_WAIT_n_BLK_END*(1+(u16_BlkCnt>>9)));
 
 
@@ -3420,7 +3559,7 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 			u8_retry_fcie++;
 			eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1,
 				    "eMMC WARN: CMD25 SD_STS: %04Xh, Err: %Xh, Retry: %u, Arg: %Xh\n", u16_reg, u32_err, u8_retry_fcie, u32_arg);
-			eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
+
 			eMMC_FCIE_ErrHandler_ReInit();
 			eMMC_FCIE_ErrHandler_Retry();
 			eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
@@ -3430,16 +3569,11 @@ U32 eMMC_CMD25_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf, U16 u16_BlkCnt)
 		eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1,
 		        "eMMC Err: CMD25 SD_STS: %04Xh, Err: %Xh, Retry: %u, Arg: %Xh\n", u16_reg, u32_err, u8_retry_fcie, u32_arg);
 		eMMC_FCIE_ErrHandler_Stop();
-		goto LABEL_END;
-	}
+    }
+    LABEL_END:
 
-	LABEL_END:
-    #if 1 //!(defined(eMMC_FEATURE_RELIABLE_WRITE) && eMMC_FEATURE_RELIABLE_WRITE)
-	if(eMMC_ST_SUCCESS != eMMC_CMD12(g_eMMCDrv.u16_RCA))
-		eMMC_CMD12_NoCheck(g_eMMCDrv.u16_RCA);
-    #endif
-
-	eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
+    eMMC_DMA_UNMAP_address(dma_DataMapAddr, eMMC_SECTOR_512BYTE*u16_BlkCnt,0);
+ 
     eMMC_FCIE_CLK_DIS();
 	return u32_err;
 }
@@ -3466,9 +3600,6 @@ U32 eMMC_CMD24_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 	#endif
     dma_addr_t dma_DataMapAddr;
 
-	// -------------------------------
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
 
 	// -------------------------------
 	// send cmd
@@ -3565,14 +3696,11 @@ U32 eMMC_CMD24_MIU(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 		goto LABEL_END;
 	}
 
-    #if defined(ENABLE_eMMC_INTERRUPT_MODE) && ENABLE_eMMC_INTERRUPT_MODE
-    REG_FCIE_W(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
-	#endif
 
 	REG_FCIE_W(FCIE_SD_CTRL, BIT_SD_DAT_EN|BIT_SD_DAT_DIR_W|BIT_ERR_DET_ON);
 	REG_FCIE_SETBIT(FCIE_SD_CTRL, BIT_JOB_START);
 
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 	    (BIT_DMA_END|BIT_ERR_STS), TIME_WAIT_1_BLK_END);
 
 	REG_FCIE_R(FCIE_SD_STATUS, u16_reg);
@@ -3608,12 +3736,14 @@ U32 eMMC_CMD24_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 	U32 u32_err, u32_arg;
 	U16 u16_mode, u16_ctrl, u16_reg, u16_i;
 	U8  u8_retry_r1=0, u8_retry_fcie=0, u8_retry_cmd=0;
+    volatile U16 u16_reg_fcie_ddr_mode;
 
-	// -------------------------------
-	#if 0
-	if(0 == eMMC_IF_TUNING_TTABLE())
-		eMMC_FCIE_ErrHandler_RestoreClk();
-	#endif
+    #if 1
+    REG_FCIE_R(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+
+    REG_FCIE_SETBIT(FCIE_DDR_MODE, BIT1|BIT2|BIT3);
+    #endif
+
 	// -------------------------------
 	// send cmd
 	u16_ctrl = BIT_SD_CMD_EN | BIT_SD_RSP_EN;
@@ -3707,7 +3837,7 @@ U32 eMMC_CMD24_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 		}
 	}
 
-	u32_err = eMMC_FCIE_WaitEvents(FCIE_MIE_EVENT,
+	u32_err = eMMC_FCIE_PollingEvents(FCIE_MIE_EVENT,
 				 BIT_DMA_END, TIME_WAIT_1_BLK_END);
 
 	REG_FCIE_R(FCIE_SD_STATUS, u16_reg);
@@ -3731,8 +3861,13 @@ U32 eMMC_CMD24_CIFD(U32 u32_eMMCBlkAddr, U8 *pu8_DataBuf)
 
 	LABEL_END:
 	if(u8_retry_fcie)
-		eMMC_debug(0,1,"eMMC Info: retry ok\n");
+		eMMC_debug(eMMC_DEBUG_LEVEL,1,"eMMC Info: retry ok\n");
     eMMC_FCIE_CLK_DIS();
+
+    #if 1
+    REG_FCIE_W(FCIE_DDR_MODE, u16_reg_fcie_ddr_mode);
+    #endif
+	
 	return u32_err;
 }
 
@@ -3779,18 +3914,18 @@ U32 eMMC_CheckR1Error(void)
 LABEL_CHECK_R1_END:
 
 	/*u8_cs = (eMMC_FCIE_CmdRspBufGet(3) & (eMMC_R1_CURRENT_STATE>>8))>>1;
-	eMMC_debug(0,0,"card state: %d ", u8_cs);
+	eMMC_debug(eMMC_DEBUG_LEVEL,0,"card state: %d ", u8_cs);
 	switch(u8_cs) {
-		case 0:		eMMC_debug(0,0,"(idle)\n");	break;
-		case 1:		eMMC_debug(0,0,"(ready)\n");	break;
-		case 2:		eMMC_debug(0,0,"(ident)\n");	break;
-		case 3:		eMMC_debug(0,0,"(stby)\n");	break;
-		case 4:		eMMC_debug(0,0,"(tran)\n");	break;
-		case 5:		eMMC_debug(0,0,"(data)\n");	break;
-		case 6:		eMMC_debug(0,0,"(rcv)\n");	break;
-		case 7:		eMMC_debug(0,0,"(prg)\n");	break;
-		case 8:		eMMC_debug(0,0,"(dis)\n");	break;
-		default:	eMMC_debug(0,0,"(?)\n");	break;
+		case 0:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(idle)\n");	break;
+		case 1:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(ready)\n");	break;
+		case 2:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(ident)\n");	break;
+		case 3:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(stby)\n");	break;
+		case 4:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(tran)\n");	break;
+		case 5:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(data)\n");	break;
+		case 6:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(rcv)\n");	break;
+		case 7:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(prg)\n");	break;
+		case 8:		eMMC_debug(eMMC_DEBUG_LEVEL,0,"(dis)\n");	break;
+		default:	eMMC_debug(eMMC_DEBUG_LEVEL,0,"(?)\n");	break;
 	}*/
 
 	if(eMMC_ST_SUCCESS != u32_err)// && 0==eMMC_IF_TUNING_TTABLE())
@@ -3799,6 +3934,7 @@ LABEL_CHECK_R1_END:
 	}
 	return u32_err;
 }
+
 
 
 // ====================================================

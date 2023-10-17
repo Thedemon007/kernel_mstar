@@ -52,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #include "eMMC.h"
 
 // ==========================================================
@@ -386,7 +387,7 @@ U32 eMMC_FCIE_ChooseSpeedMode(void)
         if(eMMC_ST_SUCCESS != eMMC_FCIE_EnableFastMode(FCIE_eMMC_DDR))
             u32_err = eMMC_FCIE_BuildDDRTimingTable();
 
-        eMMC_debug(0,0,"\neMMC: DDR %uMHz \n", g_eMMCDrv.u32_ClkKHz/1000);
+        eMMC_debug(eMMC_DEBUG_LEVEL,0,"\neMMC: DDR %uMHz \n", g_eMMCDrv.u32_ClkKHz/1000);
         return u32_err;
     }
     #endif
@@ -410,9 +411,7 @@ void eMMC_FCIE_ApplyTimingSet(U8 u8_Idx)
     g_eMMCDrv.TimingTable_t.u8_CurSetIdx = u8_Idx;
     #else
     // HS400 or HS200 or DDR52
-    if((g_eMMCDrv.u8_PadType != FCIE_eMMC_HS400 &&
-		g_eMMCDrv.u8_PadType != FCIE_eMMC_HS400_5_1) ||
-		g_eMMCDrv.TimingTable_G_t.u8_SetCnt == 0)
+    if( g_eMMCDrv.TimingTable_G_t.u8_SetCnt == 0)
     {
         eMMC_clock_setting(g_eMMCDrv.TimingTable_t.Set[u8_Idx].u8_Clk);
         eMMC_FCIE_SetATopTimingReg(u8_Idx);
@@ -443,13 +442,12 @@ void eMMC_DumpTimingTable(void)
 }
 
 
-U32 eMMC_LoadTimingTable(U8 u8_PadType)
+U32 eMMC_LoadTimingTable_Ex(U8 u8_PadType, U8 *pBuf)
 {
     U32 u32_err;
     U32 u32_ChkSum, u32_eMMCBlkAddr;
-
-    // --------------------------------------
-
+    eMMC_FCIE_TIMING_TABLE_t *pTab = (eMMC_FCIE_TIMING_TABLE_t*)pBuf;
+    
     switch(u8_PadType)
     {
         #if (defined(ENABLE_eMMC_HS400_5_1) && ENABLE_eMMC_HS400_5_1) ||\
@@ -483,31 +481,47 @@ U32 eMMC_LoadTimingTable(U8 u8_PadType)
         if(eMMC_ST_SUCCESS != u32_err)
         {
             eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Warn: load 2 Tables fail, %Xh\n", u32_err);
-            goto LABEL_END_OF_NO_TABLE;
+            return eMMC_ST_ERR_NOTABLE;
         }
     }
 
     // --------------------------------------
-    memcpy((U8*)&g_eMMCDrv.TimingTable_t, gau8_eMMC_SectorBuf, sizeof(g_eMMCDrv.TimingTable_t));
+    memcpy((void*)pTab, gau8_eMMC_SectorBuf, sizeof(g_eMMCDrv.TimingTable_t));
 
-    u32_ChkSum = eMMC_ChkSum((U8*)&g_eMMCDrv.TimingTable_t, sizeof(g_eMMCDrv.TimingTable_t)-eMMC_TIMING_TABLE_CHKSUM_OFFSET);
-    if(u32_ChkSum != g_eMMCDrv.TimingTable_t.u32_ChkSum)
+    u32_ChkSum = eMMC_ChkSum((U8*)pTab, sizeof(g_eMMCDrv.TimingTable_t)-eMMC_TIMING_TABLE_CHKSUM_OFFSET);
+    if(u32_ChkSum != pTab->u32_ChkSum)
     {
         eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Warn: ChkSum error, no Table \n");
         printk("u32_ChkSum=%08X\n", u32_ChkSum);
-        printk("g_eMMCDrv.TimingTable_t.u32_ChkSum=%08X\n", g_eMMCDrv.TimingTable_t.u32_ChkSum);
-        eMMC_dump_mem((U8*)&g_eMMCDrv.TimingTable_t,sizeof(g_eMMCDrv.TimingTable_t));
+        printk("g_eMMCDrv.TimingTable_t.u32_ChkSum=%08X\n", pTab->u32_ChkSum);
+        eMMC_dump_mem((U8*)pTab, sizeof(g_eMMCDrv.TimingTable_t));
         u32_err = eMMC_ST_ERR_DDRT_CHKSUM;
-        goto LABEL_END_OF_NO_TABLE;
+        return eMMC_ST_ERR_NOTABLE;
     }
 
     if(0==u32_ChkSum )
     {
         eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Warn: no Table \n");
         u32_err = eMMC_ST_ERR_DDRT_NONA;
-        goto LABEL_END_OF_NO_TABLE;
+        return eMMC_ST_ERR_NOTABLE;
     }
 
+    return eMMC_ST_SUCCESS;
+}
+
+U32 eMMC_LoadTimingTable(U8 u8_PadType)
+{
+    U32 u32_err;
+    #if (defined(ENABLE_eMMC_HS400_5_1) && ENABLE_eMMC_HS400_5_1) ||\
+        (defined(ENABLE_eMMC_HS400) && ENABLE_eMMC_HS400)
+    U32 u32_ChkSum;
+    #endif
+    // --------------------------------------
+    u32_err = eMMC_LoadTimingTable_Ex(u8_PadType, (U8*)&g_eMMCDrv.TimingTable_t);
+    if(eMMC_ST_SUCCESS != u32_err)
+        goto LABEL_END_OF_NO_TABLE;
+
+    // --------------------------------------        
     #if (defined(ENABLE_eMMC_HS400_5_1) && ENABLE_eMMC_HS400_5_1) ||\
 	    (defined(ENABLE_eMMC_HS400) && ENABLE_eMMC_HS400)
     //read general table if hs400

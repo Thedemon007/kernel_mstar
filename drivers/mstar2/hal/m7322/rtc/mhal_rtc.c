@@ -148,9 +148,9 @@ irqreturn_t _MHAL_RTCINT_INTHandler(int irq, void *dev_id)
             pCB(0, dev_id);
         }
         MHAL_RTC_ClearInterrupt_Status(g_rtc_num);
-	return IRQ_HANDLED;
+        return IRQ_HANDLED;
     }
-	return IRQ_NONE;
+    return IRQ_NONE;
 }
 
 
@@ -164,7 +164,11 @@ int MHal_RTC_Request_IRQ(irq_handler_t pCallback, void *dev_id)
 
     pm_rtc_irq_pCallback = pCallback;
 
+#ifdef CONFIG_KEYBOARD_MTK
     if (request_irq(E_IRQ_PM_SLEEP, (irq_handler_t)_MHAL_RTCINT_INTHandler, IRQF_TRIGGER_HIGH | IRQF_SHARED, "RTC_PM", dev_id))
+#else
+    if (request_irq(E_IRQ_PM_SLEEP, (irq_handler_t)_MHAL_RTCINT_INTHandler, IRQF_TRIGGER_HIGH, "RTC_PM", dev_id))
+#endif
     {
         printk("request_irq fail\n");
         return -EBUSY;
@@ -226,11 +230,18 @@ void MHAL_RTC_SetCounter(E_MS_RTC eRtc,U32 u32RtcSetCounter)
 U32 MHAL_RTC_GetCounter(E_MS_RTC eRtc)
 {
     U32 u32Reg;
-    U16 u16Dummy=100;
+    U16 val;
+    U32 cnt = 0;
+
     MHAL_RTC_Reading(eRtc, ENABLE);
-    while(u16Dummy--); //wait for HW latch bits okay, otherwise sometimes it read wrong value
+    //wait for HW latch bits okay, otherwise sometimes it read wrong value
+    do {
+        val = MHAL_RTC_Read2Byte(MHAL_RTC_GET_BASE(eRtc) + REG_RTC_CTRL_REG);
+        cnt++;
+    } while ((val & RTC_READ_EN_BIT) && (cnt < 1000));
+
     u32Reg = MHAL_RTC_Read4Byte(MHAL_RTC_GET_BASE(eRtc)+REG_RTC_CNT);
-    //printk(KERN_EMERG "==RTC== %s, %d, %x\n" , __FUNCTION__, __LINE__, u32Reg);
+    printk(KERN_EMERG "==RTC== %s, %d, time:0x%x, val:0x%x, cnt:%d\n" , __FUNCTION__, __LINE__, u32Reg, val, cnt);
     return u32Reg;
 }
 
@@ -263,4 +274,24 @@ void MHAL_RTC_ClearInterrupt_Status(E_MS_RTC eRtc)
 U16 MHAL_SLEEP_SW_Dummy_REG_Read(void)
 {
     return(MHAL_RTC_Read2Byte(REG_SLEEP_BASE+SLEEP_DUMMY_REG));
+}
+
+void MHAL_RTC_Set_Dummy0(E_MS_RTC eRtc, u16 u16Val)
+{
+    MHAL_RTC_Write2Byte(MHAL_RTC_GET_BASE(eRtc) + REG_RTC_DUMMY0, u16Val);
+}
+
+u16 MHAL_RTC_Get_Dummy0(E_MS_RTC eRtc)
+{
+    return MHAL_RTC_Read2Byte(MHAL_RTC_GET_BASE(eRtc) + REG_RTC_DUMMY0);
+}
+
+void MHAL_RTC_Set_Dummy1(E_MS_RTC eRtc, u16 u16Val)
+{
+    MHAL_RTC_Write2Byte(MHAL_RTC_GET_BASE(eRtc) + REG_RTC_DUMMY1, u16Val);
+}
+
+u16 MHAL_RTC_Get_Dummy1(E_MS_RTC eRtc)
+{
+    return MHAL_RTC_Read2Byte(MHAL_RTC_GET_BASE(eRtc) + REG_RTC_DUMMY1);
 }

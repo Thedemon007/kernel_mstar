@@ -147,8 +147,8 @@ U32 eMMCTest_BlkWRC_ProbeTiming(U32 u32_eMMC_Addr)
 
 		#if 1
 		u32_err = eMMC_CMD24_MIU(u32_eMMC_Addr, gau8_WBuf_DDR);
-        if(eMMC_ST_SUCCESS != u32_err)
-	        break;
+		if(eMMC_ST_SUCCESS != u32_err)
+			break;
 
 		u32_err = eMMC_CMD17_MIU(u32_eMMC_Addr, gau8_RBuf_DDR);
 		if(eMMC_ST_SUCCESS != u32_err)

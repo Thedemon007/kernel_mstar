@@ -62,9 +62,16 @@
 #ifndef MSTAR_FB_GRAPHIC_H
 #define MSTAR_FB_GRAPHIC_H
 
+typedef struct
+{
+    MS_U32 ref_count;
+    MS_U32 pseudo_palette[16];
+}FBDEV_Controller;
 
 /* ========================================================================= */
 /* prototype of function */
+static int _mstar_fb_open(struct fb_info *info, int user);
+static int _mstar_fb_release(struct fb_info *info, int user);
 static int mstar_fb_set_par(struct fb_info *pinfo);
 static int mstar_fb_pan_display(struct fb_var_screeninfo *var, struct fb_info *info);
 static int mstar_fb_check_var(struct fb_var_screeninfo *var, struct fb_info *info);

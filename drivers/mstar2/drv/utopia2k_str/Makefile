@@ -11,5 +11,12 @@ EXTRA_CFLAGS      +=  -Idrivers/base/power
 EXTRA_CFLAGS      +=
 
 # files
+obj-$(CONFIG_MSTAR_UTOPIA2K_STR)    += mdrv_utopia2k_str_main.o
 obj-$(CONFIG_MSTAR_UTOPIA2K_STR)    += mdrv_utopia2k_str.o
-mdrv-utopia2k-str-objs             += mdrv_utopia2k_str.o
+obj-$(CONFIG_MSTAR_UTOPIA2K_STR)    += mdrv_utopia2k_str_v2.o
+
+mdrv-utopia2k-str-objs              += mdrv_utopia2k_str_main.o
+mdrv-utopia2k-str-objs              += mdrv_utopia2k_str.o
+mdrv-utopia2k-str-objs              += mdrv_utopia2k_str_v2.o
+
+CFLAGS_mdrv_utopia2k_str_v2.o       := -DDEBUG

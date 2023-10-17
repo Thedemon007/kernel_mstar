@@ -79,7 +79,7 @@
     /// data type unsigned int, data length 4 byte
     typedef unsigned int                MS_U32;                             // 4 bytes
     /// data type unsigned int, data length 8 byte
-    typedef unsigned long               MS_U64;                             // 8 bytes
+    typedef unsigned long long          MS_U64;                             // 8 bytes
     /// data type signed char, data length 1 byte
     typedef signed char                 MS_S8;                              // 1 byte
     /// data type signed short, data length 2 byte
@@ -87,7 +87,7 @@
     /// data type signed int, data length 4 byte
     typedef signed int                  MS_S32;                             // 4 bytes
     /// data type signed int, data length 8 byte
-    typedef signed long                 MS_S64;                             // 8 bytes
+    typedef signed long long            MS_S64;                             // 8 bytes
     /// data type float, data length 4 byte
     typedef float                       MS_FLOAT;                           // 4 bytes
     /// data type pointer content

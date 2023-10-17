@@ -192,7 +192,7 @@ static int mstar_gpio_direction_output(struct gpio_chip *chip, unsigned offset, 
 
 static int mstar_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
 {
-	return MHal_GPIO_Get_Interrupt_Num((u8)offset);
+	return MHal_GPIO_Get_Interrupt_Num(offset);
 }
 
 static int mstar_gpio_get_direction(struct gpio_chip *chip, unsigned offset)
@@ -200,10 +200,10 @@ static int mstar_gpio_get_direction(struct gpio_chip *chip, unsigned offset)
         return MHal_GPIO_Pad_InOut(offset);
 }
 
-static int mstar_gpio_free(struct gpio_chip *chip, unsigned offset)
+static void mstar_gpio_free(struct gpio_chip *chip, unsigned offset)
 {
         //pin_disable[offset] = 1;
-        return 0;
+        return;
 }
 
 static struct gpio_chip mstar_gpio_chip = {
@@ -467,7 +467,7 @@ err_irq_domain:
 static int mstar_gpio_drv_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct mstar_gpio_dev *gpio_dev;
-	u8 pin_cnt = 0;
+	u32 pin_cnt = 0;
 	int ret = 0;
 
 	GPIO_PRINT("%s is invoked\n", __FUNCTION__);
@@ -488,7 +488,7 @@ static int mstar_gpio_drv_suspend(struct platform_device *pdev, pm_message_t sta
 static int mstar_gpio_drv_resume(struct platform_device *pdev)
 {
 	struct mstar_gpio_dev *gpio_dev;
-	u8 pin_cnt = 0;
+	u32 pin_cnt = 0;
 	int ret;
 
 	GPIO_PRINT("%s is invoked\n", __FUNCTION__);
@@ -501,9 +501,8 @@ static int mstar_gpio_drv_resume(struct platform_device *pdev)
 	ret = MHal_GPIO_Set_Pin_Status_Array(gpio_dev->pin_status, gpio_dev->ngpio, &pin_cnt, pin_disable);
 	//BUG_ON(gpio_dev->pin_status == 0);
         #endif
-	ret = MHal_GPIO_Resume_GPIO_Pads();
 	/* TODO: re-expose pins to sysfs? */
-	return ret;
+	return 0;
 }
 
 static int mstar_gpio_drv_remove(struct platform_device *pdev)

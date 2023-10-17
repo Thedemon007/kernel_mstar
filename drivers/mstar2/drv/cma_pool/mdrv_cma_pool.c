@@ -70,7 +70,11 @@
 #include <linux/sched.h>
 #include <linux/debugfs.h>
 #include <asm/io.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+#include <linux/uaccess.h>
+#else
 #include <asm/uaccess.h>
+#endif
 #include <asm/dma-contiguous.h>
 #include <asm/outercache.h>
 #include <asm/cacheflush.h>
@@ -109,7 +113,6 @@
 #if defined(CONFIG_MP_MMA_ENABLE)
 #include <mma_api.h>
 #endif
-
 
 #include <linux/profile.h>//profile_munmap need this header file
 #include <linux/ptrace.h>//ptrace_may_access function need this header file
@@ -212,7 +215,11 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 #endif
 
 static int CMA_Pool_MMap(struct file *filp, struct vm_area_struct *vma);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static vm_fault_t _cma_cpu_page_fault_handler(struct vm_fault *vmf);
+#else
 int _cma_cpu_page_fault_handler(struct vm_area_struct *vma, struct vm_fault *vmf);
+#endif
 void _cma_vma_close(struct vm_area_struct * vma);
 static unsigned long CMA_Pool_Mapping(struct heap_proc_info * proc_info, struct vm_area_struct *vma, unsigned long start_pa, unsigned long length, filp_private *pdev);
 static int CMA_Pool_Unmapping(struct heap_proc_info * proc_info, struct vm_area_struct *vma, unsigned long start_pa, unsigned long length, filp_private *pdev);
@@ -275,7 +282,11 @@ static atomic_t kprotect_enabled = ATOMIC_INIT(1);
 unsigned int bootarg_cma_debug_level = 0;
 unsigned int temp_cma_debug_level = 0;
 struct timer_list cma_debug_timer;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static void cma_debug_callback(struct timer_list *t);
+#else
 static void cma_debug_callback(unsigned long);
+#endif
 
 #ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
 extern struct cma_measurement cma_measurement_data[ION_HEAP_ID_RESERVED];
@@ -457,9 +468,9 @@ void map_kernel(struct vm_struct * area,struct heap_proc_info * proc_info,unsign
     int npages = PAGE_ALIGN(length) / PAGE_SIZE;
     unsigned long addr;
     unsigned long end;
+	unsigned long start_pfn;
     struct page **pages = vmalloc(sizeof(struct page *) * npages);
     struct page **tmp = pages;
-    struct page *page = NULL;
     int i = 0;
 
     if(length + offset_in_heap > area->size)
@@ -483,22 +494,23 @@ void map_kernel(struct vm_struct * area,struct heap_proc_info * proc_info,unsign
          pgprot = pgprot_writecombine(PAGE_KERNEL);
 
     addr = (unsigned long)area->addr + offset_in_heap;
-    end = addr + length - PAGE_SIZE;
+    end = addr + length;
 
-    page = __pfn_to_page(__phys_to_pfn(proc_info->base_phy+offset_in_heap));
+	start_pfn = __phys_to_pfn(proc_info->base_phy + offset_in_heap);
 
-    for(i=0; i < npages; ++i)
+    for(i = 0; i < npages; ++i)
     {
-        *(tmp++) = page++;
+		*(tmp++) = __pfn_to_page(start_pfn);
+		start_pfn++;
     }
 
     err = vmap_page_range(addr, end, pgprot, pages);
     vfree(pages);
     if (err > 0)
     {
-        if(npages  != err + 1)
+        if(npages  != err)
         {
-            MCMA_CUST_ERR("vmap_page_range not total vmap!!!  npages=%d, but err+1 is =%d\n",npages,err+1);
+            MCMA_CUST_ERR("vmap_page_range not total vmap!!! npages=%d, but err is = %d\n", npages, err);
         }
     }
     else
@@ -513,11 +525,18 @@ void unmap_kernel(struct vm_struct * area)
 }
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static vm_fault_t _cma_cpu_page_fault_handler(struct vm_fault *vmf)
+#else
 int _cma_cpu_page_fault_handler(struct vm_area_struct *vma, struct vm_fault *vmf)
+#endif
 {
-    void __user * address;
-    address = vmf->virtual_address;
-    MCMA_CUST_ERR("vmf->virtual_address = %lX \n",(unsigned long)address);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    MCMA_CUST_ERR("vmf->address = %lX \n", vmf->address);
+#else
+    void __user *address = vmf->virtual_address;
+    MCMA_CUST_ERR("vmf->virtual_address = %lX \n", (unsigned long)address);
+#endif
     return VM_FAULT_SIGBUS;
 }
 
@@ -690,6 +709,9 @@ static int CMA_Pool_Release(struct inode *inode, struct file *filp)
 	struct cma_buffer *release_buf_front = NULL, *release_buf_back = NULL;
 	struct cma_allocation_list *alloc_list = NULL;
 	struct heap_proc_info *proc_info = NULL, *proc_n = NULL;
+#ifdef CONFIG_MP_CMA_PATCH_POOL_UTOPIA_TO_KERNEL
+	struct pid *pid_now;
+#endif
 
 #if CMA_POOL_DUMP
 	printk(CMA_ERR "\033[31mFunction = %s, Line = %d, pid is %d, current->pid is %d, current->tgid is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, pid, current->pid, current->tgid);
@@ -763,8 +785,10 @@ static int CMA_Pool_Release(struct inode *inode, struct file *filp)
 					//profile_munmap(vma_item->vma->vm_start);
 					//vm_munmap(vma_item->vma->vm_start, vma_item->vma->vm_end - vma_item->vma->vm_start);
 
-					vma_item->vma =NULL;
-					printk(CMA_ERR "%s: %d delete user_mode vma_item, owner is pid: %d(%s)\n", __FUNCTION__, __LINE__, pid, pid_task(find_get_pid(pid), PIDTYPE_PID)->comm);
+					vma_item->vma = NULL;
+					pid_now = find_get_pid(pid);
+					printk(CMA_ERR "%s: %d delete user_mode vma_item, owner is pid: %d(%s)\n", __FUNCTION__, __LINE__, pid, pid_task(pid_now, PIDTYPE_PID)->comm);
+					put_pid(pid_now);
 					list_del(&vma_item->list_node);
 				}
 			}
@@ -805,7 +829,11 @@ static int CMA_Pool_Release(struct inode *inode, struct file *filp)
                     size_t len=vma_item->vma->vm_end - vma_item->vma->vm_start;
                     if(mm){
                         down_write(&mm->mmap_sem);
-                        do_munmap(mm, start, len);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+			do_munmap(mm, start, len, NULL);
+#else
+			do_munmap(mm, start, len);
+#endif
                         up_write(&mm->mmap_sem);
                     }
                 }
@@ -907,10 +935,9 @@ static int CMA_Pool_Init(unsigned int heap_id, unsigned long flags, unsigned int
         if(((flags &CMA_FLAG_MAP_KERNEL) && (TYPE_STATES_USER  == proc_info->type_states))
         ||((! (flags &CMA_FLAG_MAP_KERNEL)) && (TYPE_STATES_KERNEL == proc_info->type_states)))
         {
-		printk(KERN_EMERG "\033[35mFunction = %s, Line = %d, already having proc_info, but want to use simultaneously in kernel mode and user mode,flags = %lu, proc_info->type_states = %d\033[m\n",
+            printk(CMA_ERR "\033[35mFunction = %s, Line = %d, already having proc_info, but want to use simultaneously in kernel mode and user mode,flags = %lu, proc_info->type_states = %d\033[m\n",
 				__PRETTY_FUNCTION__, __LINE__, flags, proc_info->type_states);
-		ret = -EEXIST;
-		return ret;
+            MCMA_BUG_ON(1);
         }
 #endif
     }
@@ -1320,7 +1347,7 @@ static bool _miu_kernel_protect(unsigned char miuBlockIndex, unsigned int *pu8Pr
     bool ret = true;
 
     if(atomic_read(&kprotect_enabled) > 0)
-        ret = MDrv_MIU_Protect(miuBlockIndex, kernal_protect_client_id, start, end, flag);
+        ret = MDrv_MIU_Kernel_Protect(miuBlockIndex, kernal_protect_client_id, start, end, flag);
     else
         printk(CMA_ERR "ignore kernel protect\n");
 
@@ -1717,13 +1744,14 @@ static int CMA_Pool_Alloc(unsigned int heap_id, unsigned long offset_in_heap, u6
     struct cma * cma_area = NULL;
     struct heap_proc_info * proc_info = NULL;
 	signed long timeout;
-	#ifdef CONFIG_MP_CMA_PATCH_DELAY_FREE
+#ifdef CONFIG_MP_CMA_PATCH_DELAY_FREE
 	struct list_head *pos, *q;
 	struct delay_free_reserved *tmp;
-	#endif
+#endif
 #ifdef CONFIG_MP_CMA_PATCH_POOL_UTOPIA_TO_KERNEL
 	struct kernel_cma_pool_vma_item *kernel_cma_pool_vma_item_get = NULL;
 #endif
+	struct pid *pid_now;
 
     if(!IS_ALIGNED(offset_in_heap, SIZE_8K) || !IS_ALIGNED(length, SIZE_8K))
     {
@@ -1855,13 +1883,15 @@ static int CMA_Pool_Alloc(unsigned int heap_id, unsigned long offset_in_heap, u6
                 || (((phy_addr+length) > heap_info->alloc_list.min_start) && ((phy_addr+length) <= heap_info->alloc_list.max_end)))
             {
                 ret = -EINVAL;
+				pid_now = find_get_pid(pdev->pid);
                 MCMA_CUST_ERR("invalid start address or length:  heap id %u, min_start 0x%lX , max_end 0x%lX, phy_addr 0x%lX, length 0x%lX  \"%s\" \n\n",
                            heap_id, heap_info->alloc_list.min_start, heap_info->alloc_list.max_end,
-                           phy_addr, length, pid_task(find_get_pid(pdev->pid), PIDTYPE_PID)->comm);
+                           phy_addr, length, pid_task(pid_now, PIDTYPE_PID)->comm);
                 MCMA_CUST_ERR("Alloc fail!!!\n");
                 MCMA_CUST_ERR("case1: Notice buffer may be a co-buffer ,and may have already been allocated by others.Do not allocate a buffer simultaneously by different modules though they may co-buffer.\n");
                 MCMA_CUST_ERR("case2: may have already been allocated ,but not free,or previous free fail by different tgid ,but here allocate again.\n");
                 MCMA_CUST_ERR("Please refer to following log to get more info:\n");
+				put_pid(pid_now);
                 dump_CMA_Pool(heap_info, true);
                 goto ALLOCAT_BUFF_FAIL;
             }
@@ -1912,10 +1942,22 @@ ALLOC_RETRY:
 		//printk("\033[35mFunction = %s, Line = %d, alloc from 0x%llX to 0x%llX\033[m\n", __PRETTY_FUNCTION__, __LINE__, phy_addr, phy_addr+length);
 		page = dma_alloc_at_from_contiguous(heap_info->dev, length>>PAGE_SHIFT, 1, phy_addr);
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,31)
-        //__dma_flush_buffer(mboot_str_ask_cma_page, (length>>PAGE_SHIFT) << PAGE_SHIFT);	// we dont flush anymore
+	if(page)
+	{
+#ifdef CONFIG_ARM64
+		__dma_flush_area(page_address(page), length);
 #else
-        __dma_flush_buffer(page, (length>>PAGE_SHIFT) << PAGE_SHIFT);
+		if (!PageHighMem(page))	// we now support lowmem flush only
+                {
+			dmac_flush_range(lowmem_page_address(page), lowmem_page_address(page) + length);
+			outer_flush_range(page_to_phys(page), page_to_phys(page) + length);
+                }
 #endif
+	}
+#else
+	__dma_flush_buffer(page, (length>>PAGE_SHIFT) << PAGE_SHIFT);
+#endif
+
 #ifdef CONFIG_MP_CMA_PATCH_COUNT_TIMECOST
 		mutex_lock(&cma_measurement_data[heap_id].cma_measurement_lock);
 		cma_measurement_data[heap_id].total_alloc_size_kb += length >> 10;
@@ -2350,13 +2392,15 @@ static int CMA_Pool_Free(unsigned int heap_id, unsigned long offset_in_heap, uns
     find = find_cma_buffer(heap_info, start_pa, length);
     if(!find)
     {
-        printk(CMA_ERR "\033[35mFunction = %s, Line = %d, [Error] [%s] Strange CMA_Pool_Free\033[m\n", __PRETTY_FUNCTION__, __LINE__, current->comm);
-        printk(CMA_ERR "\033[35mFunction = %s, Line = %d, heap_id %u want to release from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, heap_id, start_pa, (start_pa+length));
-        printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
-        printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
-        printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, [Error] [%s] Strange CMA_Pool_Free\033[m\n", __PRETTY_FUNCTION__, __LINE__, current->comm);
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, heap_id %u want to release from 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, heap_id, start_pa, (start_pa+length));
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		printk(CMA_ERR "\033[35mFunction = %s, Line = %d, Check this\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+
+		mutex_unlock(&heap_info->lock);
+		MCMA_BUG_ON(1);
     }
-    MCMA_BUG_ON(!find);
 
     if(find->freed)
     {
@@ -2409,7 +2453,7 @@ static int CMA_Pool_Free(unsigned int heap_id, unsigned long offset_in_heap, uns
         if(TYPE_STATES_KERNEL == proc_info->type_states)
         {
             start =(unsigned long)(proc_info->kernel_vm->addr) + offset_in_heap;
-            end = start + length-PAGE_SIZE;
+            end = start + length;
             free_unmap_vmap_start_end(start,end);
 
             ret = 0;
@@ -2523,11 +2567,14 @@ static int CMA_Pool_Unmapping(struct heap_proc_info * proc_info, struct vm_area_
     if (mm)
         down_write(&mm->mmap_sem);
 
-    if(zap_vma_ptes(vma,(uintptr_t)vaddr, length))
-    {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    zap_vma_ptes(vma, (uintptr_t)vaddr, length);
+#else
+    if (zap_vma_ptes(vma, (uintptr_t)vaddr, length)) {
         MCMA_CUST_ERR("!!! zap_vma_ptes failed start=0x%lX size = 0x%lX by pid:%d\n", vaddr, length, (int)current->pid);
         err = -EFAULT;
     }
+#endif
 
     if (mm)
         up_write(&mm->mmap_sem);
@@ -2845,7 +2892,7 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 		{
 			compat_uint_t uint;
 			compat_ulong_t ulong;
-			compat_u64 u64;
+			compat_u64 u64_data;
 			compat_size_t usize;
 
 			struct compat_cma_heap_info __user *data32;
@@ -2870,11 +2917,11 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			err = get_user(uint, &data32->miu);
 			err |= put_user(uint, &data->miu);
 
-			err = get_user(u64, &data32->bus_addr);
-			err |= put_user(u64, &data->bus_addr);
+			err = get_user(u64_data, &data32->bus_addr);
+			err |= put_user(u64_data, &data->bus_addr);
 
-			err = get_user(u64, &data32->heap_miu_start_offset);
-			err |= put_user(u64, &data->heap_miu_start_offset);
+			err = get_user(u64_data, &data32->heap_miu_start_offset);
+			err |= put_user(u64_data, &data->heap_miu_start_offset);
 
 			err = get_user(usize, &data32->heap_length);
 			err |= put_user(usize, &data->heap_length);
@@ -2896,11 +2943,11 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			err = get_user(uint, &data->miu);
 			err |= put_user(uint, &data32->miu);
 
-			err = get_user(u64, &data->bus_addr);
-			err |= put_user(u64, &data32->bus_addr);
+			err = get_user(u64_data, &data->bus_addr);
+			err |= put_user(u64_data, &data32->bus_addr);
 
-			err = get_user(u64, &data->heap_miu_start_offset);
-			err |= put_user(u64, &data32->heap_miu_start_offset);
+			err = get_user(u64_data, &data->heap_miu_start_offset);
+			err |= put_user(u64_data, &data32->heap_miu_start_offset);
 
 			err = get_user(usize, &data->heap_length);
 			err |= put_user(usize, &data32->heap_length);
@@ -2911,7 +2958,7 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 		{
 			compat_uint_t uint;
 			compat_ulong_t ulong;
-			compat_u64 u64;
+			compat_u64 u64_data;
 			compat_size_t usize;
 
 			struct compat_cma_alloc_args __user *data32;
@@ -2927,8 +2974,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			 * copy 32_bit data to 64_bit data
 			 * we only wanna change data_size for flags, but we still need to copy all data from data32(user data) to data
 			 */
-			err = get_user(u64, &data32->offset_in_heap);
-			err |= put_user(u64, &data->offset_in_heap);
+			err = get_user(u64_data, &data32->offset_in_heap);
+			err |= put_user(u64_data, &data->offset_in_heap);
 
 			err = get_user(ulong, &data32->cpu_addr);
 			err |= put_user(ulong, &data->cpu_addr);
@@ -2936,8 +2983,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			err = get_user(usize, &data32->length);
 			err |= put_user(usize, &data->length);
 
-			err = get_user(u64, &data32->align);
-			err |= put_user(u64, &data->align);
+			err = get_user(u64_data, &data32->align);
+			err |= put_user(u64_data, &data->align);
 
 			err = get_user(uint, &data32->heap_id);
 			err |= put_user(uint, &data->heap_id);
@@ -2952,8 +2999,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			/*
 			 * copy 64_bit data to 32_bit data for return to 32_bit app
 			 */
-			err = get_user(u64, &data->offset_in_heap);
-			err |= put_user(u64, &data32->offset_in_heap);
+			err = get_user(u64_data, &data->offset_in_heap);
+			err |= put_user(u64_data, &data32->offset_in_heap);
 
 			err = get_user(ulong, &data->cpu_addr);
 			err |= put_user(ulong, &data32->cpu_addr);
@@ -2961,8 +3008,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			err = get_user(usize, &data->length);
 			err |= put_user(usize, &data32->length);
 
-			err = get_user(u64, &data->align);
-			err |= put_user(u64, &data32->align);
+			err = get_user(u64_data, &data->align);
+			err |= put_user(u64_data, &data32->align);
 
 			err = get_user(uint, &data->heap_id);
 			err |= put_user(uint, &data32->heap_id);
@@ -2975,7 +3022,7 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 		case COMPAT_CMA_POOL_IOC_FREE: // free a buffer
 		{
 			compat_uint_t uint;
-			compat_u64 u64;
+			compat_u64 u64_data;
 			compat_size_t usize;
 
 			struct compat_cma_free_args __user *data32;
@@ -2994,8 +3041,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			err = get_user(uint, &data32->heap_id);
 			err |= put_user(uint, &data->heap_id);
 
-			err = get_user(u64, &data32->offset_in_heap);
-			err |= put_user(u64, &data->offset_in_heap);
+			err = get_user(u64_data, &data32->offset_in_heap);
+			err |= put_user(u64_data, &data->offset_in_heap);
 
 			err = get_user(usize, &data32->length);
 			err |= put_user(usize, &data->length);
@@ -3012,7 +3059,7 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
         case  COMPAT_CMA_POOL_IOC_GET_HEAP_INFO_FROM_PA:
         {
 			compat_uint_t uint;
-            compat_u64 u64;
+            compat_u64 u64_data;
             compat_size_t usize;
 
             struct compat_get_info_from_pa __user *data32;
@@ -3028,8 +3075,8 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
 	          * copy 32_bit data to 64_bit data
 	          * we only wanna change data_size for flags, but we still need to copy all data from data32(user data) to data
 	          */
-            err = get_user(u64, &data32->PA);
-            err |= put_user(u64, &data->PA);
+            err = get_user(u64_data, &data32->PA);
+            err |= put_user(u64_data, &data->PA);
 
             if(err)
 				return err;
@@ -3046,14 +3093,14 @@ static long Compat_CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned 
             err = get_user(uint, &data->miu);
             err |= put_user(uint, &data32->miu);
 
-            err = get_user(u64, &data->heap_miu_start_offset);
-            err |= put_user(u64, &data32->heap_miu_start_offset);
+            err = get_user(u64_data, &data->heap_miu_start_offset);
+            err |= put_user(u64_data, &data32->heap_miu_start_offset);
 
             err = get_user(usize, &data->heap_length);
             err |= put_user(usize, &data32->heap_length);
 
-            err = get_user(u64, &data->pa_offset_in_heap);
-            err |= put_user(u64, &data32->pa_offset_in_heap);
+            err = get_user(u64_data, &data->pa_offset_in_heap);
+            err |= put_user(u64_data, &data32->pa_offset_in_heap);
 
             return ret ? ret : err;
         }
@@ -3166,7 +3213,7 @@ static long CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
     if (_IOC_SIZE(cmd) > sizeof(data))
         return -EINVAL;
 
-	printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, copy_from_user: %d bytes, cmd is 0x%lX\033[m\n", __PRETTY_FUNCTION__, __LINE__, _IOC_SIZE(cmd), cmd);
+	printk(CMA_DEBUG "\033[35mFunction = %s, Line = %d, copy_from_user: %d bytes, cmd is 0x%X\033[m\n", __PRETTY_FUNCTION__, __LINE__, _IOC_SIZE(cmd), cmd);
     if (dir & _IOC_WRITE)
         if (copy_from_user(&data, (void __user *)arg, _IOC_SIZE(cmd)))
             return -EFAULT;
@@ -3263,7 +3310,7 @@ static long CMA_Pool_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 
         MCMA_CUST_DEBUG("heap_id=%u,flags=%u\n",data.vma_valid.heap_id,flags);
         ret = CMA_Pool_Kernel_Mode_Get_User_Va(data.vma_valid.heap_id,flags,
-                                                                                  &data.vma_valid.user_va_valid_flag,&data.vma_valid.heap_start_user_space_virt_addr
+                                                                                  &data.vma_valid.user_va_valid_flag,(unsigned long *)&data.vma_valid.heap_start_user_space_virt_addr
                                                                                   , (filp_private *)filp->private_data);
         MCMA_CUST_DEBUG("data.vma_valid.heap_start_user_space_virt_addr=0x%lx",data.vma_valid.heap_start_user_space_virt_addr);
         if(ret)
@@ -3594,16 +3641,16 @@ static inline int _protect_miu_slit(int miu, unsigned long start, unsigned long 
         bool ret;
         //N.B. for each miu slit only called once, pass kernal_protect_client_id to HAL,
         //and later enable/disable each unit in slit will using MDrv_MIU_Slits function and not need to use kernal_protect_client_id.
-        // MDrv_MIU_Protect(E_SLIT_0,xxx) only tell/set will protect which area,but not really enable protect.
-        //After MDrv_MIU_Protect(E_SLIT_0,xxx),should call MDrv_MIU_Slits to really enable protect this whole area.
-        ret = MDrv_MIU_Protect(E_SLIT_0, kernal_protect_client_id, start,start+length, MIU_PROTECT_ENABLE);
+        // MDrv_MIU_Kernel_Protect(E_SLIT_0,xxx) only tell/set will protect which area,but not really enable protect.
+        //After MDrv_MIU_Kernel_Protect(E_SLIT_0,xxx),should call MDrv_MIU_Slits to really enable protect this whole area.
+        ret = MDrv_MIU_Kernel_Protect(E_SLIT_0, kernal_protect_client_id, start,start+length, MIU_PROTECT_ENABLE);
         if(!ret)
         {
-			MCMA_CUST_ERR(CMA_ERR "MDrv_MIU_Protect fail ret=%d\n",ret);
+			MCMA_CUST_ERR(CMA_ERR "MDrv_MIU_Kernel_Protect fail ret=%d\n",ret);
 			MCMA_BUG_ON(1);
         }
 
-        //After MDrv_MIU_Protect(E_SLIT_0,xxx),should call MDrv_MIU_Slits to really enable protect this whole area.
+        //After MDrv_MIU_Kernel_Protect(E_SLIT_0,xxx),should call MDrv_MIU_Slits to really enable protect this whole area.
         ret =MDrv_MIU_Slits(E_SLIT_0, start, start+length, MIU_PROTECT_ENABLE);
         if(!ret)
         {
@@ -3844,6 +3891,7 @@ static void dump_CMA_Pool(struct cma_memory_info * heap_info, bool force_print)
     struct cma_allocation_list *buffer_list = NULL;
     struct cma_buffer *buffer = NULL;
     struct cma *cma_area = NULL;
+	struct pid *pid_now;
 
     if(!force_print)
     {
@@ -3859,10 +3907,12 @@ static void dump_CMA_Pool(struct cma_memory_info * heap_info, bool force_print)
         buffer_list->min_start, buffer_list->max_end);
     list_for_each_entry(buffer, &buffer_list->list_head, list)
     {
-        printk(CMA_DEBUG "allocated info: cpu address 0x%lX, phy_addr 0x%lX, length 0x%lX, pid %lu, freed %d, mapped %d \"%s\"\n",
+		pid_now = find_get_pid(buffer->pid);
+		printk(CMA_DEBUG "allocated info: cpu address 0x%lX, phy_addr 0x%lX, length 0x%lX, pid %lu, freed %d, mapped %d \"%s\"\n",
             (unsigned long)buffer->cpu_addr, buffer->start_pa, buffer->length,
             (unsigned long)buffer->pid, buffer->freed, buffer->mapped,
-			pid_task(find_get_pid(buffer->pid), PIDTYPE_PID)->comm);
+			pid_task(pid_now, PIDTYPE_PID)->comm);
+		put_pid(pid_now);
     }
 }
 #if defined(CONFIG_MSTAR_MIUPROTECT) && defined(CONFIG_MP_MMA_ENABLE)
@@ -4263,7 +4313,11 @@ static unsigned long delay_free_count_objects(struct shrinker *s, struct shrink_
 }
 #endif
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,18,31)
+static unsigned long delay_free_shrink(struct shrinker *s, struct shrink_control *sc)
+#else
 static int delay_free_shrink(struct shrinker *s, struct shrink_control *sc)
+#endif
 {
 
 	int other_free = global_page_state(NR_FREE_PAGES) - totalreserve_pages;
@@ -4710,8 +4764,8 @@ MSYSTEM_STATIC int __init mod_cmapool_init(void)
 #if defined(CONFIG_MSTAR_MIUPROTECT) && defined(CONFIG_MP_MMA_ENABLE)
 	//will do miu protect related in miu protect module.
 #else
-    MCMA_BUG_ON(FALSE == MDrv_MIU_Init());
-    kernal_protect_client_id = MDrv_MIU_GetDefaultClientID_KernelProtect();
+    MCMA_BUG_ON(FALSE == MDrv_MIU_Kernel_Init());
+    kernal_protect_client_id = MDrv_MIU_Kernel_GetDefaultClientID_KernelProtect();
 
 	/* to set kernel_protect for each lxmem */
 	init_glob_miu_kranges();
@@ -4787,10 +4841,14 @@ MSYSTEM_STATIC int __init mod_cmapool_init(void)
 #endif
 
 	if(temp_cma_debug_level != 0){
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+		timer_setup(&cma_debug_timer, cma_debug_callback, 0);
+#else
 		init_timer(&cma_debug_timer);
-		cma_debug_timer.expires = jiffies + 30 * HZ;
 		cma_debug_timer.function = &cma_debug_callback;
 		cma_debug_timer.data = temp_cma_debug_level;
+#endif
+                cma_debug_timer.expires = jiffies + 30 * HZ;
 		add_timer(&cma_debug_timer);
 	}
 
@@ -4827,6 +4885,14 @@ MSYSTEM_STATIC void __exit mod_cmapool_exit(void)
 module_init(mod_cmapool_init);
 module_exit(mod_cmapool_exit);
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+static void cma_debug_callback(struct timer_list *t)
+{
+	pr_info("\033[0;32;31m %s %d to %u\033[m\n",
+		__func__, __LINE__, temp_cma_debug_level);
+	bootarg_cma_debug_level = temp_cma_debug_level;
+}
+#else
 static void cma_debug_callback(unsigned long data)
 {
 	printk("\033[0;32;31m [Ian] %s %d to %lu\033[m\n",__func__,__LINE__,data);
@@ -4835,6 +4901,7 @@ static void cma_debug_callback(unsigned long data)
 	printk("\033[0;32;31m [Ian] %s %d to %lu\033[m\n",__func__,__LINE__,data);
 	bootarg_cma_debug_level = data;
 }
+#endif
 
 static int cma_debug(char *str)
 {

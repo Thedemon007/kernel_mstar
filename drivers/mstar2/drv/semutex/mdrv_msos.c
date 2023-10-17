@@ -775,7 +775,7 @@ BOOL MDrv_Queue_Init(U32 u32QueueNum)
 		goto MDrv_Queue_Init_End;
 	} else {
 		MDRV_QUEUE_UNLOCK(&_stMDrvQueueLock);
-		buf = kzalloc(sizeof(MDRV_QUEUE_INFO) * u32QueueNum, GFP_KERNEL);
+		buf = kzalloc(sizeof(MDRV_QUEUE_INFO) * u32QueueNum, GFP_ATOMIC);
 		if (buf == NULL) {
 			MDRV_MSOS_DEBUG("kzalloc() fail.\n");
 			goto MDrv_Queue_Init_End;
@@ -866,17 +866,17 @@ S32 MDrv_Queue_Create(void           *pStartAddr,
 
     /* Adjust total of queue size. */
     u32QueueNum = (u32QueueSize / u32MessageSize);
-	if (u32QueueNum <= 0) {
-		u32QueueNum = MSOS_QUEUE_SIZE;
-	}
 
-	u32QueueSize = (ALIGN_4(u32MessageSize) * u32QueueNum);
-
-	if ((u32QueueSize / (ALIGN_4(u32MessageSize))) != u32QueueNum) {
-		MDRV_MSOS_DEBUG("Overflow: u32QueueSize=0x%tX, ALIGN_4(u32MessageSize)=0x%tX, u32QueueNum=0x%tX\n",
-				(size_t)u32QueueSize, (size_t)ALIGN_4(u32MessageSize), (size_t)u32QueueNum);
-		return -1;
-	}
+    /* Fix SOPHIA-3818. */
+    if (u32QueueNum <= 0)
+       u32QueueNum = MSOS_QUEUE_SIZE;
+    u32QueueSize = (ALIGN_4(u32MessageSize) * u32QueueNum);
+    if ((u32QueueSize / (ALIGN_4(u32MessageSize))) != u32QueueNum)
+    {
+        MDRV_MSOS_DEBUG("Overflow: u32QueueSize=0x%tX, ALIGN_4(u32MessageSize)=0x%tX, u32QueueNum=0x%tX\n",
+                        (size_t)u32QueueSize, (size_t)ALIGN_4(u32MessageSize), (size_t)u32QueueNum);
+        return -1;
+    }
 
     /* Check queue init. */
     _pstMDrvQueueInfo[u32Id].pu8Head = kzalloc(u32QueueSize, GFP_KERNEL);

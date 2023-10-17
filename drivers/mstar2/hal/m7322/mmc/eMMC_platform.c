@@ -52,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #include "eMMC.h"
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
@@ -395,9 +396,19 @@ void eMMC_Prepare_Power_Saving_Mode_Queue(void)
     REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x1F),
                PWR_BAT_CLASS | PWR_RST_CLASS | PWR_CMD_WINT);
 
-    /* (17) STOP */
+    /* (17) Clear All interrupt enable */
     REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x20), 0x0000);
     REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x21),
+               PWR_BAT_CLASS | PWR_RST_CLASS | PWR_CMD_WREG | PWR_CMD_BK0 | 0x01);
+
+    /* (18) Clear All event  (should put after clear all interrupt enable)*/
+    REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x22), 0xffff);
+    REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x23),
+               PWR_BAT_CLASS | PWR_RST_CLASS | PWR_CMD_WREG | PWR_CMD_BK0 | 0x00);
+
+    /* (19) STOP */
+    REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x24), 0x0000);
+    REG_FCIE_W(GET_REG_ADDR(FCIE_POWEER_SAVE_MODE_BASE, 0x25),
                PWR_BAT_CLASS | PWR_RST_CLASS | PWR_CMD_STOP);
 
     REG_FCIE_CLRBIT(FCIE_PWR_SAVE_CTL, BIT_SD_POWER_SAVE_RST);
@@ -411,23 +422,23 @@ void eMMC_Prepare_Power_Saving_Mode_Queue(void)
 // [FIXME] -->
 void eMMC_DumpPadClk(void)
 {
-    eMMC_debug(0, 0, "\nclk setting:\n");
-    eMMC_debug(0, 0, "reg_ckg_fcie(0x%lX):0x%x\n", reg_ckg_fcie ,REG_FCIE_U16(reg_ckg_fcie));
-    eMMC_debug(0, 0, "FCIE Clk: %uKHz\n", g_eMMCDrv.u32_ClkKHz);
-    eMMC_debug(0, 0, "Reg Val: %Xh\n", g_eMMCDrv.u16_ClkRegVal);
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\nclk setting:\n");
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "reg_ckg_fcie(0x%lX):0x%x\n", reg_ckg_fcie ,REG_FCIE_U16(reg_ckg_fcie));
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "FCIE Clk: %uKHz\n", g_eMMCDrv.u32_ClkKHz);
+    eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "Reg Val: %Xh\n", g_eMMCDrv.u16_ClkRegVal);
 
     //---------------------------------------------------------------------
     eMMC_debug(0, 0, "[pad setting]:\n");
     switch(g_eMMCDrv.u8_PadType)
     {
-        case FCIE_eMMC_BYPASS:          eMMC_debug(0, 0, "Bypass\n");           break;
-        case FCIE_eMMC_SDR:             eMMC_debug(0, 0, "SDR 8-bit macro\n");  break;
-        case FCIE_eMMC_DDR_8BIT_MACRO:  eMMC_debug(0, 0, "DDR 8-bit macro\n");  break;
-        case FCIE_eMMC_HS200:           eMMC_debug(0, 0, "HS200\n");            break;
-        case FCIE_eMMC_HS400_DS:        eMMC_debug(0, 0, "HS400 DS\n");         break;
-        case FCIE_eMMC_HS400_5_1:       eMMC_debug(0, 0, "HS400 5.1\n");        break;
+        case FCIE_eMMC_BYPASS:          eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "Bypass\n");           break;
+        case FCIE_eMMC_SDR:             eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "SDR 8-bit macro\n");  break;
+        case FCIE_eMMC_DDR_8BIT_MACRO:  eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "DDR 8-bit macro\n");  break;
+        case FCIE_eMMC_HS200:           eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "HS200\n");            break;
+        case FCIE_eMMC_HS400_DS:        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "HS400 DS\n");         break;
+        case FCIE_eMMC_HS400_5_1:       eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "HS400 5.1\n");        break;
         default:
-            eMMC_debug(0, 0, "eMMC Err: Pad unknown, %d\n", g_eMMCDrv.u8_PadType); eMMC_die("\n");
+            eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "eMMC Err: Pad unknown, %d\n", g_eMMCDrv.u8_PadType); eMMC_die("\n");
             break;
     }
 }
@@ -691,22 +702,29 @@ U32 eMMC_pads_switch(U32 u32Mode)
 }
 
 
-#ifdef CONFIG_MMC_MSTAR_EMMC_SSC
+extern U8 u8_enable_ssc;
 void emmc_pll_ssc(void)
 {
+    //eMMC_debug(0,0,"eMMC PLL SSC ON\n");
+    //30K 1%
     REG_FCIE_W(reg_emmcpll_0x14, 0xc01c);
     REG_FCIE_W(reg_emmcpll_0x15, 0x0339);
+
+    //20K 1%
+    //REG_FCIE_W(reg_emmcpll_0x14, 0xc014);
+    //REG_FCIE_W(reg_emmcpll_0x15, 0x04af);
 }
-#endif
 
 
 extern U16 u16_OldPLLClkParam;
+extern U8 u8_tune_overtone;
 
 U32 eMMC_pll_setting(U16 u16_ClkParam)
 {
     U32 u32_value_reg_emmc_pll_pdiv;
+    U16 u16_emmcpll_0x03 = 0;
 
-    if(u16_ClkParam == u16_OldPLLClkParam)
+    if( (u16_ClkParam == u16_OldPLLClkParam) && (u8_tune_overtone == 0) )
         return eMMC_ST_SUCCESS;
     else
         u16_OldPLLClkParam = u16_ClkParam;
@@ -715,9 +733,31 @@ U32 eMMC_pll_setting(U16 u16_ClkParam)
     REG_FCIE_SETBIT(reg_emmc_pll_reset,BIT0);
     REG_FCIE_CLRBIT(reg_emmc_pll_reset,BIT0);
 
-#ifdef CONFIG_MMC_MSTAR_EMMC_SSC
-    emmc_pll_ssc();
-#endif
+    // emmcpll tune overtone
+    if (u8_tune_overtone == 1) {
+
+        eMMC_debug(eMMC_DEBUG_LEVEL_LOW, 1, "tune overtone\n");
+
+        REG_FCIE_SETBIT(reg_emmcpll_fbdiv, BIT5);
+
+        eMMC_hw_timer_delay(HW_TIMER_DELAY_100us);
+
+        REG_FCIE_R(reg_emmcpll_0x03, u16_emmcpll_0x03);
+
+        REG_FCIE_W(reg_emmcpll_0x03, 0xFFFF);
+
+        REG_FCIE_SETBIT(reg_emmcpll_0x1b, BIT0);
+
+        REG_FCIE_W(reg_emmcpll_fbdiv, 0x0007);
+
+        eMMC_hw_timer_delay(HW_TIMER_DELAY_100us);
+    }
+
+
+    if (1 == u8_enable_ssc)
+    {
+        emmc_pll_ssc();
+    }  
 
     // 2. synth clock
     switch(u16_ClkParam)
@@ -878,6 +918,13 @@ U32 eMMC_pll_setting(U16 u16_ClkParam)
         REG_FCIE_CLRBIT(reg_emmc_pll_test, BIT10);
     }
 
+    if (u8_tune_overtone == 1) {
+        REG_FCIE_CLRBIT(reg_emmcpll_0x1b, BIT0);  
+
+        REG_FCIE_W(reg_emmcpll_0x03, u16_emmcpll_0x03);
+
+        u8_tune_overtone = 0;
+    }
     eMMC_hw_timer_delay(HW_TIMER_DELAY_100us); // asked by Irwin
 
     return eMMC_ST_SUCCESS;
@@ -888,13 +935,15 @@ extern U16 u16_OldPLLDLLClkParam;
 void eMMC_pll_dll_setting(U16 u16_ClkParam)
 {
     volatile U16 u16_reg;
+    U16 u16_i=0;
 
     if(u16_ClkParam == u16_OldPLLDLLClkParam)
         return ;
     else
         u16_OldPLLDLLClkParam = u16_ClkParam;
 
-    REG_FCIE_CLRBIT(reg_emmcpll_0x09, BIT0); // ­«½? reg_emmc_rxdll_dline_en
+    LABEL_TURN_DLL:
+    REG_FCIE_CLRBIT(reg_emmcpll_0x09, BIT0); // reg_emmc_rxdll_dline_en
 
     // Reset eMMC_DLL
     REG_FCIE_SETBIT(REG_EMMC_PLL_RX30, BIT2);
@@ -916,7 +965,13 @@ void eMMC_pll_dll_setting(U16 u16_ClkParam)
     // Get hw dll0 code
     REG_FCIE_R(REG_EMMC_PLL_RX33, u16_reg);
 
-    //eMMC_debug(eMMC_DEBUG_LEVEL_LOW, 1, "EMMCPLL 0x33=%04Xh\n", u16_reg);
+    if ( (u16_reg & 0x03FF) ==0)
+    {
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 0, "\n EMMCPLL 0x33=%04Xh, i:%u\n", u16_reg, u16_i);
+        u16_i++;
+        if(u16_i < 10)
+            goto LABEL_TURN_DLL;
+    }
 
     REG_FCIE_CLRBIT(REG_EMMC_PLL_RX34, (BIT10 - 1));
 
@@ -1261,7 +1316,7 @@ void eMMC_FCIE_SetSkew4Value(U32 u32Value)
 
     if(u32Value>17)
     {
-        eMMC_debug(0, 1, "eMMC Err: wrong skew4 value\n");
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: wrong skew4 value\n");
         return;
     }
 
@@ -1292,7 +1347,7 @@ void eMMC_FCIE_SetDelayLatch(U32 u32Value)
 
     if(u32Value>31)
     {
-        eMMC_debug(0, 1, "eMMC Err: wrong delay latch value\n");
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR, 1, "eMMC Err: wrong delay latch value\n");
         return;
     }
 
@@ -1311,7 +1366,10 @@ void eMMC_FCIE_SetDelayLatch(U32 u32Value)
 }
 
 //---------------------------------------
+#ifndef CONFIG_MMC_MSTAR_NO_WORK_QUEUE
+
 #if defined(ENABLE_eMMC_INTERRUPT_MODE)&&ENABLE_eMMC_INTERRUPT_MODE
+#include "mstar_mci.h"
 
 static DECLARE_WAIT_QUEUE_HEAD(fcie_wait);
 
@@ -1321,6 +1379,7 @@ static DECLARE_WAIT_QUEUE_HEAD(fcie_wait);
 irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
 {
     volatile u16 u16_Events;
+	struct mstar_mci_host *pMStarHost_st = (struct mstar_mci_host *) dummy;
 
     //printk("fcie IRQ\n");
 
@@ -1328,17 +1387,23 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
 
     if(u16_Events & BIT_POWER_SAVE_MODE_INT)
     {
-        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1, "SAR5 eMMC WARN: %Xh \n",
-            REG_FCIE(FCIE_PWR_SAVE_CTL));
-  
+        eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1, "SAR5 eMMC WARN: %Xh %Xh %Xh\n",
+            REG_FCIE(FCIE_PWR_SAVE_CTL), REG_FCIE(FCIE_MIE_EVENT), REG_FCIE(FCIE_MIE_INT_EN));
+
+        while(1)
+        {
+            // disable power saving mode to avoid HW keeping trigger
+            REG_FCIE_W(FCIE_PWR_SAVE_CTL, BIT_SD_POWER_SAVE_RST);
+            // clear the CMD0 status by power-saving mode to make foreground thread wait event timeout
+            if((REG_FCIE(FCIE_PWR_SAVE_CTL) & BIT_SD_POWER_SAVE_RST) == BIT_SD_POWER_SAVE_RST &&
+                (REG_FCIE(FCIE_PWR_SAVE_CTL) & BIT_POWER_SAVE_MODE) == 0)
+                break;
+        }
+
         // reset FCIE power-saving mode
         REG_FCIE_CLRBIT(FCIE_PWR_SAVE_CTL, BIT_SD_POWER_SAVE_RST); /* active low */
-        eMMC_hw_timer_delay(HW_TIMER_DELAY_1s);
+        eMMC_hw_timer_delay(2*HW_TIMER_DELAY_100ms);
         REG_FCIE_SETBIT(FCIE_PWR_SAVE_CTL, BIT_SD_POWER_SAVE_RST);
-
-        // clear the CMD0 status by power-saving mode
-        REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, BIT_CMD_END);
-        REG_FCIE_W(FCIE_MIE_EVENT, BIT_ALL_CARD_INT_EVENTS); 
 
         REG_FCIE_SETBIT(FCIE_PWR_SAVE_CTL, BIT_POWER_SAVE_MODE_INT); //W1C
         REG_FCIE_SETBIT(FCIE_PWR_SAVE_CTL, BIT_POWER_SAVE_MODE_INT_EN);
@@ -1347,20 +1412,27 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
 
         // reset FCIE
         REG_FCIE_CLRBIT(FCIE_RST, BIT_FCIE_SOFT_RST_n); /* active low */
+        eMMC_hw_timer_delay(HW_TIMER_DELAY_1ms);
         REG_FCIE_SETBIT(FCIE_RST, BIT_FCIE_SOFT_RST_n);
-        eMMC_hw_timer_delay(HW_TIMER_DELAY_1s);
-        
-        //panic("\n"); // remove to avoid noise on SAR5 make panic.
+
+        //panic("\n");
+
+        eMMC_hw_timer_delay(2*HW_TIMER_DELAY_100ms);
         wake_up(&fcie_wait);
+
         return IRQ_HANDLED;
     }
 
     if((REG_FCIE(FCIE_MIE_FUNC_CTL) & BIT_EMMC_ACTIVE) != BIT_EMMC_ACTIVE)
     {
+        #if !(defined(IF_FCIE_SHARE_IP) && IF_FCIE_SHARE_IP)
         printk("fcie IRQ NONE 0: %Xh %Xh %Xh\n", 
             REG_FCIE(FCIE_PWR_SAVE_CTL), REG_FCIE(FCIE_MIE_EVENT), REG_FCIE(FCIE_MIE_INT_EN));
+        #endif
+
         return IRQ_NONE;
     }
+    spin_lock(pMStarHost_st->lock);
 
     // one time enable one bit
     u16_Events = REG_FCIE(FCIE_MIE_EVENT) & REG_FCIE(FCIE_MIE_INT_EN);
@@ -1368,6 +1440,7 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
     if(u16_Events & (BIT_DMA_END|BIT_ERR_STS))
     {
         REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, (BIT_DMA_END|BIT_ERR_STS));
+        spin_unlock(pMStarHost_st->lock);
 
         wake_up(&fcie_wait);
 
@@ -1376,7 +1449,7 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
     else if(u16_Events & BIT_CMD_END)
     {
         REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, BIT_CMD_END);
-
+        spin_unlock(pMStarHost_st->lock);
         wake_up(&fcie_wait);
 
         return IRQ_HANDLED;
@@ -1385,8 +1458,7 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
     else if(u16_Events & BIT_BUSY_END_INT)
     {
         REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, BIT_BUSY_END_INT);
-        REG_FCIE_CLRBIT(FCIE_SD_CTRL, BIT_BUSY_DET_ON);
-
+        spin_unlock(pMStarHost_st->lock);
         wake_up(&fcie_wait);
 
         return IRQ_HANDLED;
@@ -1399,6 +1471,7 @@ irqreturn_t eMMC_FCIE_IRQ(int irq, void *dummy)
         REG_FCIE(FCIE_MIE_EVENT), REG_FCIE(FCIE_MIE_INT_EN), u16_Events);
     #endif
 
+    spin_unlock(pMStarHost_st->lock);
     return IRQ_NONE;
 }
 
@@ -1417,6 +1490,7 @@ U32 eMMC_WaitCompleteIntr(uintptr_t ulongRegAddr, U16 u16_WaitEvent, U32 u32_Mic
     us_tmp = time_st.tv_usec;
     u64_jiffies_tmp = jiffies_64;
     #endif
+    unsigned long flags;
 
     if(wait_event_timeout(fcie_wait, ((REG_FCIE(ulongRegAddr)&u16_WaitEvent)&&
                 (REG_FCIE(FCIE_MIE_INT_EN) == 0)) ||
@@ -1424,12 +1498,12 @@ U32 eMMC_WaitCompleteIntr(uintptr_t ulongRegAddr, U16 u16_WaitEvent, U32 u32_Mic
                 usecs_to_jiffies(u32_MicroSec)) == 0)
     {
         // no CMD while SAR5, would not enter this case
-         if(REG_FCIE(FCIE_PWR_SAVE_CTL) & BIT_POWER_SAVE_MODE_INT)
-		{
+        if(REG_FCIE(FCIE_PWR_SAVE_CTL) & BIT_POWER_SAVE_MODE_INT)
+        {
             eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1, "SAR5 eMMC occured\n");
         
             // remove panic, asked by FAE			
-		}
+        }
 
         eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,
             "eMMC Warn: int timeout, WaitEvt:%Xh, NowEvt:%Xh, IntEn:%Xh \n",
@@ -1460,20 +1534,23 @@ U32 eMMC_WaitCompleteIntr(uintptr_t ulongRegAddr, U16 u16_WaitEvent, U32 u32_Mic
             eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: events lose, WaitEvent: %Xh \n", u16_WaitEvent);
             eMMC_DumpDriverStatus();  eMMC_DumpPadClk();
             eMMC_FCIE_DumpRegisters();eMMC_FCIE_DumpDebugBus();
+            spin_lock_irqsave(&fcie_lock, flags);
             REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, u16_WaitEvent);
-
+            spin_unlock_irqrestore(&fcie_lock, flags);
             return eMMC_ST_ERR_TIMEOUT_WAIT_REG0;
         }
         else
         {
+            spin_lock_irqsave(&fcie_lock, flags);
             REG_FCIE_CLRBIT(FCIE_MIE_INT_EN, u16_WaitEvent);
+            spin_unlock_irqrestore(&fcie_lock, flags);
             #if defined(ENABLE_FCIE_HW_BUSY_CHECK)&&ENABLE_FCIE_HW_BUSY_CHECK
             REG_FCIE_CLRBIT(FCIE_SD_CTRL, BIT_BUSY_DET_ON);
             #endif
             eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Warn: but polling ok: %Xh \n", REG_FCIE(ulongRegAddr));
         }
     }
-
+    REG_FCIE_W(ulongRegAddr, u16_WaitEvent); // W1C for waited Event as success
     //----------------------------------------
 
     return eMMC_ST_SUCCESS;
@@ -1481,7 +1558,7 @@ U32 eMMC_WaitCompleteIntr(uintptr_t ulongRegAddr, U16 u16_WaitEvent, U32 u32_Mic
 }
 #endif
 
-
+#endif
 int mstar_mci_Housekeep(void *pData)
 {
     #if !(defined(eMMC_HOUSEKEEP_THREAD) && eMMC_HOUSEKEEP_THREAD)
@@ -1534,7 +1611,7 @@ bool mstar_mci_exit_checkdone_ForSD(void)
         if ((++u32_Cnt) >= HW_TIMER_DELAY_1s*10)
         {
             REG_FCIE_CLRBIT(FCIE_SD_MODE, BIT_SD_CLK_EN); // not output clock
-            eMMC_debug(0,1,"eMMC Info: SD check -> D0 busy\n");
+            eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Info: SD check -> D0 busy\n");
             return false;
         }
 
@@ -1576,8 +1653,8 @@ void eMMC_LockFCIE(U8 *pu8_str)
         (defined(IF_FCIE_SHARE_IP) && IF_FCIE_SHARE_IP)
     down(&PfModeSem);
 
-    #if (defined(IF_FCIE_SHARE_PINS) && IF_FCIE_SHARE_PINS) && \
-        defined(CONFIG_MSTAR_SDMMC)
+    #if defined(IF_FCIE_SHARE_PINS) && IF_FCIE_SHARE_PINS
+
     if(false == ms_sdmmc_wait_d0_for_emmc())
     {
         eMMC_debug(eMMC_DEBUG_LEVEL_ERROR,1,"eMMC Err: SD keep D0 low \n");

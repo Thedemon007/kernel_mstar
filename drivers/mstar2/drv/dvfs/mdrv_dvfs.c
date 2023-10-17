@@ -83,10 +83,8 @@ static atomic_t dvfs_over_temp_debug_proc_is_open = ATOMIC_INIT(0);
 static unsigned int bootarg_auto_measurement=0;
 static struct proc_dir_entry *proc_mstar_dvfs_dir;
 
-
 unsigned int mstar_dvfs_debug = 0;
 unsigned int mstar_dvfs_info = 0;
-
 int MHalDvfsGetStatus(unsigned int cpu) __attribute__((weak));
 int MHalDvfsSetStatus(unsigned int status, unsigned int cpu) __attribute__((weak));
 void MHalDvfsSetOverTempDebugOffset(unsigned int cpu,int set_offset) __attribute__((weak));
@@ -94,7 +92,6 @@ int MHalDvfsGetOverTempDebugOffset(unsigned int cpu) __attribute__((weak));
 int MHalDvfsVerifyVoltage(unsigned int cpu, unsigned int freq) __attribute__((weak));
 void MHalDvfsOpenFile(char *path) __attribute__((weak));
 void MHalDvfsCloseFile(void) __attribute__((weak));
-
 //=================================================================================================
 int MDrvDvfsGetCpuCluster(unsigned int cpu)
 {
@@ -235,12 +232,12 @@ U32 MDrvDvfsGetOverTemperatureFlag(U8 dwCluster)
 {
     return MHalDvfsGetOverTemperatureFlag(dwCluster);
 }
-
 //=================================================================================================
 U32 MDrvDvfsGetCpuTemperature(U8 dwCpu)
 {
     return MHalDvfsGetCpuTemperature(dwCpu);
 }
+EXPORT_SYMBOL(MDrvDvfsGetCpuTemperature);
 //=================================================================================================
 U32 MDrvDvfsGetCpuVoltage(U8 dwCpu)
 {
@@ -543,7 +540,41 @@ static const struct file_operations proc_dvfs_frequency_fileops = {
     .llseek     = seq_lseek,
     .release    = dvfs_frequency_proc_release,
 };
+//=================================================================================================
+static int dvfs_temp_info_seq_show(struct seq_file *s, void *v)
+{
+    int i = 0;
+    DVFS_THERMAL_INFO thermal_info;
 
+    thermal_info.GPU_TEMP = 0;
+    thermal_info.CPU_TEMP = 0;
+    thermal_info.INT_TEMP = 0;
+
+    MHalDvfsGetTemperatureInfo(i,&thermal_info);
+
+    if ( (thermal_info.GPU_TEMP != 0) && (thermal_info.INT_TEMP != 0) && (thermal_info.CPU_TEMP != 0) )
+    {
+        seq_printf(s, "GPU_%d_temp:%d:\n", i, thermal_info.GPU_TEMP);
+        seq_printf(s, "CPU_%d_temp:%d:\n", i, thermal_info.CPU_TEMP);
+        seq_printf(s, "INT_%d_temp:%d:\n", i, thermal_info.INT_TEMP);
+    }
+    else
+        seq_printf(s, "not support read GPU & Internal T-sensor\n");
+    return 0;
+}
+
+static int dvfs_temp_info_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, &dvfs_temp_info_seq_show, NULL);
+}
+
+static const struct file_operations proc_dvfs_temp_info_fileops = {
+    .owner      = THIS_MODULE,
+    .open       = dvfs_temp_info_proc_open,
+    .read       = seq_read,
+    .llseek     = seq_lseek,
+    .release    = single_release,
+};
 //=================================================================================================
 static int dvfs_temp_seq_show(struct seq_file *s, void *v)
 {
@@ -801,44 +832,15 @@ static int __init MDrvDvfsModuleInit(void)
     if (!proc_mstar_dvfs_dir)
         return -ENOMEM;
 
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-    entry = proc_create("voltage", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_voltage_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("frequency", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_frequency_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("temperature", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_temp_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("sidd", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_sidd_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("osc", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_osc_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("boost_duration", 0666, proc_mstar_dvfs_dir, &proc_dvfs_boost_duration_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("power_type_cpu", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_cpu_power_type_fileops);
-    if (!entry)
-	    goto fail;
-
-    entry = proc_create("power_type_core", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, proc_mstar_dvfs_dir, &proc_dvfs_core_power_type_fileops);
-    if (!entry)
-	    goto fail;
-#else
     entry = proc_create("voltage", S_IRUSR | S_IWUSR, proc_mstar_dvfs_dir, &proc_dvfs_voltage_fileops);
     if (!entry)
         goto fail;
 
     entry = proc_create("frequency", S_IRUSR | S_IWUSR, proc_mstar_dvfs_dir, &proc_dvfs_frequency_fileops);
+    if (!entry)
+        goto fail;
+
+    entry = proc_create("temperature_info", S_IRUSR | S_IWUSR, proc_mstar_dvfs_dir, &proc_dvfs_temp_info_fileops);
     if (!entry)
         goto fail;
 
@@ -865,10 +867,8 @@ static int __init MDrvDvfsModuleInit(void)
     entry = proc_create("power_type_core", S_IRUSR | S_IWUSR, proc_mstar_dvfs_dir, &proc_dvfs_core_power_type_fileops);
     if (!entry)
         goto fail;
-#endif
 
     entry = proc_create("over_temp_debug", S_IRUSR | S_IWUSR, proc_mstar_dvfs_dir, &proc_dvfs_over_temp_debug_fileops);
-
     if (!entry)
         goto fail;
 
@@ -881,6 +881,7 @@ fail:
 //=================================================================================================
 static void __exit MDrvDvfsModuleExit(void)
 {
+    remove_proc_entry("temperature_info", proc_mstar_dvfs_dir);
     remove_proc_entry("voltage", proc_mstar_dvfs_dir);
     remove_proc_entry("temperature", proc_mstar_dvfs_dir);
     remove_proc_entry("sidd", proc_mstar_dvfs_dir);

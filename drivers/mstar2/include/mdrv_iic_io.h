@@ -138,7 +138,9 @@ typedef struct{
 #define MDRV_IIC_BUSCFG             _IOW(IIC_IOC_MAGIC, 4, IIC_BusCfg_t)
 #define IIC_IOC_MAXNR               5
 
-#define IIC_RW_BUF_SIZE             1024
+#define IIC_MAX_BUF_SIZE            1024
+#define IIC_MAX_ADDR_SIZE           128
+
 #define IIC_WR_ADDR_SIZE            8
 #define IIC_WR_BUF_SIZE             128		// added for RGB EDID
 #define IIC_RD_BUF_SIZE             256		// added for RGB EDID

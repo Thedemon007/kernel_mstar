@@ -52,6 +52,8 @@
  *
  *****************************************************************************/
 
+
+
 /*
  * ============================================================================
  * Include Headers
@@ -4020,7 +4022,7 @@ static int _mhal_alsa_dmic_capture_init(void)
 		/* convert Bus Address to Virtual Address */
 		dmic_capture->buffer.size = _MAD_DMIC_CAPTURE_BUF_SIZE;
 		if (g_dmic_capture_base_va == 0) {
-			g_dmic_capture_base_va = (ptrdiff_t)ioremap_wc(audio_dmic_capture_base_ba, dmic_capture->buffer.size);
+			g_dmic_capture_base_va = (ptrdiff_t)ioremap_nocache(audio_dmic_capture_base_ba, dmic_capture->buffer.size);
 			if (g_dmic_capture_base_va == 0) {
 				MAD_PRINT(KERN_ERR "Error! fail to convert DMIC Capture Buffer Bus Address to Virtual Address\n");
 				return -ENOMEM;
@@ -4515,7 +4517,7 @@ static int _mhal_alsa_dmic_aec_capture_init(void)
 		/* convert Bus Address to Virtual Address */
 		dmic_aec_capture->buffer.size = _MAD_DMIC_CAPTURE_BUF_SIZE;
 		if (g_dmic_aec_capture_base_va == 0) {
-			g_dmic_aec_capture_base_va = (ptrdiff_t)ioremap_wc(audio_dmic_aec_capture_base_ba, dmic_aec_capture->buffer.size);
+			g_dmic_aec_capture_base_va = (ptrdiff_t)ioremap_nocache(audio_dmic_aec_capture_base_ba, dmic_aec_capture->buffer.size);
 			if (g_dmic_aec_capture_base_va == 0) {
 				MAD_PRINT(KERN_ERR "Error! fail to convert DMIC AEC Capture Buffer Bus Address to Virtual Address\n");
 				return -ENOMEM;

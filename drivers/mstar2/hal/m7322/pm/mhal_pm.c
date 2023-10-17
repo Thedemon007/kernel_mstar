@@ -52,7 +52,6 @@
  *
  *****************************************************************************/
 
-////////////////////////////////////////////////////////////////////////////////
 //-------------------------------------------------------------------------------------------------
 //  Include Files
 //-------------------------------------------------------------------------------------------------
@@ -101,8 +100,6 @@
 //  Local Functions
 //-------------------------------------------------------------------------------------------------
 //-------------------------------------------------------------------------------------------------
-extern void SerPrintf(char *fmt, ...);
-
 /* 8-bit RIU access. */
 u8 MHal_PM_ReadReg8(u32 reg)
 {
@@ -140,21 +137,23 @@ void MHal_PM_WriteReg8Mask(u32 reg, u8 mask, u8 enable)
 
 void MHal_PM_WakeIrqMask(u8 mask)
 {
-	u8 valtmp = 0;
-	if (mask == 0) {
-		MHal_PM_WriteReg16(REG_SAR_PRO_CTRL, 0x0);
-		valtmp = MHal_PM_ReadReg8(REG_PM_WK_MASK);
-		valtmp |= ~mask;
-		MHal_PM_WriteReg8(REG_PM_WK_MASK, valtmp);
-	} else {
-		MHal_PM_WriteReg16(REG_SAR_PRO_CTRL, 0x0);
-		valtmp = MHal_PM_ReadReg8(REG_PM_WK_MASK);
-		valtmp &= ~mask;
-		MHal_PM_WriteReg8(REG_PM_WK_MASK, valtmp);
-		MHal_PM_WriteReg16(REG_SAR_PRO_L, SAR_MASK_OFFSET_L);
-		MHal_PM_WriteReg16(REG_SAR_PRO_H, SAR_MASK_OFFSET_H);
-		MHal_PM_WriteReg16(REG_SAR_PRO_CTRL, SAR_WR_PRO);
-	}
+    u8 valtmp = 0;
+    if (mask == 0)
+    {
+        MHal_PM_WriteReg16(REG_SAR_PRO_CTRL, 0x0);
+        valtmp = MHal_PM_ReadReg8(REG_PM_WK_MASK);
+        //printk("\033[45;37m  ""%s[%x] ::   \033[0m\n",__FUNCTION__ ,valtmp);
+        valtmp &= ~mask;
+        MHal_PM_WriteReg8(REG_PM_WK_MASK, valtmp);
+    }
+    else
+    {
+        MHal_PM_WriteReg16(REG_SAR_PRO_CTRL, 0x0);
+        valtmp = MHal_PM_ReadReg8(REG_PM_WK_MASK);
+        //printk("\033[45;37m  ""%s[%x] ::   \033[0m\n",__FUNCTION__ ,valtmp);
+        valtmp &= ~mask;
+        MHal_PM_WriteReg8(REG_PM_WK_MASK, valtmp);
+    }
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -165,17 +164,35 @@ u8 MHal_PM_GetPowerOnKey(void)
 	return ((u8)(MHal_PM_ReadReg16(REG_MCU_IR_POWERON_KEY) >> 8));
 }
 
+void MHal_PM_CleanPowerOnKey(void)
+{
+    *((volatile u16 *) (PM_RIU_REG_BASE + (REG_MCU_IR_POWERON_KEY << 1))) &= 0x00FF;
+}
 //-------------------------------------------------------------------------------------------------
 void MHal_PM_Disable_8051(void)
 {
     MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) & ~(BIT12 | BIT8));
 }
 
+#ifdef CONFIG_AMZ_MISC
+extern char *idme_get_product_name(void);
+#endif
 PM_Result MHal_PM_SetSRAMOffsetForMCU(void)
 {
     u32 start_addr = 0x0000UL;
     u32 end_addr   = 0x5FFFUL; // Size: 24K
     u32 u32Cnt;
+
+#ifdef CONFIG_AMZ_MISC
+    if (!strcmp(idme_get_product_name(), "sophia") || !strcmp(idme_get_product_name(), "steffi")) {
+        pr_info("Product is %s\n", idme_get_product_name());
+        MHal_PM_WriteReg16(0x1040, 0x01);//Sophia, Steffi IR Header
+    } else if (!strcmp(idme_get_product_name(), "greta") || !strcmp(idme_get_product_name(), "clara")) {
+        pr_info("Product is %s\n", idme_get_product_name());
+        MHal_PM_WriteReg16(0x1040, 0x00);//Greta, Clara IR Header
+    } else
+        pr_warn("Unknown Product\n");
+#endif
     //Disable 8051
     MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) & ~(BIT12|BIT8));
     //MCK CLK=XTAL
@@ -206,7 +223,6 @@ PM_Result MHal_PM_SetSRAMOffsetForMCU(void)
         udelay(1200);
         MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) | BIT12);
         printk("PM Wait for PM51 standby...........\n");
-		SerPrintf("PM Wait for PM51 standby...........\n");
         u32Cnt = 0;
         while(MHal_PM_ReadReg16(REG_PM_LOCK) != 0x02UL)
         {
@@ -214,72 +230,12 @@ PM_Result MHal_PM_SetSRAMOffsetForMCU(void)
             if (u32Cnt == 0x10000)
             {
                 printk("PM51 run fail...........\n");
-			SerPrintf("PM51 run fail ....\n");
-			BUG();
-			return E_PM_TIMEOUT;
+                return E_PM_TIMEOUT;
             }
             udelay(120);
         }
     }
     printk("PM51 run ok...........\n");
-	SerPrintf("PM51 run ok \n");
-    return E_PM_OK;
-}
-
-PM_Result MHal_PM_SetSRAMOffsetForMCU_DC(void)
-{
-    u32 start_addr = 0x0000UL;
-    u32 end_addr   = 0x5FFFUL; // Size: 24K
-    u32 u32Cnt;
-
-    //Disable 8051
-    MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) & ~(BIT12|BIT8));
-    //MCK CLK=XTAL
-    MHal_PM_WriteReg16(REG_PM_MCU_CLK, MHal_PM_ReadReg16(REG_PM_MCU_CLK) & ~BIT7);
-
-    //i_cache rstz
-    MHal_PM_WriteReg16(REG_MCU_CONFIG, MHal_PM_ReadReg16(REG_MCU_CONFIG) & ~BIT3);
-
-    //disable i cache (enable icache bypass)
-    MHal_PM_WriteReg16(REG_MCU_CACHE_CONFIG, MHal_PM_ReadReg16(REG_MCU_CACHE_CONFIG) | BIT0);
-
-    //DISALBE SPI/DRAM
-    MHal_PM_WriteReg16(REG_MCU_CONFIG, MHal_PM_ReadReg16(REG_MCU_CONFIG) & ~(BIT1|BIT2|BIT3));
-
-    //ENABLE SRAM
-    MHal_PM_WriteReg16(REG_MCU_CONFIG, MHal_PM_ReadReg16(REG_MCU_CONFIG) | BIT0);
-
-    //Set Sram address
-    MHal_PM_WriteReg16(REG_MCU_SRAM_START_ADDR_L, (u16)  start_addr & 0xFFFFUL);
-    MHal_PM_WriteReg16(REG_MCU_SRAM_START_ADDR_H, (u16) (start_addr >> 16) & 0xFFUL);
-    MHal_PM_WriteReg16(REG_MCU_SRAM_END_ADDR_L, (u16)  end_addr & 0xFFFFUL);
-    MHal_PM_WriteReg16(REG_MCU_SRAM_END_ADDR_H, (u16) (end_addr >> 16) & 0xFFUL);
-
-    MHal_PM_WriteReg16(REG_PM_RST_CPU0_PASSWORD, 0x829fUL);
-
-    MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) | BIT8);
-    udelay(1200);
-    MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) | BIT12);
-
-    printk("PM Wait for PM51 standby...........\n");
-	SerPrintf("PM Wait for PM51 standby...........\n");
-
-    u32Cnt = 0;
-    while(MHal_PM_ReadReg16(REG_PM_LOCK) != 0x02UL)
-    {
-        u32Cnt++;
-        if (u32Cnt == 0x10000)
-        {
-            printk("PM51 run fail...........\n");
-			SerPrintf("PM51 run fail ...., Panic \n");
-			BUG();
-            return E_PM_TIMEOUT;
-        }
-        udelay(120);
-    }
-
-    printk("PM51 run ok...........\n");
-	 SerPrintf("PM51 run ok.... MHal_PM_SetSRAMOffsetForMCU_DC \n");
     return E_PM_OK;
 }
 
@@ -328,33 +284,17 @@ u16temp = (u16)u32DramAddr;
 MHal_PM_WriteReg16(REG_MBX_2, (u16temp << 8) + (u16temp >> 8) );
 MHal_PM_WriteReg16(REG_MBX_3, 0x55aa);
 }
-
 //-------------------------------------------------------------------------------------------------
 void MHal_PM_RunTimePM_Disable_PassWord(void)
 {
-	u32 u32Cnt = 0;
     if (MHal_PM_ReadReg16(REG_PM_SCRATCH_PAD_3) == 0xbbbb)
     {
         MHal_PM_WriteReg16(REG_PM_SCRATCH_PAD_3, 0xbabe);
-		while (MHal_PM_ReadReg16(REG_PM_SCRATCH_PAD_3) != 0xaaaa) {
-			u32Cnt++;
-			/* timeout 1000ms. */
-			if (u32Cnt >= 2000) {
-				pr_err("RT-PM could not be stopped\n");
-				SerPrintf("RT-PM could not be stopped\n");
-				BUG();
-			}
-			udelay(500);
-		}
+        while(MHal_PM_ReadReg16(REG_PM_SCRATCH_PAD_3) != 0xaaaa);
         MHal_PM_WriteReg16(REG_PM_SCRATCH_PAD_3, 0x1234);
         //Disable 8051
         MHal_PM_WriteReg16(REG_PM_CPU_SW_RST, MHal_PM_ReadReg16(REG_PM_CPU_SW_RST) & ~(BIT12|BIT8));
-		if (u32Cnt < 0x20000)
-			SerPrintf("RT-PM is frozen\n");
-    } else {
-		SerPrintf("RT-PM is not running or dead\n");
-		BUG();
-	}
+    }
 }
 
 void MHal_PM_SetDRAMOffsetForMCU(u32 u32Offset)
@@ -403,3 +343,9 @@ void MHal_PM_SetDRAMOffsetForMCU(u32 u32Offset)
     }
     printk(KERN_ERR "[%s][%d] PM51 run ok...........\n", __func__, __LINE__);
 }
+
+u8 MHal_PM_GetWakeupSource(void)
+{
+    return MHal_PM_ReadReg8(REG_PM_DUMMY_WAKEUP_SOURCE);
+}
+

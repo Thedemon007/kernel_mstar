@@ -86,6 +86,9 @@
 #include "mdrv_types.h"
 #include "mdrv_system.h"
 #endif
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+#include <linux/of.h>
+#endif
 
 //drver header files
 #include "mdrv_mstypes.h"
@@ -122,11 +125,17 @@
 #define     MBXIO_ASSERT(arg)
 #endif
 
+#if 0 //unnecessary mutex lock here
 static struct mutex _mutexMBXIOCTL;
 #define DRV_MBX_LockIOCTL_Init()     mutex_init(&_mutexMBXIOCTL)
 #define DRV_MBX_LockIOCTL()   mutex_lock(&_mutexMBXIOCTL)
 #define DRV_MBX_UnLockIOCTL()   mutex_unlock(&_mutexMBXIOCTL)
-
+#else
+static DEFINE_SPINLOCK(lock);
+#define DRV_MBX_LockIOCTL_Init()
+#define DRV_MBX_LockIOCTL()
+#define DRV_MBX_UnLockIOCTL()
+#endif
 
 //--------------------------------------------------------------------------------------------------
 // IOCtrl functions declaration
@@ -158,6 +167,7 @@ typedef struct
     int refCnt;
     struct cdev cdev;
     struct file_operations fops;
+    struct mutex mutex;
 }MBX_DEV;
 
 static MBX_DEV _devMBX =
@@ -321,7 +331,7 @@ int _MDrv_MBXIO_IOC_SendMsg(struct file *filp, unsigned long arg)
     if(copy_from_user(&mbxMsg, stMBXSend.pMsg ,sizeof(MBX_Msg)))
         return EFAULT;
 
-    stMBXSend.mbxResult = MDrv_MBX_SendMsg_Async((TYPE_MBX_C_U64)filp, &mbxMsg, 0);
+    stMBXSend.mbxResult = MDrv_MBX_SendMsg_Async((TYPE_MBX_C_U64)filp, &mbxMsg, TRUE);
 
     if(copy_to_user((( MS_MBX_SEND_MSG  __user *)arg), &stMBXSend, sizeof(MS_MBX_SEND_MSG)))
         return EFAULT;
@@ -359,7 +369,7 @@ int _MDrv_MBXIO_IOC_RecvMsg(struct file *filp, unsigned long arg)
     if(copy_from_user(&stRecvMsg, (MS_MBX_RECV_MSG __user *)arg, sizeof(MS_MBX_RECV_MSG)))
         return EFAULT;
 
-    stRecvMsg.mbxResult = MDrv_MBX_RecvMsg_Async((TYPE_MBX_C_U64)filp, stRecvMsg.eTargetClass, &mbxMsg, stRecvMsg.u32WaitMillSecs, stRecvMsg.u32Flag, 0);
+    stRecvMsg.mbxResult = MDrv_MBX_RecvMsg_Async((TYPE_MBX_C_U64)filp, stRecvMsg.eTargetClass, &mbxMsg, stRecvMsg.u32WaitMillSecs, stRecvMsg.u32Flag, TRUE);
 
     if (stRecvMsg.pMsg == NULL)
         return EFAULT;
@@ -402,7 +412,7 @@ int _MDrv_MBXIO_IOC_RemoveLatestMsg(struct file *filp, unsigned long arg)
     if(copy_from_user(&stSetBInfo, (MS_MBX_SET_BINFO  __user *)arg, sizeof(MS_MBX_SET_BINFO)))
         return EFAULT;
 
-    stSetBInfo.mbxResult = MDrv_MBX_RemoveLatestMsg();
+    stSetBInfo.mbxResult = MDrv_MBX_RemoveLatestMsg((TYPE_MBX_C_U64)filp);
 
     if(copy_to_user((( MS_MBX_SET_BINFO  __user *)arg), &stSetBInfo, sizeof(MS_MBX_SET_BINFO)))
         return EFAULT;
@@ -505,7 +515,10 @@ int _MDrv_MBXIO_IOC_GetDrvStatus(struct file *filp, unsigned long arg)
     MS_MBX_GET_DRVSTATUS stGetDrvStatus;
 
     stGetDrvStatus.bEnabled = MDrv_MBX_GetEnableStatus((TYPE_MBX_C_U64)filp);
+
+    mutex_lock(&_devMBX.mutex);
     stGetDrvStatus.s32RefCnt = _devMBX.refCnt;
+    mutex_unlock(&_devMBX.mutex);
 
     if(copy_to_user((( MS_MBX_GET_DRVSTATUS __user *)arg), &stGetDrvStatus, sizeof(MS_MBX_GET_DRVSTATUS)))
         return EFAULT;
@@ -540,17 +553,12 @@ int _MDrv_PMIO_IOC_Set_BrickTerminator_Info(struct file *filp, unsigned long arg
 //-------------------------------------------------------------------------------------------------
 int _MDrv_MBXIO_Open(struct inode *inode, struct file *filp)
 {
-    MBXIO_KDBG("--------->MBX DRIVER OPEN\n");
+    mutex_lock(&_devMBX.mutex);
 
-    if(_devMBX.refCnt == 0)
-    {
-        _devMBX.refCnt = 1;
-        return 0;
-    }
-    else
-    {
-        _devMBX.refCnt++;
-    }
+    MBXIO_KDBG("--------->MBX DRIVER OPEN: cnt=%d\n", _devMBX.refCnt);
+
+    _devMBX.refCnt++;
+    mutex_unlock(&_devMBX.mutex);
 
     return 0;
 }
@@ -567,7 +575,9 @@ ssize_t _MDrv_MBXIO_Write(struct file *filp, const char __user *buff, size_t cou
 
 int _MDrv_MBXIO_Release(struct inode *inode, struct file *filp)
 {
-    MBXIO_KDBG("<---------MBX DRIVER CLOSE\n");
+    mutex_lock(&_devMBX.mutex);
+
+    MBXIO_KDBG("<---------MBX DRIVER CLOSE: cnt=%d\n", _devMBX.refCnt);
 
     MBXIO_ASSERT(_devMBX.refCnt>0);
 
@@ -581,6 +591,7 @@ int _MDrv_MBXIO_Release(struct inode *inode, struct file *filp)
     {
         _devMBX.refCnt = _devMBX.refCnt -1;
     }
+    mutex_unlock(&_devMBX.mutex);
 
     return 0;
 }
@@ -589,9 +600,13 @@ int _MDrv_MBXIO_FASYNC(int fd, struct file *filp, int mode)
 {
     MBXIO_KDBG("%s is invoked\n", __FUNCTION__);
 
-    if(E_MBX_SUCCESS != MDrv_MBX_FASYNC(fd,(TYPE_MBX_C_U64) filp, mode)) //fasync_helper(fd, filp, mode, &IRDev.async_queue);//call driver interface to register signal queue.
+    if (E_MBX_SUCCESS != MDrv_MBX_FASYNC(fd,(TYPE_MBX_C_U64) filp, mode)) {
+         //fasync_helper(fd, filp, mode, &IRDev.async_queue);//call driver interface to register signal queue.
+        MBXIO_KDBG("%s is busy\n", __FUNCTION__);
         return -EBUSY;
+    }
 
+    MBXIO_KDBG("%s is ok\n", __FUNCTION__);
     return 0;
 }
 
@@ -782,11 +797,15 @@ long _MDrv_MBXIO_IOCtl(struct inode *inode, struct file *filp, U32 u32Cmd, unsig
 {
     int err = 0;
     int retval = 0;
+    //MS_U32 flags;
 
+    mutex_lock(&_devMBX.mutex);
     if(_devMBX.refCnt <= 0)
     {
+        mutex_unlock(&_devMBX.mutex);
         return -EFAULT;
     }
+    mutex_unlock(&_devMBX.mutex);
 
     /* check u32Cmd valid */
     if (MDRV_MBX_IOC_MAGIC!= _IOC_TYPE(u32Cmd))
@@ -826,10 +845,22 @@ long _MDrv_MBXIO_IOCtl(struct inode *inode, struct file *filp, U32 u32Cmd, unsig
             retval = _MDrv_MBXIO_IOC_DeInit(filp, u32Arg);
             break;
         case MDRV_MBX_IOC_REGISTERMSG:
+
+            //spin_lock_irqsave(&lock, flags);
+
             retval = _MDrv_MBXIO_IOC_RegisterMsg(filp, u32Arg);
+
+            //spin_unlock_irqrestore(&lock, flags);
+
             break;
         case MDRV_MBX_IOC_UNREGISTERMSG:
+
+            //spin_lock_irqsave(&lock, flags);
+
             retval = _MDrv_MBXIO_IOC_UnRegisterMsg(filp, u32Arg);
+
+            //spin_unlock_irqrestore(&lock, flags);
+
             break;
         case MDRV_mBX_IOC_CLEARMSG:
             retval = _MDrv_MBXIO_IOC_ClearMsg(filp, u32Arg);
@@ -884,7 +915,38 @@ long _MDrv_MBXIO_IOCtl(struct inode *inode, struct file *filp, U32 u32Cmd, unsig
     _MDrv_MBXIO_IOC_UnLock();
     return retval;
 }
+#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
+static struct dev_pm_ops mbx_pm_ops;
+static struct str_waitfor_dev waitfor;
+static int mstar_mbx_drv_suspend(struct platform_device *dev, pm_message_t state);
+static int mstar_mbx_drv_resume(struct platform_device *dev);
 
+static int of_mbx_drv_suspend(struct device *dev)
+{
+    struct platform_device *pdev = to_platform_device(dev);
+
+    if (WARN_ON(!pdev))
+        return -ENODEV;
+
+    if (waitfor.stage1_s_wait)
+        wait_for_completion(&(waitfor.stage1_s_wait->power.completion));
+
+    return mstar_mbx_drv_suspend(pdev, dev->power.power_state);
+}
+
+static int of_mbx_drv_resume(struct device *dev)
+{
+    struct platform_device *pdev = to_platform_device(dev);
+
+    if (WARN_ON(!pdev))
+        return -ENODEV;
+
+    if (waitfor.stage1_r_wait)
+        wait_for_completion(&(waitfor.stage1_r_wait->power.completion));
+
+    return mstar_mbx_drv_resume(pdev);
+}
+#endif
 static MSTAR_MBX_DEV _st_mbxdev={0};
 static int mstar_mbx_drv_suspend(struct platform_device *dev, pm_message_t state)
 {
@@ -892,6 +954,7 @@ static int mstar_mbx_drv_suspend(struct platform_device *dev, pm_message_t state
 
     return MDrv_MBX_Suspend(mbxdev);
 }
+
 static int mstar_mbx_drv_resume(struct platform_device *dev)
 {
     MSTAR_MBX_DEV *mbxdev=(MSTAR_MBX_DEV*)dev->dev.platform_data;
@@ -901,9 +964,18 @@ static int mstar_mbx_drv_resume(struct platform_device *dev)
 
 static int mstar_mbx_drv_probe(struct platform_device *pdev)
 {
-    int retval=0;
-    pdev->dev.platform_data=&_st_mbxdev;
-	return retval;
+    int retval = 0;
+    pdev->dev.platform_data = &_st_mbxdev;
+
+#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
+    of_mstar_str("Mstar-mbx", &pdev->dev,
+		&mbx_pm_ops, &waitfor,
+		&of_mbx_drv_suspend,
+		&of_mbx_drv_resume,
+		NULL, NULL);
+#endif
+
+    return retval;
 }
 
 static int mstar_mbx_drv_remove(struct platform_device *pdev)
@@ -922,12 +994,17 @@ static struct of_device_id mstarmbx_of_device_ids[] = {
 static struct platform_driver Mstar_mbx_driver = {
 	.probe 		= mstar_mbx_drv_probe,
 	.remove 	= mstar_mbx_drv_remove,
-    .suspend    = mstar_mbx_drv_suspend,
-    .resume     = mstar_mbx_drv_resume,
+#ifndef CONFIG_MP_MSTAR_STR_OF_ORDER
+	.suspend	= mstar_mbx_drv_suspend,
+	.resume		= mstar_mbx_drv_resume,
+#endif
 
 	.driver = {
 #if defined(CONFIG_OF)
                 .of_match_table = mstarmbx_of_device_ids,
+#endif
+#ifdef CONFIG_MP_MSTAR_STR_OF_ORDER
+		.pm     = &mbx_pm_ops,
 #endif
 		.name	= "Mstar-mbx",
         .owner  = THIS_MODULE,
@@ -987,6 +1064,7 @@ MSYSTEM_STATIC int _MDrv_MBXIO_ModuleInit(void)
 #endif
 
     DRV_MBX_LockIOCTL_Init();
+    mutex_init(&_devMBX.mutex);
 
     platform_driver_register(&Mstar_mbx_driver);
 

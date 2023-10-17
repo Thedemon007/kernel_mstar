@@ -52,6 +52,7 @@
  *
  *****************************************************************************/
 
+
 #ifndef _MDRV_ALSA_VERSION_HEADER
 #define _MDRV_ALSA_VERSION_HEADER
 
@@ -62,6 +63,6 @@
  */
 #define _MAD_ALSA_DRIVER_VERSION_MAJOR    3
 #define _MAD_ALSA_DRIVER_VERSION_MINOR     1
-#define _MAD_ALSA_DRIVER_VERSION_REVISION    33
+#define _MAD_ALSA_DRIVER_VERSION_REVISION    48
 
 #endif /* _MDRV_ALSA_VERSION_HEADER */

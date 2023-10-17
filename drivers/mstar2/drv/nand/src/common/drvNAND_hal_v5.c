@@ -970,9 +970,8 @@ void NC_ReConfig(void) // re-config FCIE3 for NFIE mode
 U32 NC_WritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_PageCnt )
 {
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr,dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U16 u16_Tmp;
 
@@ -1000,13 +999,13 @@ U32 NC_WritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 
 
     //data address mapping
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -1016,16 +1015,22 @@ U32 NC_WritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
-
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -1106,8 +1111,7 @@ U32 NC_ReadPages(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_P
     U16 u16_Tmp=0;
     U32 u32_Err=UNFD_ST_SUCCESS;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr = 0;
+    dma_addr_t dma_DataDMAAddr,dma_SpareDMAAddr = 0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U8  u8_RetryCnt_Events=0, u8_RetryCnt_ECCFail=0, u8_RetryDqs=0;
     U8  u8_MaxReadRetryCount = NAND_TIMEOUT_RETRY_CNT;
@@ -1149,28 +1153,34 @@ U32 NC_ReadPages(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_P
         ((u32_PhyRowIdx & pNandDrv->u16_BlkPageCntMask) & BIT_SEL_PAGE_MASK>>BIT_SEL_PAGE_SHIFT)<<BIT_SEL_PAGE_SHIFT);
     #endif
 
-    //REG_WRITE_UINT16(NC_SER_DIN_BYTECNT_LW, pNandDrv->u16_PageByteCnt & 0xFFFF);
-    //REG_WRITE_UINT16(NC_SER_DIN_BYTECNT_HW, pNandDrv->u16_PageByteCnt >> 16);
-
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -1522,8 +1532,7 @@ U32 NC_PageCopy(U32 u32_SrcPhyRowIdx, U32 u32_DstPhyRowIdx, U8 *pu8_DataBuf, U8 
 {
     NAND_DRIVER *pNandDrv = drvNAND_get_DrvContext_address();
     U16 u16_Tmp = 0;
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
     NC_PAD_SWITCH(pNandDrv->u8_PadMode);
@@ -1533,23 +1542,36 @@ U32 NC_PageCopy(U32 u32_SrcPhyRowIdx, U32 u32_DstPhyRowIdx, U8 *pu8_DataBuf, U8 
     REG_WRITE_UINT16(NC_MIE_EVENT, BIT_NC_JOB_END);
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL);
 
     dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
-    u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
+    dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
 
 
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >> 16);
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >> 16);
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -1665,9 +1687,8 @@ U32  NC_ReadSectors_MTD(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, 
     U32 u32_Tmp, u32_SectorCnt_Tmp;
     U16 u16_PageCnt, u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr = 0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr = 0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U8  u8_RetryCnt_Events = 0, u8_RetryCnt_ECCFail = 0, u8_RetryDqs=0;
     U8  u8_MaxReadRetryCount = NAND_TIMEOUT_RETRY_CNT;
     U8  u8_RequireReadRetry = pNandDrv->u8_RequireReadRetry;
@@ -1720,22 +1741,22 @@ U32  NC_ReadSectors_MTD(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, 
         #endif
 
         dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_SectorByteCnt * u32_SectorCnt_Tmp, READ_FROM_NAND);
-        u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt*u32_SectorCnt_Tmp, READ_FROM_NAND);
+        dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt*u32_SectorCnt_Tmp, READ_FROM_NAND);
 
 
         if (pu8_SpareBuf)
         {
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
         }
         else
         {
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
         }
 
-        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
         // if not 512B/page, set Partial Mode
         REG_READ_UINT16(NC_ECC_CTRL, u16_Tmp);
@@ -1747,8 +1768,17 @@ U32  NC_ReadSectors_MTD(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, 
             REG_CLR_BITS_UINT16(NC_PART_MODE, BIT_START_SECTOR_IDX_MASK);
             REG_SET_BITS_UINT16(NC_PART_MODE, u8_SectorInPage<<BIT_START_SECTOR_IDX_SHIFT);
         }
-        REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-        REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+        REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+        REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+		REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+		REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+		if(sizeof(dma_addr_t) > 4)
+		{
+			REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+			REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+		}
 
         REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
         if(0 == pNandDrv->u8_WordMode)
@@ -2142,9 +2172,8 @@ U32  NC_ReadSectors(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, U8 *
     U32 u32_Tmp, u32_SectorCnt_Tmp;
     U16 u16_PageCnt, u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr= 0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr= 0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
 
     u32_Tmp = ((u32_PhyRowIdx&pNandDrv->u16_BlkPageCntMask) << pNandDrv->u8_PageSectorCntBits)
@@ -2181,21 +2210,21 @@ U32  NC_ReadSectors(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, U8 *
         #endif
 
         dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_SectorByteCnt * u32_SectorCnt_Tmp, READ_FROM_NAND);
-        u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt*u32_SectorCnt_Tmp, READ_FROM_NAND);
+        dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt*u32_SectorCnt_Tmp, READ_FROM_NAND);
 
         if (pu8_SpareBuf)
         {
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
         }
         else
         {
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
         }
 
-        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+        REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
         // if not 512B/page, set Partial Mode
         REG_READ_UINT16(NC_ECC_CTRL, u16_Tmp);
@@ -2207,8 +2236,17 @@ U32  NC_ReadSectors(U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf, U8 *
             REG_CLR_BITS_UINT16(NC_PART_MODE, BIT_START_SECTOR_IDX_MASK);
             REG_SET_BITS_UINT16(NC_PART_MODE, u8_SectorInPage<<BIT_START_SECTOR_IDX_SHIFT);
         }
-        REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-        REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+        REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+        REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+		REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+		REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+		if(sizeof(dma_addr_t) > 4)
+		{
+			REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+			REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+		}
 
         REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
         if(0 == pNandDrv->u8_WordMode)
@@ -2374,10 +2412,8 @@ U32  NC_WriteSectors(     U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr = 0;
-    U32 u32_SpareDMAAddr;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
-
+    dma_addr_t dma_DataDMAAddr = 0, dma_SpareDMAAddr;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
     if(u8_SectorInPage + u32_SectorCnt > pNandDrv->u16_PageSectorCnt)
     {
@@ -2409,12 +2445,12 @@ U32  NC_WriteSectors(     U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, WRITE_TO_NAND);
 
     if (pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -2424,12 +2460,11 @@ U32  NC_WriteSectors(     U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
 
-
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
     // if Partial Mode (if not 512B/page, set Partial Mode)
     REG_READ_UINT16(NC_ECC_CTRL, u16_Tmp);
@@ -2441,8 +2476,17 @@ U32  NC_WriteSectors(     U32 u32_PhyRowIdx, U8 u8_SectorInPage, U8 *pu8_DataBuf
         REG_CLR_BITS_UINT16(NC_PART_MODE, BIT_START_SECTOR_IDX_MASK);
         REG_SET_BITS_UINT16(NC_PART_MODE, u8_SectorInPage<<BIT_START_SECTOR_IDX_SHIFT);
     }
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     if(0 == pNandDrv->u8_WordMode)
@@ -2829,7 +2873,8 @@ U32  NC_WritePage_RIUMode(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf )
 
 U32 NC_Read_RandomIn (     U32 u32_PhyRow, U32 u32_Col, U8 *pu8DataBuf, U32 u32DataByteCnt )
 {
-    U32 u32_Tmp, u32_DataDMAAddr;
+    U32 u32_Tmp;
+	dma_addr_t dma_DataDMAAddr;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
     dma_addr_t dma_DataMapAddr = 0;
 #if defined(RANDOM_WR_THR_CIFD) && RANDOM_WR_THR_CIFD
@@ -2849,10 +2894,16 @@ U32 NC_Read_RandomIn (     U32 u32_PhyRow, U32 u32_Col, U8 *pu8DataBuf, U32 u32D
     REG_SET_BITS_UINT16(NC_FUN_CTL, BIT_R2N_MODE_EN);
 #else
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8DataBuf, u32_Tmp, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, u32_Tmp, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, u32_Tmp, READ_FROM_NAND );
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+
 #endif
 
 
@@ -2954,7 +3005,7 @@ U32 NC_Read_RandomIn (     U32 u32_PhyRow, U32 u32_Col, U8 *pu8DataBuf, U32 u32D
 U32 NC_Write_RandomOut (U32 u32_PhyRow, U32 u32_Col, U8 *pu8_DataBuf, U32 u32_DataByteCnt )
 {
     U32 u32_Tmp;
-    U32 u32_DataDMAAddr;
+    dma_addr_t dma_DataDMAAddr;
     dma_addr_t dma_DataMapAddr = 0;
 #if defined(RANDOM_WR_THR_CIFD) && RANDOM_WR_THR_CIFD
     U32 u32_Err;
@@ -2973,10 +3024,16 @@ U32 NC_Write_RandomOut (U32 u32_PhyRow, U32 u32_Col, U8 *pu8_DataBuf, U32 u32_Da
     REG_SET_BITS_UINT16(NC_FUN_CTL, BIT_R2N_MODE_EN);
     #else
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, u32_Tmp, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, u32_Tmp, WRITE_TO_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, u32_Tmp, WRITE_TO_NAND );
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1)<<8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+
     #endif
 
     REG_WRITE_UINT16(NC_MIE_EVENT, BIT_NC_JOB_END);
@@ -4513,9 +4570,8 @@ U32 NC_WritePages2P
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U32 u32_PlaneRowIdx2;
 
@@ -4544,13 +4600,13 @@ U32 NC_WritePages2P
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -4560,15 +4616,24 @@ U32 NC_WritePages2P
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
@@ -4656,9 +4721,8 @@ U32 NC_WritePagesCache2P
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U32 u32_PlaneRowIdx2;
 
@@ -4687,13 +4751,13 @@ U32 NC_WritePagesCache2P
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -4703,15 +4767,24 @@ U32 NC_WritePagesCache2P
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
@@ -4791,9 +4864,8 @@ U32 NC_WritePagesCache2P
 U32 NC_WritePagesCache(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_PageCnt )
 {
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U16 u16_Tmp;
 
@@ -4821,13 +4893,13 @@ U32 NC_WritePagesCache(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32
 
     //data address mapping
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -4837,16 +4909,25 @@ U32 NC_WritePagesCache(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -4929,9 +5010,8 @@ U32 NC_WritePagesCache(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32
 U32 NC_WritePages_CB (U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_PageCnt,  struct write_info *write)
 {
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U16 u16_Tmp;
 
@@ -4959,13 +5039,13 @@ U32 NC_WritePages_CB (U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 
 
     //data address mapping
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -4975,16 +5055,25 @@ U32 NC_WritePages_CB (U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -5080,9 +5169,8 @@ U32 NC_WritePages2P_CB
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U32 u32_PlaneRowIdx2;
 
@@ -5111,13 +5199,13 @@ U32 NC_WritePages2P_CB
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -5127,15 +5215,24 @@ U32 NC_WritePages2P_CB
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
@@ -5214,9 +5311,8 @@ U32 NC_WritePages2P_CB
 U32 NC_WritePagesCache_CB(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_PageCnt, struct write_info *write)
 {
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U16 u16_Tmp;
 
@@ -5244,13 +5340,13 @@ U32 NC_WritePagesCache_CB(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, 
 
     //data address mapping
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -5260,16 +5356,25 @@ U32 NC_WritePagesCache_CB(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, 
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -5369,9 +5474,8 @@ U32 NC_WritePagesCache2P_CB
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-        dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
+    dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U32 u32_PlaneRowIdx2;
 
@@ -5400,13 +5504,13 @@ U32 NC_WritePagesCache2P_CB
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
 
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -5416,15 +5520,24 @@ U32 NC_WritePagesCache2P_CB
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
     }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
@@ -5508,9 +5621,7 @@ U32 NC_WritePagesCache2P_CB
 U32 NC_ADMAWritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u32_PageCnt )
 {
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
-
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U16 u16_Tmp;
@@ -5542,13 +5653,13 @@ U32 NC_ADMAWritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, 
     */
         //data address mapping
         dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-        u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
+        dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
 
 
         if(pu8_SpareBuf)
         {
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         }
         else
         {
@@ -5558,15 +5669,24 @@ U32 NC_ADMAWritePages(    U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, 
 
             dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
             //avoid spare & main data in different miu
-            u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+            dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
 
         }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);//>>MIU_BUS_WIDTH_BITS));
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);//(MIU_BUS_WIDTH_BITS+16)));
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -5619,8 +5739,7 @@ U32 NC_ADMAReadPages(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u
 {
     U16 u16_Tmp=0;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr = 0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
     U8  u8_RetryCnt_Events=0, u8_RetryCnt_ECCFail=0, u8_RetryDqs=0;
@@ -5653,24 +5772,33 @@ U32 NC_ADMAReadPages(U32 u32_PhyRowIdx, U8 *pu8_DataBuf, U8 *pu8_SpareBuf, U32 u
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_PageByteCnt * u32_PageCnt, WRITE_TO_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, 0);
@@ -5856,8 +5984,7 @@ U32 NC_WritePages2PCache
 {
     U16 u16_Tmp;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr=0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     U32 u32_Ret;
     U32 u32_PlaneRowIdx2;
@@ -5882,12 +6009,12 @@ U32 NC_WritePages2PCache
 #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, (2 * pNandDrv->u16_PageByteCnt) * u32_PageCnt, WRITE_TO_NAND);
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
     else
     {
@@ -5897,14 +6024,23 @@ U32 NC_WritePages2PCache
 
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
         //avoid spare & main data in different miu
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, WRITE_TO_NAND);
     }
 
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
@@ -5995,8 +6131,7 @@ U32  NC_ReadSectors2P
     U16 u16_2PRowAdr, u16_SecCntTmp;
     U8  *pu8_DataBuf2;
 	NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-	U32 u32_DataDMAAddr;
-	U32 u32_SpareDMAAddr=0;
+	dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
 	U32 u32_PlaneRowIdx2;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
@@ -6020,24 +6155,33 @@ U32  NC_ReadSectors2P
 	//----------------------------------
 	u16_SecCntTmp = pNandDrv->u16_PageSectorCnt-u8_SectorInPage;
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
     //----------------------------------
     // read sectors from the 2-plane page
@@ -6119,11 +6263,17 @@ U32  NC_ReadSectors2P
     pu8_DataBuf2 = pu8_DataBuf + (u16_SecCntTmp << pNandDrv->u8_SectorByteCntBits);
     u16_SecCntTmp = u32_SectorCnt-u16_SecCntTmp;
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf2, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u16_SecCntTmp, READ_FROM_NAND );
 
     // read sectors from the 2-plane page
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+
 
     REG_WRITE_UINT16(NC_PART_MODE, BIT_PARTIAL_MODE_EN);
 	REG_CLR_BITS_UINT16(NC_PART_MODE, BIT_START_SECTOR_CNT_MASK);
@@ -6194,8 +6344,7 @@ U32 NC_ReadPages2P
 {
 	U16 u16_Tmp;
 	NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-	U32 u32_DataDMAAddr;
-	U32 u32_SpareDMAAddr=0;
+	dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 	U32 u32_PlaneRowIdx2;
 
@@ -6216,24 +6365,33 @@ U32 NC_ReadPages2P
 
 	//----------------------------------
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
 	//----------------------------------
 	u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
@@ -6322,8 +6480,7 @@ U32 NC_ReadPages2PCache_Ex
 {
 	U16 u16_Tmp;
 	NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-	U32 u32_DataDMAAddr;
-	U32 u32_SpareDMAAddr=0;
+	dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr=0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 	U32 u32_PlaneRowIdx2;
 
@@ -6343,24 +6500,33 @@ U32 NC_ReadPages2PCache_Ex
 
 	//----------------------------------
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, READ_FROM_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+	REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
 	//----------------------------------
 	u32_PlaneRowIdx2 = u32_PlaneRowIdx + pNandDrv->u16_BlkPageCnt;
@@ -6581,7 +6747,7 @@ U32 NC_PageCopy2P(
 {
     NAND_DRIVER *pNandDrv = drvNAND_get_DrvContext_address();
 	U16 u16_Tmp;
-	U32 u32_DataDMAAddr, u32_SpareDMAAddr;
+	dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
     volatile U32 u32_Ret=UNFD_ST_SUCCESS, u32_PlaneRowIdx2, u32_i;
 
@@ -6611,28 +6777,43 @@ U32 NC_PageCopy2P(
     // flush data & spare buf, set spare buf addr
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, 2 * pNandDrv->u16_PageByteCnt * u32_PageCnt, BIDIRECTIONAL );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, BIDIRECTIONAL);
     }
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
 
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >> 16);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, u32_SpareDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >> 16);
+
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_WSPARE_DMA_ADR1, dma_SpareDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, (BIT8-1) << 8);	//bit 15~8
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, (BIT8-1) << 8);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_WR_DATA_DMA_ADR_39_32, ((dma_DataDMAAddr >> 32) & (BIT8-1)) << 8);
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_WR_SPARE_DMA_ADR_39_32, ((dma_SpareDMAAddr >> 32) & (BIT8-1)) << 8);
+	}
 
     //----------------------------------
     // set commnad reg
@@ -6780,8 +6961,7 @@ unsigned int NC_ReadSectorsWithOP_Transfer(unsigned int u32_PhyRowIdx, unsigned 
 {
     U16 u16_Tmp=0;
     NAND_DRIVER *pNandDrv = (NAND_DRIVER*)drvNAND_get_DrvContext_address();
-    U32 u32_DataDMAAddr;
-    U32 u32_SpareDMAAddr = 0;
+    dma_addr_t dma_DataDMAAddr, dma_SpareDMAAddr = 0;
     dma_addr_t dma_DataMapAddr = 0, dma_SpareMapAddr = 0;
 
     NC_PAD_SWITCH(pNandDrv->u8_PadMode);
@@ -6808,24 +6988,33 @@ unsigned int NC_ReadSectorsWithOP_Transfer(unsigned int u32_PhyRowIdx, unsigned 
     #endif
 
     dma_DataMapAddr = nand_DMA_MAP_address((void *)pu8_DataBuf, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, READ_FROM_NAND);
-    u32_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, READ_FROM_NAND );
+    dma_DataDMAAddr = nand_translate_DMA_address_Ex(dma_DataMapAddr, pNandDrv->u16_SectorByteCnt * u32_SectorCnt, READ_FROM_NAND );
 
     if(pu8_SpareBuf)
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pu8_SpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND );
     }
     else
     {
         dma_SpareMapAddr = nand_DMA_MAP_address((void *)pNandDrv->PlatCtx_t.pu8_PageSpareBuf, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
-        u32_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
+        dma_SpareDMAAddr = nand_translate_Spare_address_Ex(dma_SpareMapAddr, pNandDrv->u16_SpareByteCnt, READ_FROM_NAND);
     }
 
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, u32_SpareDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, u32_SpareDMAAddr >>16);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR0, dma_SpareDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RSPARE_DMA_ADR1, dma_SpareDMAAddr >>16);
 
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, u32_DataDMAAddr & 0xFFFF);
-    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, u32_DataDMAAddr >> 16);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR0, dma_DataDMAAddr & 0xFFFF);
+    REG_WRITE_UINT16(NC_RDATA_DMA_ADR1, dma_DataDMAAddr >> 16);
+
+	REG_CLR_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, BIT8-1);
+	REG_CLR_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, BIT8-1);
+
+	if(sizeof(dma_addr_t) > 4)
+	{
+		REG_SET_BITS_UINT16(NC_RD_SPARE_DMA_ADR_39_32, (dma_SpareDMAAddr >> 32) & (BIT8-1));
+		REG_SET_BITS_UINT16(NC_RD_DATA_DMA_ADR_39_32, (dma_DataDMAAddr >> 32) & (BIT8-1));
+	}
 
     REG_WRITE_UINT16(NC_AUXREG_ADR, AUXADR_ADRSET);
     REG_WRITE_UINT16(NC_AUXREG_DAT, u8_SectorInPage << pNandDrv->u8_SectorByteCntBits);

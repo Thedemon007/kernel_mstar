@@ -81,6 +81,7 @@ size_t get_section_num(IniSectionNode *root);
 void foreach_section(IniSectionNode *root, void (*fun)(IniSectionNode *, IniSectionNode *, const char *));
 void foreach_key(IniSectionNode *root, IniSectionNode *node, void (*fun)(IniSectionNode *, const char *, const char *));
 const char* get_key_value(IniSectionNode *node, const char *name);
+const char* get_key_value_by_len(IniSectionNode *node, const char *name, char len);
 size_t get_key_num(IniSectionNode *node);
 void dump_ini(IniSectionNode *root);
 #endif

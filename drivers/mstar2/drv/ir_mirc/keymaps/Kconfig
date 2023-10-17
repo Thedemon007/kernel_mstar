@@ -15,6 +15,11 @@ menu "Mstar IR Keymap Select"
 		default y
 		help
 		TCL tv keymaps
+	config IR_KEYMAP_GOME_NEC
+		bool "GOME keymaps"
+		default y
+		help
+		GOME tv keymaps
 	config IR_KEYMAP_CHANGHONG
 		bool "Changhong IR keymaps"
 		default y
@@ -60,4 +65,14 @@ menu "Mstar IR Keymap Select"
 		default y
 		help
 		metz tv keymaps
+	config IR_KEYMAP_SAMPO
+		bool "Sampo IR keymaps"
+		default y
+		help
+		Sampo tv keymaps
+    config IR_KEYMAP_BEKO_RC5
+        bool "Beko RC5 IR keymaps"
+        default y
+        help
+        Beko RC5 tv keymaps
 endmenu

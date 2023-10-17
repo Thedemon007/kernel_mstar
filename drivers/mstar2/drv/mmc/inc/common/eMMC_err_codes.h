@@ -185,6 +185,7 @@
 #define eMMC_ST_ERR_CMD21_NO_HS200_1_8V  (0x0A29 | eMMC_ST_PLAT)
 #define eMMC_ST_ERR_SET_DRV_STRENGTH	 (0x0A2A | eMMC_ST_PLAT)
 #define eMMC_ST_ERR_SKEW4           	 (0x0A2B | eMMC_ST_PLAT)
+#define eMMC_ST_ERR_NOTABLE           	 (0x0A2C | eMMC_ST_PLAT)
 
 #define eMMC_ST_ERR_CMD8_ECHO		     (0x0B00 | eMMC_ST_PLAT)
 #define	eMMC_ST_ERR_CMD8_NO_RSP		     (0x0B01 | eMMC_ST_PLAT)

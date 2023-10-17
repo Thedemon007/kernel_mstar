@@ -52,7 +52,10 @@
  *
  *****************************************************************************/
 
+
 #include "eMMC.h"
+
+
 #if defined(UNIFIED_eMMC_DRIVER) && UNIFIED_eMMC_DRIVER
 
 //--------------------------------------------------------------------------
@@ -353,25 +356,6 @@ void eMMC_dump_pni(eMMC_PNI_t *pPartInfo)
 
 	//dump_part_records(pPartInfo->records, pPartInfo->u16_PartCnt);
 #endif
-}
-
-void eMMC_dump_WR_Count(void)
-{
-    #if defined(eMMC_PROFILE_WR) && eMMC_PROFILE_WR
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "\n");
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "CNT_CMD17: %u, CNT_CMD24: %u \n", g_eMMCDrv.u32_CNT_CMD17, g_eMMCDrv.u32_CNT_CMD24);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "CNT_CMD18: %u, CNT_CMD25: %u \n", g_eMMCDrv.u32_CNT_CMD18, g_eMMCDrv.u32_CNT_CMD25);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "TotalRBlk: %llu, TotalWBlk: %llu \n", g_eMMCDrv.u64_CNT_TotalRBlk, g_eMMCDrv.u64_CNT_TotalWBlk);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "MinRBlk: %u, MinWBlk: %u \n", g_eMMCDrv.u32_CNT_MinRBlk, g_eMMCDrv.u32_CNT_MinWBlk);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "MaxRBlk: %u, MaxWBlk: %u \n", g_eMMCDrv.u32_CNT_MaxRBlk, g_eMMCDrv.u32_CNT_MaxWBlk);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "RHitCnt: %u, WHitCnt: %u \n", g_eMMCDrv.u32_Addr_RHitCnt, g_eMMCDrv.u32_Addr_WHitCnt);
-
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "au32_CNT_MinRBlk: \n");
-	eMMC_dump_mem_32(g_eMMCDrv.au32_CNT_MinRBlk, 0x200);
-	eMMC_debug(eMMC_DEBUG_LEVEL, 1, "au32_CNT_MinWBlk: \n");
-	eMMC_dump_mem_32(g_eMMCDrv.au32_CNT_MinWBlk, 0x200);
-
-    #endif
 }
 
 #endif

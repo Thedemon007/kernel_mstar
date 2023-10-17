@@ -52,10 +52,11 @@
  *
  *****************************************************************************/
 
+
 #ifndef MSTAR_MCI_H
 #define MSTAR_MCI_H
 
-#include "eMMC.h"
+#include "./inc/common/eMMC.h"
 
 /******************************************************************************
 * Function define for this driver
@@ -74,34 +75,81 @@
 * Low level type for this driver
 ******************************************************************************/
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,20)
-#if defined(ENABLE_EMMC_ASYNC_IO) && ENABLE_EMMC_ASYNC_IO
+
 struct mstar_mci_host_next
 {
     unsigned int                dma_len;
     s32                         cookie;
 };
-#endif
+
 #endif
 
 struct mstar_mci_host
 {
-    struct mmc_host			    *mmc;
-    struct mmc_command		    *cmd;
-    struct mmc_request		    *request;
+    struct mmc_host *mmc;
+    struct mmc_command *cmd;
+    struct mmc_request *request;
 
-    void __iomem			    *baseaddr;
-    s32						    irq;
+    void __iomem *baseaddr;
+    int irq;
 
-    u16						    sd_clk;
-    u16						    sd_mod;
+    u16 sd_clk;
+    u16 sd_mod;
 
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,20)
-    #if defined(ENABLE_EMMC_ASYNC_IO) && ENABLE_EMMC_ASYNC_IO
-    struct mstar_mci_host_next  next_data;
-    struct work_struct          async_work;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,20)
+
+    struct mstar_mci_host_next next_data;
+    #ifdef CONFIG_MMC_MSTAR_NO_WORK_QUEUE
+    struct delayed_work wait_dmaend_timeout_work;
+    struct delayed_work card_busy_timeout_work;
+    #else
+    struct work_struct async_work;
     #endif
-    #endif
 
+#endif
+
+    struct _AdmaDescriptor *adma_desc_base;
+    u32 adma_desc_len;
+	#if defined (ENABLE_UMA) && ENABLE_UMA
+    dma_addr_t adma_desc_dma_base;
+    #endif
+    spinlock_t  *lock;
 };  /* struct mstar_mci_host*/
+
+extern  void eMMC_dump_WR_Count(void);
+extern  void eMMC_record_WR_time(U8 u8_CmdIdx, U32 u32_DataByteCnt);
+
+struct mstar_rw_speed
+{
+    s64 s64_total_read_bytes;
+    s64 s64_total_read_time_usec;//usec
+    s64 s64_total_write_bytes;
+    s64 s64_total_write_time_usec;//usec
+
+    s64 s64_day_write_bytes;
+    int int_tm_yday; /* day of year (0 -365) */
+};
+
+
+
+extern spinlock_t fcie_lock;
+extern ktime_t starttime;
+extern struct mstar_rw_speed emmc_rw_speed;
+extern U32 u32_miu_chksum_nbytes;
+#define eMMC_DAY_WRITE_WARN  (1024*1024*1024) // 1 GB
+extern struct attribute *mstar_mci_attr[];
+extern U32 gu32_eMMC_read_log_enable;
+extern U32 gu32_eMMC_write_log_enable;
+extern U32 gu32_eMMC_monitor_enable;
+extern u8 u8_enable_sar5;
+extern void eMMC_Check_Life(U32 u32_DataByteCnt);
+extern int mstar_mci_get_dma_dir(struct mmc_data *data);
+#if defined(ENABLE_FCIE_MIU_CHECKSUM) && ENABLE_FCIE_MIU_CHECKSUM
+extern void eMMC_enable_miu_chksum(void);
+extern void eMMC_clear_miu_chksum(void);
+extern U32 mstar_mci_miu_chksum(struct mmc_data *data);
+#endif
+
+
 
 #endif

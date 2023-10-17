@@ -140,9 +140,10 @@
 #define MDRV_IR_SET_PROTOCOL        _IOW(IR_IOC_MAGIC, 16, int)
 #define MDRV_IR_GET_POWERKEY        _IOW(IR_IOC_MAGIC, 17, int)
 #define MDRV_IR_SET_KEY_EVENT       _IOW(IR_IOC_MAGIC, 18, U8)
+#define MDRV_IR_ENABLE_WB_IR        _IOW(IR_IOC_MAGIC, 19, U8)
 
 #ifdef CONFIG_MSTAR_DYNAMIC_IR
-#define IR_IOC_MAXNR                18
+#define IR_IOC_MAXNR                19
 #else
 #define IR_IOC_MAXNR                17
 #endif

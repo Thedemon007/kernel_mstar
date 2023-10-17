@@ -64,7 +64,6 @@
 #define __DRV_MCMA_H__
 #include "mdrv_cma_pool_io.h"
 #include "mdrv_cma_pool_st.h"
-#include <mstar/mpatch_macro.h>
 #include "mhal_miu.h"
 
 #define size_1M (1<<20)
@@ -79,6 +78,10 @@
 #ifdef CONFIG_MP_CMA_PATCH_MBOOT_STR_USE_CMA
 void str_reserve_mboot_cma_buffer(void);
 void str_release_mboot_cma_buffer(void);
+#endif
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+#define global_page_state global_zone_page_state
 #endif
 
 typedef enum

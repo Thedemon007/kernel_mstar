@@ -43,7 +43,6 @@ TEEC_Result TEEC_InitializeContext(const char *name, TEEC_Context *context)
 {
 	struct tee *tee;
 	struct tee_context *ctx;
-	pr_cont("%s: > name=\"%s\"\n", __func__, name);
 
 	if (!context)
 		return TEEC_ERROR_BAD_PARAMETERS;
@@ -78,7 +77,6 @@ TEEC_Result TEEC_InitializeContext(const char *name, TEEC_Context *context)
 	BUG_ON(ctx != (struct tee_context *)(uintptr_t)context->fd);
 #endif
 
-	pr_cont("%s: < ctx=%p is created\n", __func__, (void *)ctx);
 	return TEEC_SUCCESS;
 }
 EXPORT_SYMBOL(TEEC_InitializeContext);
@@ -88,7 +86,11 @@ void TEEC_FinalizeContext(TEEC_Context *context)
 	if (!context || !context->fd) {
 		pr_err("%s - can't release context %p:[%s]\n", __func__,
 		       context, (context
+#if defined(CONFIG_CC_IS_CLANG) && defined(CONFIG_MSTAR_CHIP)
+				 && (context->devname!=NULL)) ? context->devname : "");
+#else
 				 && context->devname) ? context->devname : "");
+#endif
 		return;
 	}
 	/* TODO fixme will not work on 64-bit platform */

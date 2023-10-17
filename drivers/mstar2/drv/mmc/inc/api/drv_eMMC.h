@@ -153,10 +153,7 @@ extern U32  eMMC_ReadGPPart(U8* pu8_DataBuf, U32 u32_DataByteCnt, U32 u32_BlkAdd
 extern U32  eMMC_WriteGPPart(U8* pu8_DataBuf, U32 u32_DataByteCnt, U32 u32_BlkAddr, U8 u8_PartNo);
 extern void eMMC_PrintGPPartition(void);
 
-//--------------------------------------------
-  #if defined(eMMC_DRV_G2P_UBOOT) && eMMC_DRV_G2P_UBOOT
-extern U32 eMMC_SearchDevNodeStartSector(void);
-  #endif
+
 //--------------------------------------------
 
 #endif //__DRV_eMMC_H__

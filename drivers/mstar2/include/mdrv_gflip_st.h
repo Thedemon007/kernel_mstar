@@ -206,7 +206,7 @@ typedef struct
 
 typedef struct
 {
-    MS_U32 u32Addr;
+    MS_PHY u64Addr;
     MS_U16 u16X;
     MS_U16 u16Y;
     MS_U16 u16W;
@@ -473,51 +473,51 @@ typedef struct __attribute__((packed))
 } MS_HDR_INFO_EXTEND;
 
 //follow Tomato's table
-typedef enum _E_CFD_CFIO
+typedef enum _E_GFLIP_CFD_CFIO
 {
-    E_CFD_CFIO_RGB_NOTSPECIFIED      = 0x0, //means RGB, but no specific colorspace
-    E_CFD_CFIO_RGB_BT601_625         = 0x1,
-    E_CFD_CFIO_RGB_BT601_525         = 0x2,
-    E_CFD_CFIO_RGB_BT709             = 0x3,
-    E_CFD_CFIO_RGB_BT2020            = 0x4,
-    E_CFD_CFIO_SRGB                  = 0x5,
-    E_CFD_CFIO_ADOBE_RGB             = 0x6,
-    E_CFD_CFIO_YUV_NOTSPECIFIED      = 0x7, //means RGB, but no specific colorspace
-    E_CFD_CFIO_YUV_BT601_625         = 0x8,
-    E_CFD_CFIO_YUV_BT601_525         = 0x9,
-    E_CFD_CFIO_YUV_BT709             = 0xA,
-    E_CFD_CFIO_YUV_BT2020_NCL        = 0xB,
-    E_CFD_CFIO_YUV_BT2020_CL         = 0xC,
-    E_CFD_CFIO_XVYCC_601             = 0xD,
-    E_CFD_CFIO_XVYCC_709             = 0xE,
-    E_CFD_CFIO_SYCC601               = 0xF,
-    E_CFD_CFIO_ADOBE_YCC601          = 0x10,
-    E_CFD_CFIO_DOLBY_HDR_TEMP        = 0x11,
-    E_CFD_CFIO_SYCC709               = 0x12,
-    E_CFD_CFIO_DCIP3_THEATER         = 0x13, /// HDR10+
-    E_CFD_CFIO_DCIP3_D65             = 0x14, /// HDR10+
-    E_CFD_CFIO_RESERVED_START
+    E_GFLIP_CFD_CFIO_RGB_NOTSPECIFIED      = 0x0, //means RGB, but no specific colorspace
+    E_GFLIP_CFD_CFIO_RGB_BT601_625         = 0x1,
+    E_GFLIP_CFD_CFIO_RGB_BT601_525         = 0x2,
+    E_GFLIP_CFD_CFIO_RGB_BT709             = 0x3,
+    E_GFLIP_CFD_CFIO_RGB_BT2020            = 0x4,
+    E_GFLIP_CFD_CFIO_SRGB                  = 0x5,
+    E_GFLIP_CFD_CFIO_ADOBE_RGB             = 0x6,
+    E_GFLIP_CFD_CFIO_YUV_NOTSPECIFIED      = 0x7, //means RGB, but no specific colorspace
+    E_GFLIP_CFD_CFIO_YUV_BT601_625         = 0x8,
+    E_GFLIP_CFD_CFIO_YUV_BT601_525         = 0x9,
+    E_GFLIP_CFD_CFIO_YUV_BT709             = 0xA,
+    E_GFLIP_CFD_CFIO_YUV_BT2020_NCL        = 0xB,
+    E_GFLIP_CFD_CFIO_YUV_BT2020_CL         = 0xC,
+    E_GFLIP_CFD_CFIO_XVYCC_601             = 0xD,
+    E_GFLIP_CFD_CFIO_XVYCC_709             = 0xE,
+    E_GFLIP_CFD_CFIO_SYCC601               = 0xF,
+    E_GFLIP_CFD_CFIO_ADOBE_YCC601          = 0x10,
+    E_GFLIP_CFD_CFIO_DOLBY_HDR_TEMP        = 0x11,
+    E_GFLIP_CFD_CFIO_SYCC709               = 0x12,
+    E_GFLIP_CFD_CFIO_DCIP3_THEATER         = 0x13, /// HDR10+
+    E_GFLIP_CFD_CFIO_DCIP3_D65             = 0x14, /// HDR10+
+    E_GFLIP_CFD_CFIO_RESERVED_START
 
-} E_CFD_CFIO;
+} E_GFLIP_CFD_CFIO;
 
-typedef enum _E_CFD_MC_FORMAT
+typedef enum _E_GFLIP_CFD_MC_FORMAT
 {
 
-    E_CFD_MC_FORMAT_RGB     = 0x00,
-    E_CFD_MC_FORMAT_YUV422  = 0x01,
-    E_CFD_MC_FORMAT_YUV444  = 0x02,
-    E_CFD_MC_FORMAT_YUV420  = 0x03,
-    E_CFD_MC_FORMAT_RESERVED_START
+    E_GFLIP_CFD_MC_FORMAT_RGB     = 0x00,
+    E_GFLIP_CFD_MC_FORMAT_YUV422  = 0x01,
+    E_GFLIP_CFD_MC_FORMAT_YUV444  = 0x02,
+    E_GFLIP_CFD_MC_FORMAT_YUV420  = 0x03,
+    E_GFLIP_CFD_MC_FORMAT_RESERVED_START
 
-} E_CFD_MC_FORMAT;
+} E_GFLIP_CFD_MC_FORMAT;
 
-typedef enum _E_CFD_CFIO_RANGE//u8MM_Codec
+typedef enum _E_GFLIP_CFD_CFIO_RANGE//u8MM_Codec
 {
-    E_CFD_CFIO_RANGE_LIMIT   = 0x0,
-    E_CFD_CFIO_RANGE_FULL    = 0x1,
-    E_CFD_CFIO_RANGE_RESERVED_START
+    E_GFLIP_CFD_CFIO_RANGE_LIMIT   = 0x0,
+    E_GFLIP_CFD_CFIO_RANGE_FULL    = 0x1,
+    E_GFLIP_CFD_CFIO_RANGE_RESERVED_START
 
-} E_CFD_CFIO_RANGE;
+} E_GFLIP_CFD_CFIO_RANGE;
 
 typedef struct __attribute__((packed))
 {
@@ -531,12 +531,12 @@ typedef struct __attribute__((packed))
     MS_U16 u16Brightness;
     MS_U16 u16RGBGGain[3];
     //STU_CFDAPI_MAIN_CONTROL_LITE
-    E_CFD_CFIO enInputFormat;
-    E_CFD_MC_FORMAT enInputDataFormat;
-    E_CFD_CFIO_RANGE enInputRange;
-    E_CFD_CFIO enOutputFormat;
-    E_CFD_MC_FORMAT enOutputDataFormat;
-    E_CFD_CFIO_RANGE enOutputRange;
+    E_GFLIP_CFD_CFIO enInputFormat;
+    E_GFLIP_CFD_MC_FORMAT enInputDataFormat;
+    E_GFLIP_CFD_CFIO_RANGE enInputRange;
+    E_GFLIP_CFD_CFIO enOutputFormat;
+    E_GFLIP_CFD_MC_FORMAT enOutputDataFormat;
+    E_GFLIP_CFD_CFIO_RANGE enOutputRange;
     //CFD Output CSC
     MS_U32 u32CSCAddr[10];
     MS_U16 u16CSCValue[10];
@@ -551,5 +551,10 @@ typedef struct __attribute__((packed))
     MS_U8 u8BriAdlData[3];
 }ST_GFLIP_GOP_CSC_PARAM;
 
+typedef struct __attribute__((packed))
+{
+    MS_U32 u32GOPNum;
+    MS_BOOL bEnable;
+}ST_GFLIP_GOP_BWP_INFO;
 
 #endif //_MDRV_GFLIP_ST_H

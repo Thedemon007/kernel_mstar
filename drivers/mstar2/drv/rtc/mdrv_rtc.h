@@ -67,7 +67,8 @@ typedef struct
     U32 u32RtcGetMatchCounter;
     U32 u32RtcSetCounter;
     U32 u32RtcGetCounter;
-
+    U8 u8PmRtcDummyIndex;
+    U32 u32RtcDefaultAcCounter;
 } PM_RtcParam;
 
 void MDrv_RTC_Init(PM_RtcParam *pPmRtcParam);
@@ -81,4 +82,6 @@ int Free_RTC_IRQ(void *dev_id);
 
 void MDrv_RTC_Enable_Interrupt(void);
 void MDrv_RTC_Disable_Interrupt(void);
+bool MDrv_RTC_SetDummy(PM_RtcParam *pPmRtcParam, u16 val);
+bool MDrv_RTC_GetDummy(PM_RtcParam *pPmRtcParam, u16 *pval);
 #endif

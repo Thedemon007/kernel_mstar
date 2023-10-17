@@ -154,8 +154,9 @@ int tee_session_invoke_be(struct tee_session *sess, struct tee_cmd_io *cmd_io)
 	int ret = -EINVAL;
 	struct tee *tee;
 	struct tee_cmd cmd;
+#ifdef MSTAR_MEASURE_TIME
 	struct timespec start, end;
-
+#endif
 	BUG_ON(!sess || !sess->ctx || !sess->ctx->tee);
 
 	tee = sess->ctx->tee;
@@ -320,8 +321,9 @@ static long tee_session_ioctl(struct file *filp, unsigned int cmd,
 	struct tee *tee;
 	struct tee_session *sess = filp->private_data;
 	int ret;
+#ifdef MSTAR_MEASURE_TIME
 	struct timespec start, end;
-
+#endif
 	BUG_ON(!sess || !sess->ctx || !sess->ctx->tee);
 
 	tee = sess->ctx->tee;
@@ -378,7 +380,9 @@ int tee_session_close_and_destroy(struct tee_session *sess)
 	int ret;
 	struct tee *tee;
 	struct tee_context *ctx;
+#ifdef MSTAR_MEASURE_TIME
 	struct timespec start, end;
+#endif
 
 	TIME_PRINTK_START("TEE_SESSIOB_CLOSE_AND_DESTRORY ENTER", start, 0);
 	if (!sess || !sess->ctx || !sess->ctx->tee)
@@ -542,9 +546,10 @@ static int _init_tee_cmd(struct tee_session *sess, struct tee_cmd_io *cmd_io,
 	struct tee_data *param = &cmd->param;
 	struct tee *tee;
 	struct tee_context *ctx;
+#ifdef MSTAR_MEASURE_TIME
 	char str[256];
 	struct timespec start, end;
-
+#endif
 	BUG_ON(!sess->ctx);
 	BUG_ON(!sess->ctx->tee);
 	ctx = sess->ctx;
@@ -591,16 +596,20 @@ static int _init_tee_cmd(struct tee_session *sess, struct tee_cmd_io *cmd_io,
 				"> param[%d]:type=%d,buffer=%p,s=%zu (TMPREF)\n",
 				idx, type, op.params[idx].tmpref.buffer,
 				op.params[idx].tmpref.size);
+#ifdef MSTAR_MEASURE_TIME
 			snprintf(str, sizeof(str), "idx:%2d type:%2d size:0x%8lx ENTER",
 					idx, type, (unsigned long)op.params[idx].tmpref.size);
+#endif
 			TIME_PRINTK_START(str, start, 0);
 			param->params[idx].shm =
 			    tee_context_create_tmpref_buffer(ctx,
 					     op.params[idx].tmpref.size,
 					     op.params[idx].tmpref.buffer,
 					     type);
+#ifdef MSTAR_MEASURE_TIME
 			snprintf(str, sizeof(str), "idx:%2d type:%2d size:0x%8lx EXIT",
 					idx, type, (unsigned long)op.params[idx].tmpref.size);
+#endif
 			TIME_PRINTK_END(str, start, end, 0);
 			if (IS_ERR_OR_NULL(param->params[idx].shm))
 				goto out;
@@ -637,8 +646,10 @@ static int _init_tee_cmd(struct tee_session *sess, struct tee_cmd_io *cmd_io,
 			dev_dbg(_DEV_TEE, "> param[%d]:type=%d,buffer=%p, offset=%d size=%d\n",
 					idx, type, param->c_shm[idx].buffer,
 					offset, size);
+#ifdef MSTAR_MEASURE_TIME
 			snprintf(str, sizeof(str), "idx:%2d type:%2d size:0x%8lx ENTER",
 					idx, type, (unsigned long)size);
+#endif
 			TIME_PRINTK_START(str, start, 0);
 			type = to_memref_type(param->c_shm[idx].flags);
 			if (type == 0)
@@ -656,8 +667,9 @@ static int _init_tee_cmd(struct tee_session *sess, struct tee_cmd_io *cmd_io,
 					goto out;
 			}
 
+#ifdef MSTAR_MEASURE_TIME
 			snprintf(str, sizeof(str), "idx:%2d type:%2d size:0x%8lx EXIT", idx, type, (unsigned long)size);
-
+#endif
 			TIME_PRINTK_END(str, start, end, 0);
 
 			dev_dbg(_DEV_TEE, "< %d %p:%zd\n", idx,
@@ -702,7 +714,11 @@ static void _update_client_tee_cmd(struct tee_session *sess,
 
 	BUG_ON(!cmd_io);
 	BUG_ON(!cmd_io->op);
+#if defined(CONFIG_CC_IS_CLANG) && defined(CONFIG_MSTAR_CHIP)
+	BUG_ON(cmd_io->op->params==NULL);
+#else
 	BUG_ON(!cmd_io->op->params);
+#endif
 	BUG_ON(!cmd);
 	BUG_ON(!sess->ctx);
 	ctx = sess->ctx;

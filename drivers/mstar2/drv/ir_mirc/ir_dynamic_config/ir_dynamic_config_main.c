@@ -1,18 +1,56 @@
-
-//
-// * Copyright (c) 2006 - 2007 MStar Semiconductor, Inc.
-// This program is free software.
-// You can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation;
-// either version 2 of the License, or (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
-// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-// See the GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License along with this program;
-// if not, write to the Free Software Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
-//
-///////////////////////////////////////////////////////////////////////////////////////////////////
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///
@@ -33,39 +71,39 @@
 #include <linux/uaccess.h>
 #include <linux/input.h>
 #include <linux/delay.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
+#include <linux/init.h>
+
 #include "ir_dynamic_config.h"
 #include "iniparser.h"
-#include "linux/init.h"
 
 static int debug = 1;
+#define STRINIT(g,h) (g h)
 #if defined(CONFIG_DATA_SEPARATION)
 #define PROJECT_ID_LEN 5
 #define PROJECT_ID_BUF_SIZE  50 //project_id.ini length
 #define DATA_INDEX_NAME_BUF_SIZE  100//dataIndex.ini path length
-#define IR_CONFIG_FILE_NAME_BUF_SIZE  50//ir_config.ini path length
+#define IR_CONFIG_FILE_NAME_BUF_SIZE  100//ir_config.ini path length
 #endif
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "debug:\n\t0: error only\n\t1:debug info\n\t2:all\n");
 
 #if defined(CONFIG_DATA_SEPARATION)
 static char *config_file = NULL;
+static char *purelinux_config_file = NULL;
 #else
-static inline int isRecoveryBoot(void)
-{
-	return strstr(saved_command_line, "recovery_mode=true") != NULL;
-}
-static char ir_config_path[IR_CONFIG_PATH_LEN] = CONFIG_IR_CONFIG_PATH;
+#ifdef CONFIG_AMAZON_RECOVERY_MODE_IR
 static char ir_config_path_recovery[IR_CONFIG_PATH_LEN] = "/tvconfig_recovery/config/ir_config.ini";
 static char *config_file;
+#else
+static char ir_config_path[IR_CONFIG_PATH_LEN] = CONFIG_IR_CONFIG_PATH;
+static char *config_file = ir_config_path;
 #endif
+static char *purelinux_config_file = "/config/ir_config.ini";
+#endif
+module_param(purelinux_config_file,charp, 0644);
+MODULE_PARM_DESC(purelinux_config_file, "config file path");
 
-#if defined(CONFIG_IR_SKYWORTH_FACTORY)
-static char ir_config_path_diag[IR_CONFIG_PATH_LEN] = "/vendor/tvconfig/config/ir_config_diag.ini";
-extern unsigned int idme_get_bootmode(void);
-#endif
-module_param(config_file,charp, 0644);
+module_param(config_file, charp, 0644);
 MODULE_PARM_DESC(config_file, "config file path");
 
 #define DBG_ALL(__fmt,args...)              do{if (2 <= debug){printk("[IR config]"__fmt,##args);}}while(0)
@@ -73,19 +111,22 @@ MODULE_PARM_DESC(config_file, "config file path");
 #define DBG_ERR(__fmt,args...)              do{if (0 <= debug){printk("[IR config]"__fmt,##args);}}while(0)
 
 #define SIZE(array)  (sizeof(array)/sizeof(array[0]))
+#define PM51_PARSE_KEY_LEN   3
 
 static IR_Profile_t *ir_profiles = NULL;
 static int ir_profile_num = 0;
 static int ir_profile_parse_num = 0;
 struct key_map_list *key_map_lists = NULL;
+
+static int by_pass_kernel_keymap_num = 0;
+static int by_pass_kernel_keymap_parse_num = 0;
+static by_pass_kernel_keymap_Profile_t *by_pass_kernel_keymap_profiles = NULL;
+
 #if defined(CONFIG_MSTAR_PM)
 static IR_PM51_Profile_t *ir_PM51_profiles = NULL;
 static int ir_PM51_profile_num = 0;
 static int ir_PM51_profile_parse_num = 0;
-static u32 *ir_PM51WK_profiles;
-static int ir_PM51WK_profile_parse_num;
 static unsigned char ir_PM51_cfg_data[32] = {0};
-static unsigned char ir2_PM51_cfg_data[16] = {0};
 static unsigned char *ir_p16 = &ir_PM51_cfg_data[IR_HEAD16_KEY_PM_CFG_OFFSET];
 static unsigned char *ir_p32 = &ir_PM51_cfg_data[IR_HEAD32_KEY_PM_CFG_OFFSET];
 #endif
@@ -98,7 +139,27 @@ static void load_ir_config_thread(struct work_struct *work);
 static int load_ir_config_thread_need_stop = 0;
 static DECLARE_DELAYED_WORK(load_ir_config_work, load_ir_config_thread);
 
+#ifdef CONFIG_AMAZON_RECOVERY_MODE_IR
+static inline int isRecoveryBoot(void)
+{
+	return strstr(saved_command_line, "recovery_mode=true") != NULL;
+}
+#endif
 
+/** * @return value * 0 : NormalMode * 1 : RecoveryMode */
+static int isRecoveryMode(void)
+{
+	struct file *filp;
+	filp = filp_open("/system/bin/recovery", O_RDONLY, 0644);
+	if (IS_ERR(filp))
+	{
+		printk("Normal Boot!!!\n");
+		return 0;
+	}
+	filp_close(filp, NULL);
+	printk("Recovery Boot!!!\n");
+	return 1;
+}
 
 unsigned int get_ir_keycode(unsigned int scancode)
 {
@@ -133,6 +194,7 @@ EXPORT_SYMBOL(get_ir_keycode);
 
 static void fileread(char *filename, char **data)
 {
+
     struct file *filp;
     mm_segment_t fs;
     loff_t size;
@@ -140,7 +202,7 @@ static void fileread(char *filename, char **data)
     filp = filp_open(filename, O_RDONLY, 0644);
     if (IS_ERR(filp))
     {
-		DBG_ALL("open %s error...\n", filename);
+        DBG_ALL("open %s error...\n", filename);
         return;
     }
     fs = get_fs();
@@ -320,7 +382,90 @@ static void parse_all_keymaps(IniSectionNode *root, const char *name, const char
     ir_profile_parse_num++;
 }
 
+extern void MIRC_Map_free(void);
+extern void MIRC_Decoder_free(void);
+extern void MIRC_Dis_support_ir(void);
+
+static void parse_by_pass_kernel_keymap_config(IniSectionNode *root, const char *name, const char *value)
+{
+    const char *hw_dec;
+    by_pass_kernel_keymap_Profile_t *curr_pass_kernel_keymap_profile = &by_pass_kernel_keymap_profiles[by_pass_kernel_keymap_parse_num];
+
+    IniSectionNode *by_pass_kernel_keymap_config = get_section(root, value);
+
+    if(by_pass_kernel_keymap_parse_num > 1)return;
+    if (by_pass_kernel_keymap_config == NULL)
+    {
+        DBG_ERR("no section named %s\n", value);
+        return;
+    }
+
+    if(by_pass_kernel_keymap_parse_num > 1)return;
+    hw_dec = get_key_value(by_pass_kernel_keymap_config, "Hwdec_enable");
+
+    if (hw_dec == NULL)
+    {
+        DBG_ERR("no Hwdec_enable for %s\n", by_pass_kernel_keymap_config->name);
+        return;
+    }
+
+    if(str2ul(hw_dec,&curr_pass_kernel_keymap_profile->eDECType))
+    {
+        DBG_ERR("Hwdec_enable for %s format error.\n", by_pass_kernel_keymap_config->name);
+        return;
+    }
+    DBG_INFO("Hwdec_enable value:0x%02x\n",curr_pass_kernel_keymap_profile->eDECType);
+    if(curr_pass_kernel_keymap_profile->eDECType)
+    {
+        MIRC_Map_free();
+        MIRC_Decoder_free();
+        MIRC_Dis_support_ir();
+    }
+    by_pass_kernel_keymap_parse_num++;
+}
+
 #if defined(CONFIG_MSTAR_PM)
+#if defined(CONFIG_SUSPEND)
+
+struct hot_key {
+    char name[20];
+    u8 index;
+    int key_cnt;
+    unsigned int keycode;
+};
+
+#define POWERKEYSIZE 5
+extern u32 powerkey[POWERKEYSIZE];
+extern int ir_PM51_PWR_profile_parse_num;
+#define PIRKEY "PIR_IR"
+#define NFXKEYSIZE 5
+extern u32 netflixkey[NFXKEYSIZE];
+extern int ir_PM51_NFX_profile_parse_num;
+#define NETFLIX "PIR_NETFLIX"
+#define ADDHOTKEYSIZE 32
+extern struct hot_key mtkrc_hotkey[ADDHOTKEYSIZE];
+extern int ir_PM51_ADDHOTKEY_profile_parse_num;
+#define ADDHOTKEY "PIR_ADDHOTKEY"
+#endif
+bool hotkeyparser(char * str, char hotkey[])
+{
+    char *p;
+    int i=0;
+    p=strstr(str,ADDHOTKEY);
+    p+=strlen(ADDHOTKEY);
+    if((*p)=='_'){
+        p++;
+        while((*p)!='_' && (*p) !='\0')
+        {
+           hotkey[i]=(*p);
+           i++;
+           p++;
+           if((*p)=='\0')
+               return false;
+        }
+    }
+    return true;
+}
 static void parse_PM51_all_keymaps(IniSectionNode *root, const char *name, const char *value)
 {
     const char *protocol;
@@ -328,6 +473,7 @@ static void parse_PM51_all_keymaps(IniSectionNode *root, const char *name, const
     const char *power_key;
     IR_PM51_Profile_t *curr_ir_PM51_profile = &ir_PM51_profiles[ir_PM51_profile_parse_num];
     IniSectionNode *ir_PM51_config = get_section(root, value);
+    if(ir_PM51_profile_parse_num > (IR_SUPPORT_PM_NUM_MAX - 1))return;
     if (ir_PM51_config == NULL)
     {
         DBG_ERR("no section named %s\n", value);
@@ -363,11 +509,10 @@ static void parse_PM51_all_keymaps(IniSectionNode *root, const char *name, const
         return;
     }
     DBG_INFO("Header code:0x%x\n", curr_ir_PM51_profile->u32Header);
-
     /**
      * Parse PowerKey
      */
-    power_key = get_key_value(ir_PM51_config, "Key");
+    power_key = get_key_value_by_len(ir_PM51_config, "Key", PM51_PARSE_KEY_LEN);
     if (power_key == NULL)
     {
         DBG_ERR("no PowerKey for %s\n", ir_PM51_config->name);
@@ -379,104 +524,114 @@ static void parse_PM51_all_keymaps(IniSectionNode *root, const char *name, const
         return;
     }
     DBG_INFO("PowerKey code:0x%x\n", curr_ir_PM51_profile->u32PowerKey);
-
-	//IR_SUPPORT_PM_NUM_MAX	only restore 5 PM51 key maps, need to get the rest PM51 data from ir_config.ini
-	if (ir_PM51_profile_parse_num < IR_SUPPORT_PM_NUM_MAX) {
-		if ((curr_ir_PM51_profile->u32Header > 0x0000ffff) || (ir_PM51_profile_parse_num == (IR_SUPPORT_PM_NUM_MAX - 1))) {
-			*ir_p32++ = (u8)(curr_ir_PM51_profile->eIRType & 0xff);
-			*ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 24) & 0xff);
-			*ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 16) & 0xff);
-			*ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 8) & 0xff);
-			*ir_p32++ = (u8)(curr_ir_PM51_profile->u32Header & 0xff);
-			*ir_p32++ = (u8)((curr_ir_PM51_profile->u32PowerKey >> 8) & 0xff);
-			*ir_p32++ = (u8)(curr_ir_PM51_profile->u32PowerKey & 0xff);
-		} else {
-			*ir_p16++ = (u8)(curr_ir_PM51_profile->eIRType & 0xff);
-			*ir_p16++ = (u8)((curr_ir_PM51_profile->u32Header >> 8) & 0xff);
-			*ir_p16++ = (u8)(curr_ir_PM51_profile->u32Header & 0xff);
-			*ir_p16++ = (u8)((curr_ir_PM51_profile->u32PowerKey >> 8) & 0xff);
-			*ir_p16++ = (u8)(curr_ir_PM51_profile->u32PowerKey & 0xff);
-		}
-	}
-
+    if((curr_ir_PM51_profile->u32Header > 0x0000ffff) || (ir_PM51_profile_parse_num == (IR_SUPPORT_PM_NUM_MAX - 1)))
+    {
+        *ir_p32++ = (u8)(curr_ir_PM51_profile->eIRType & 0xff);
+        *ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 24) & 0xff);
+        *ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 16) & 0xff);
+        *ir_p32++ = (u8)((curr_ir_PM51_profile->u32Header >> 8) & 0xff);
+        *ir_p32++ = (u8)(curr_ir_PM51_profile->u32Header & 0xff);
+        *ir_p32++ = (u8)((curr_ir_PM51_profile->u32PowerKey >> 8) & 0xff);
+        *ir_p32++ = (u8)(curr_ir_PM51_profile->u32PowerKey & 0xff);
+    }
+    else
+    {
+        *ir_p16++ = (u8)(curr_ir_PM51_profile->eIRType & 0xff);
+        *ir_p16++ = (u8)((curr_ir_PM51_profile->u32Header >> 8) & 0xff);
+        *ir_p16++ = (u8)(curr_ir_PM51_profile->u32Header & 0xff);
+        *ir_p16++ = (u8)((curr_ir_PM51_profile->u32PowerKey >> 8) & 0xff);
+        *ir_p16++ = (u8)(curr_ir_PM51_profile->u32PowerKey & 0xff);
+    }
+#if defined(CONFIG_SUSPEND)
+    if(!strncmp(PIRKEY,value,strlen(PIRKEY)))
+    {
+        powerkey[ir_PM51_PWR_profile_parse_num]=curr_ir_PM51_profile->u32PowerKey;
+        ir_PM51_PWR_profile_parse_num++;
+    }
+    if(!strncmp(NETFLIX,value,strlen(NETFLIX)))
+    {
+        netflixkey[ir_PM51_NFX_profile_parse_num]=curr_ir_PM51_profile->u32PowerKey;
+        ir_PM51_NFX_profile_parse_num++;
+    }
+    if(!strncmp(ADDHOTKEY,value,strlen(ADDHOTKEY)))
+    {
+        if(hotkeyparser((char *)value,mtkrc_hotkey[ir_PM51_ADDHOTKEY_profile_parse_num].name))
+        {
+            mtkrc_hotkey[ir_PM51_ADDHOTKEY_profile_parse_num].index=ir_PM51_ADDHOTKEY_profile_parse_num;
+            mtkrc_hotkey[ir_PM51_ADDHOTKEY_profile_parse_num].keycode=curr_ir_PM51_profile->u32PowerKey;
+        }
+        ir_PM51_ADDHOTKEY_profile_parse_num++;
+    }
+#endif
     ir_PM51_profile_parse_num++;
-}
-
-static void parse_PM51WK_all_keymaps(IniSectionNode *root, const char *name, const char *value)
-{
-	const char *power_key;
-	u32 *curr_ir_PM51_profile = &ir_PM51WK_profiles[ir_PM51WK_profile_parse_num];
-	IniSectionNode *ir_PM51_config = get_section(root, value);
-	if (ir_PM51_profile_parse_num > (IR2_SUPPORT_PM_NUM_MAX - 1))
-		return;
-
-	if (ir_PM51_config == NULL) {
-		DBG_ERR("no section named %s\n", value);
-		return;
-	}
-
-	/**
-	 * Parse WakeupKey
-	 */
-	power_key = get_key_value(ir_PM51_config, "Key");
-	if (power_key == NULL) {
-		DBG_ERR("no WakeupKey for %s\n", ir_PM51_config->name);
-		return;
-	}
-	if (str2ul(power_key, curr_ir_PM51_profile)) {
-		DBG_ERR("PowerKey code format err for %s\n", ir_PM51_config->name);
-		return;
-	}
-	ir2_PM51_cfg_data[ir_PM51WK_profile_parse_num] = ((u8)*curr_ir_PM51_profile & 0xff);
-	DBG_INFO("PowerKey code:0x%x\n", ir2_PM51_cfg_data[ir_PM51WK_profile_parse_num]);
-
-	ir_PM51WK_profile_parse_num++;
 }
 #endif
 
 #if defined(CONFIG_DATA_SEPARATION)
-static void getProjectId(char **data)
+static int getDataIndexPath(char* buf, size_t buf_size)
 {
     char *str = NULL;
     extern char *saved_command_line;
-    char * tmp_command_line = NULL;
+    char *tmp_command_line = NULL;
+    size_t saved_command_line_len = 0;
+    const char acPattern[] = "cusdata_dataIndex_path=";
+    size_t lenOfDataIndexPath = 0;
+    char *pc_dataindex_path = NULL;
+    char *pc_dataindex_path_start = NULL;
+    char *found = NULL;
+
     tmp_command_line = (char *)kmalloc(strlen(saved_command_line) + 1, GFP_KERNEL);
-    memset(tmp_command_line, 0, strlen(saved_command_line) + 1);
-    memcpy(tmp_command_line, saved_command_line, strlen(saved_command_line) + 1);
-    str = strstr(tmp_command_line, "cusdata_projectid");
-    if (str)
+    saved_command_line_len = strlen(saved_command_line) + 1;
+
+    memset(tmp_command_line, 0, saved_command_line_len);
+    memcpy(tmp_command_line, saved_command_line, saved_command_line_len);
+
+    pc_dataindex_path = strstr(tmp_command_line, acPattern);
+    if (pc_dataindex_path == NULL)
     {
-        *data = (char *)kmalloc(PROJECT_ID_LEN + 1, GFP_KERNEL);
-        memset(*data, 0, PROJECT_ID_LEN + 1);
-        char* pTypeStart = strchr(str, '=');
-        if(pTypeStart)
+        goto err;
+    }
+
+    pc_dataindex_path_start = pc_dataindex_path + sizeof(acPattern) - 1;
+    found = strchr(pc_dataindex_path_start, ' ');
+
+    if (found == NULL)
+    {
+        snprintf(buf, buf_size, "%s", pc_dataindex_path_start);
+    }
+    else
+    {
+        lenOfDataIndexPath = found - pc_dataindex_path_start;
+        if (lenOfDataIndexPath == 0)
         {
-            if(strlen(pTypeStart) > PROJECT_ID_LEN)
-            {
-                char* pTypeEnd = strchr(pTypeStart+1, ' ');
-                if(!pTypeEnd)
-                {
-                    kfree(tmp_command_line);
-                    kfree(*data);
-                    return;
-                }
-                *pTypeEnd = '\0';
-            }
-            memcpy(*data, pTypeStart+1, strlen(pTypeStart));
-            printk("projectID = %s \n", *data);
-            return;
+            goto err;
         }
-        kfree(*data);
+        else
+        {
+            *found = '\0';
+            snprintf(buf, buf_size, "%s", pc_dataindex_path_start);
+        }
     }
     kfree(tmp_command_line);
-    printk("can not get project id from bootargs\n");
-    return;
+    tmp_command_line = NULL;
+
+    return 0;
+
+err:
+    if (tmp_command_line != NULL)
+    {
+        kfree(tmp_command_line);
+        tmp_command_line = NULL;
+    }
+    return 1;
 }
 
 
-static void getDataIndexIniFile(char **data)
+static void getDataIndexIniFile(char **data,char **data2)
 {
-    char *project_id = NULL;
+    int res = 0;
+
+    *data2 = NULL;
     //When accessing user memory, we need to make sure the entire area really is in user-level space.
     //KERNEL_DS addr user-level space need less than TASK_SIZE
     mm_segment_t fs=get_fs();
@@ -485,20 +640,27 @@ static void getDataIndexIniFile(char **data)
     if(!(*data))
     {
         set_fs(fs);
-        kfree(project_id);
-        return false;
+        return;
     }
-    getProjectId(&project_id);
-    snprintf(*data,DATA_INDEX_NAME_BUF_SIZE,"/cusdata/config/dataIndex/dataIndex_%s.ini",project_id);
-    kfree(project_id);
+
+    memset(*data , 0, DATA_INDEX_NAME_BUF_SIZE);
+    res = getDataIndexPath(*data, DATA_INDEX_NAME_BUF_SIZE);
+    if (res != 0)
+    {
+        kfree(*data);
+        *data = NULL;
+        return;
+    }
+
     set_fs(fs);
-    return true;
+    return;
 }
 
 static void getIrConfigIniFile(char **data)
 {
     char *data_index_buf = NULL;
     char *data_index_name = NULL;
+	char *data_index_name2 = NULL;
     int u16BufIdx=0;
     char *str=NULL;
     int u8CntSwitch=0;
@@ -508,23 +670,65 @@ static void getIrConfigIniFile(char **data)
     set_fs(KERNEL_DS);
 
     //get dataIndex.ini path
-    getDataIndexIniFile(&data_index_name);
-    printk("dataIndex path = %s\n", data_index_name);
-    //read dataIndex.ini
-    fileread(data_index_name, &data_index_buf);
-    kfree(data_index_name);
+    getDataIndexIniFile(&data_index_name,&data_index_name2);
+    //read /vendor/cusdata dataIndex.ini   
+    if (data_index_name)    
+	{
+
+        // Start changed for get ir_config in recovery mode 
+        if(isRecoveryMode() == 0){
+            printk("dataIndex path = %s\n", data_index_name);        
+            fileread(data_index_name, &data_index_buf);
+        }
+        else
+        {
+            char rec_index_name[IR_CONFIG_FILE_NAME_BUF_SIZE];
+            snprintf(rec_index_name,IR_CONFIG_FILE_NAME_BUF_SIZE,"/mnt%s",data_index_name);
+            printk("dataIndex path = %s\n", rec_index_name);        
+            fileread(rec_index_name, &data_index_buf);
+        }
+        // End
+        
+		kfree(data_index_name);
+	}    
+	else    
+	{        
+	    printk("dataIndex path is null \n");
+	}
+	
     if (data_index_buf == NULL)
     {
-        set_fs(fs);
-        return;
+        //read /cusdata dataIndex.ini
+        if (data_index_name2)        
+		{
+		    printk("dataIndex2 path = %s\n", data_index_name2);            
+			fileread(data_index_name2, &data_index_buf);            
+			kfree(data_index_name2);
+        }
+		else        
+		{            
+		    printk("dataIndex2 path is null \n"); 
+		}
+        if (data_index_buf == NULL)
+		{            
+		    set_fs(fs);            
+			return;        
+		}
     }
-    *data = (char*)kmalloc(IR_CONFIG_FILE_NAME_BUF_SIZE, GFP_KERNEL);
-    memset(*data, 0, IR_CONFIG_FILE_NAME_BUF_SIZE + 1);
+	else
+	{        
+        if(data_index_name2)        
+		{            
+		    kfree(data_index_name2);        
+		}    
+    }
+
     //parser dataIndex.ini
     str = strstr(data_index_buf,"m_pIrConfig_File");
     if (str)
     {
-        *data = (char*)kmalloc(IR_CONFIG_FILE_NAME_BUF_SIZE, GFP_KERNEL);
+        *data = (char*)kmalloc(IR_CONFIG_FILE_NAME_BUF_SIZE+1, GFP_KERNEL);
+        memset(*data, 0, IR_CONFIG_FILE_NAME_BUF_SIZE + 1);
         char* pTypeStart = strchr(str, '"');
         if(pTypeStart)
         {
@@ -532,14 +736,30 @@ static void getIrConfigIniFile(char **data)
             if(pTypeEnd)
             {
                 *pTypeEnd = '\0';
-                memcpy(*data, pTypeStart+1, strlen(pTypeStart));
-                printk("m_pIrConfig_File = %s \n", *data);
+                if(strlen(pTypeStart) > IR_CONFIG_FILE_NAME_BUF_SIZE)
+                {
+                    printk("m_pIrConfig_File = %s is too long, ir path used default path.",pTypeStart);
+                    memcpy(*data, CONFIG_IR_CONFIG_PATH, strlen(CONFIG_IR_CONFIG_PATH));
+                }
+                else
+                {
+                    if(isRecoveryMode()==0)
+                    {
+                        memcpy(*data, pTypeStart+1, strlen(pTypeStart));
+                    }
+                    else
+                    {
+                        snprintf(*data, IR_CONFIG_FILE_NAME_BUF_SIZE, "/mnt%s", pTypeStart+1);
+                    }
+                }
+                printk("getIrConfigIniFile = %s \n", *data);
                 set_fs(fs);
                 kfree(data_index_buf);
                 return;
             }
         }
         kfree(*data);
+        *data = NULL;
     }
     set_fs(fs);
     kfree(data_index_buf);
@@ -548,54 +768,39 @@ static void getIrConfigIniFile(char **data)
 
 extern int MIRC_support_ir_max_timeout(void);
 
-static int ir_config_state_open(struct inode *inode, struct file *file)
-{
-	pr_info("ir_config_state_open is open\n");
-	return 0;
-}
-
-static const struct file_operations ir_config_ops = {
-	.open = ir_config_state_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = seq_release,
-};
-
 static void load_ir_config_thread(struct work_struct *work)
 {
-	struct proc_dir_entry *entry;
     while (!load_ir_config_thread_need_stop)
     {
         char *contents = NULL;
         IniSectionNode *root;
         IniSectionNode *kernel_sec;
+        IniSectionNode *by_pass_kernel_keymap_sec;//HW decode
 #if defined(CONFIG_MSTAR_PM)
         IniSectionNode *PM51_sec;
 #endif
 #if defined(CONFIG_DATA_SEPARATION)
         getIrConfigIniFile(&config_file);
         printk("ir_config.ini path = %s\n", config_file);
-#else
-#if defined(CONFIG_IR_SKYWORTH_FACTORY)
-		if (idme_get_bootmode() == 2) { // Diag mode
-			config_file = ir_config_path_diag;
-		} else {
-			config_file = isRecoveryBoot() ? ir_config_path_recovery : ir_config_path;
-		}
-#else
-		config_file = isRecoveryBoot() ? ir_config_path_recovery : ir_config_path;
+#elif defined(CONFIG_AMAZON_RECOVERY_MODE_IR)
+	config_file = isRecoveryBoot() ? ir_config_path_recovery : ir_config_path;
 #endif
-#endif
-		if (config_file != NULL) {
-			fileread(config_file, &contents);
-		}
+        if(config_file != NULL)
+            fileread(config_file, &contents);
+        if (contents == NULL)
+            fileread(STRINIT("/mnt",CONFIG_IR_CONFIG_PATH), &contents);
         if (contents == NULL)
         {
-            msleep(400);
-            continue;
+            if(purelinux_config_file != NULL)
+            {
+                fileread(purelinux_config_file, &contents);
+            }
+            if(contents == NULL)
+            {
+                msleep(400);
+                continue;
+            }
         }
-
-
         if (alloc_and_init_ini_tree(&root, contents))
         {
             DBG_ERR(KERN_ERR"OOM!\n");
@@ -604,6 +809,31 @@ static void load_ir_config_thread(struct work_struct *work)
         if (debug > 1)
         {
             dump_ini(root);
+        }
+
+        by_pass_kernel_keymap_sec=get_section(root, "Hwdec");
+
+        if (by_pass_kernel_keymap_sec == NULL)
+        {
+            DBG_ERR("no section named Hwdec\n");
+            //goto out;
+        }
+        by_pass_kernel_keymap_num = get_key_num(by_pass_kernel_keymap_sec);
+        if (by_pass_kernel_keymap_num == 0)
+        {
+            DBG_ERR("no no keys in section Hwdec\n");
+            //goto out;
+        }
+        by_pass_kernel_keymap_profiles = kzalloc(sizeof(by_pass_kernel_keymap_Profile_t) * by_pass_kernel_keymap_num, GFP_KERNEL);
+        if (by_pass_kernel_keymap_profiles == NULL)
+        {
+            DBG_ERR(KERN_ERR"OOM!\n");
+        }
+        foreach_key(root, by_pass_kernel_keymap_sec, parse_by_pass_kernel_keymap_config);
+        if (by_pass_kernel_keymap_profiles)
+        {
+            kfree(by_pass_kernel_keymap_profiles);
+            by_pass_kernel_keymap_profiles = NULL;
         }
         kernel_sec = get_section(root, "Kernel");
         if (kernel_sec == NULL)
@@ -617,14 +847,12 @@ static void load_ir_config_thread(struct work_struct *work)
             DBG_ERR("no no keys in section Kernel\n");
             goto out;
         }
-        ir_profiles = kmalloc(sizeof(IR_Profile_t) * ir_profile_num, GFP_KERNEL);
-        key_map_lists = kmalloc(sizeof(struct key_map_list) * ir_profile_num, GFP_KERNEL);
+        ir_profiles = kzalloc(sizeof(IR_Profile_t) * ir_profile_num, GFP_KERNEL);
+        key_map_lists = kzalloc(sizeof(struct key_map_list) * ir_profile_num, GFP_KERNEL);
         if ((key_map_lists == NULL) || (ir_profiles == NULL))
         {
             DBG_ERR(KERN_ERR"OOM!\n");
         }
-        memset(ir_profiles, 0, sizeof(IR_Profile_t) * ir_profile_num);
-        memset(key_map_lists, 0, sizeof(struct key_map_list) * ir_profile_num);
         foreach_key(root, kernel_sec, parse_all_keymaps);
         MIRC_IRCustomer_Init();
         mstar_ir_reinit();
@@ -642,35 +870,18 @@ static void load_ir_config_thread(struct work_struct *work)
             DBG_ERR("no no keys in section PM51\n");
             goto out;
         }
-        ir_PM51_profiles = kmalloc(sizeof(IR_PM51_Profile_t) * ir_PM51_profile_num, GFP_KERNEL);
+        ir_PM51_profiles = kzalloc(sizeof(IR_PM51_Profile_t) * ir_PM51_profile_num, GFP_KERNEL);
         if (ir_PM51_profiles == NULL)
         {
             DBG_ERR(KERN_ERR"OOM!\n");
         }
-	ir_PM51WK_profiles = kmalloc(sizeof(u32) * ir_PM51_profile_num, GFP_KERNEL);
-	if (ir_PM51WK_profiles == NULL) {
-		DBG_ERR(KERN_ERR"OOM!\n");
-	}
-        memset(ir_PM51_profiles, 0, sizeof(IR_PM51_Profile_t) * ir_PM51_profile_num);
-	memset(ir_PM51WK_profiles, 0, sizeof(u8) * ir_PM51_profile_num);
         foreach_key(root, PM51_sec, parse_PM51_all_keymaps);
-	foreach_key(root, PM51_sec, parse_PM51WK_all_keymaps);
         MDrv_PM_Set_IRCfg(ir_PM51_cfg_data, sizeof(ir_PM51_cfg_data));
-	MDrv_PM_Set_IR2Cfg(ir2_PM51_cfg_data, sizeof(ir2_PM51_cfg_data));
-	if (ir_PM51WK_profiles) {
-		kfree(ir_PM51WK_profiles);
-		ir_PM51WK_profiles = NULL;
-	}
 #endif
     out:
         release_ini_tree(root);
         kfree(contents);
-	msleep(500);
-		pr_info("Create a temporary proc file to inidicate ini parse is done \n");
-		entry = proc_create_data("ir_config_done", 0444, NULL, &ir_config_ops, NULL);
-		if (!entry) {
-			pr_err("Could not create /proc/ir_config_done \n");
-		}
+
         return;
     }
 }

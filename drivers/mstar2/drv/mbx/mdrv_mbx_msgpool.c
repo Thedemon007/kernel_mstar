@@ -105,14 +105,15 @@
 //----------------------------------------------------------------------------
 // Local Variables
 //----------------------------------------------------------------------------
-static MSGPOOL_MsgPoolInfo _infoMSGP;
-static MSGPOOL_LastRecvMsgInfo _infoLatestMSGP;
-static MSGPOOL_MsgQMgr _msgQMgrMSGQ[MSGPOOL_MSGQ_MAX];
+MSGPOOL_MsgPoolInfo _infoMSGP;
+MSGPOOL_LastRecvMsgInfo _infoLatestMSGP;
+//static MSGPOOL_MsgQMgr _msgQMgrMSGQ[MSGPOOL_MSGQ_MAX];
 static DEFINE_SPINLOCK(lock);
 
 //----------------------------------------------------------------------------
 // Global Variables
 //----------------------------------------------------------------------------
+extern MBX_ASYNC_NOTIFIER _mbxAsyncNotifierMBX[MBX_ASYNCNOTIFIER_MAX];
 
 //=============================================================================
 // Local Function Prototypes
@@ -121,8 +122,9 @@ static DEFINE_SPINLOCK(lock);
 //=============================================================================
 // Mailbox Driver MSG POOL Function
 static void _MDrv_MSGPOOL_FreeMSGPoolItemQ(MS_S16 s16MsgFirst);
-static void _MDrv_MSGPOOL_SetMsgToPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg);
+static void _MDrv_MSGPOOL_SetMsgToPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg, MS_U16 u16MsgID);
 static void _MDrv_MSGPOOL_GetMsgFromPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg);
+static void _MDrv_MSGPOOL_GetMsgIDFromPoolItem(MS_S16 s16SlotIdx, MS_U16 *pu16MsgRecvID);
 static MSGPOOL_Result _MDrv_MSGPOOL_AllocateSlot(MS_S16* s16SlotIdx);
 static MSGPOOL_Result _MDrv_MSGPOOL_FreeSlot(MS_S16 s16SlotIdx);
 static MS_S16 _MDrv_MSGPOOL_GetNextSlot(MS_S16 s16SlotIdx);
@@ -131,7 +133,7 @@ static MSGPOOL_Result _MDrv_MSGPOOL_UnRegisterSlots(MS_U16 u16RegisteSlotNum);
 
 //=============================================================================
 // Mailbox Driver MSG Q Function
-static void _MDrv_MSGQ_FreeMSG(MS_S16 s16MsgQIdx);
+static void _MDrv_MSGQ_FreeMSG(MSGPOOL_MsgQMgr *pMsgQmgr);
 
 //=============================================================================
 // Mailbox Driver MSG POOL Function
@@ -163,9 +165,10 @@ void _MDrv_MSGPOOL_FreeMSGPoolItemQ(MS_S16 s16MsgFirst)
 /// @attention
 /// <b>[OBAMA] <em></em></b>
 //-------------------------------------------------------------------------------------------------
-void _MDrv_MSGPOOL_SetMsgToPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg)
+void _MDrv_MSGPOOL_SetMsgToPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg, MS_U16 u16MsgID)
 {
     _infoMSGP.pMsgPool[s16SlotIdx].mbxMsg = *pMbxMsg;
+    _infoMSGP.pMsgPool[s16SlotIdx].u16MsgID = u16MsgID;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -181,6 +184,10 @@ void _MDrv_MSGPOOL_GetMsgFromPoolItem(MS_S16 s16SlotIdx, MBX_Msg* pMbxMsg)
     *pMbxMsg = _infoMSGP.pMsgPool[s16SlotIdx].mbxMsg;
 }
 
+static void _MDrv_MSGPOOL_GetMsgIDFromPoolItem(MS_S16 s16SlotIdx, MS_U16 *pu16MsgRecvID)
+{
+    *pu16MsgRecvID = _infoMSGP.pMsgPool[s16SlotIdx].u16MsgID;
+}
 //-------------------------------------------------------------------------------------------------
 /// allocate a free slot for message
 /// @param  s16SlotIdx                  \b OUT: The Allocated slot idx
@@ -206,7 +213,8 @@ MSGPOOL_Result _MDrv_MSGPOOL_AllocateSlot(MS_S16* s16SlotIdx)
         {
             pMsgPoolItem[s16Slot].u16Usage = TRUE;
             pMsgPoolItem[s16Slot].s16Next = INVALID_PTR;
-	     _infoMSGP.u16FreeSlots--;
+            pMsgPoolItem[s16Slot].u16MsgID = 0;
+            _infoMSGP.u16FreeSlots--;
             *s16SlotIdx = s16Slot;
             break;
         }
@@ -242,6 +250,7 @@ MSGPOOL_Result _MDrv_MSGPOOL_FreeSlot(MS_S16 s16SlotIdx)
 
     pMsgPoolItem[s16SlotIdx].u16Usage = FALSE;
     pMsgPoolItem[s16SlotIdx].s16Next = INVALID_PTR;
+    pMsgPoolItem[s16SlotIdx].u16MsgID = 0;
     _infoMSGP.u16FreeSlots++;
 
     return E_MSGPOOL_SUCCESS;
@@ -289,9 +298,11 @@ void _MDrv_MSGPOOL_SetNextSlot(MS_S16 s16PreSlotIdx, MS_S16 s16NextSlotIdx)
 MSGPOOL_Result _MDrv_MSGPOOL_RegisterSlots(MS_U16 u16RegisteSlotNum)
 {
     MS_U16 u16FreeSlots;
+
     u16FreeSlots = _infoMSGP.u16Slots - _infoMSGP.u16RegistedSlots;
 
-    if (u16RegisteSlotNum > u16FreeSlots) { //no enough slots for registe
+    if(u16RegisteSlotNum > u16FreeSlots) //no enough slots for registe
+    {
         return E_MSGPOOL_ERR_NO_MORE_MEMORY;
     }
 
@@ -332,22 +343,27 @@ MSGPOOL_Result _MDrv_MSGPOOL_UnRegisterSlots(MS_U16 u16UnRegisteSlotNum)
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-void _MDrv_MSGQ_FreeMSG(MS_S16 s16MsgQIdx)
+void _MDrv_MSGQ_FreeMSG(MSGPOOL_MsgQMgr *pMsgQmgr)
 {
-    _MDrv_MSGPOOL_FreeMSGPoolItemQ(_msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst);
-    _MDrv_MSGPOOL_FreeMSGPoolItemQ(_msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst);
-    _MDrv_MSGPOOL_UnRegisterSlots(_msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize);
+    _MDrv_MSGPOOL_FreeMSGPoolItemQ(pMsgQmgr->s16MsgFirst);
+    _MDrv_MSGPOOL_FreeMSGPoolItemQ(pMsgQmgr->s16InstantMsgFirst);
+    _MDrv_MSGPOOL_UnRegisterSlots(pMsgQmgr->u16MsgQSize);
 
-    _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst = _msgQMgrMSGQ[s16MsgQIdx].s16MsgEnd
-		= _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst = _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgEnd = INVALID_PTR;
+    pMsgQmgr->s16MsgFirst
+        = pMsgQmgr->s16MsgEnd
+        = pMsgQmgr->s16InstantMsgFirst
+        = pMsgQmgr->s16InstantMsgEnd
+        = INVALID_PTR;
 
-    _msgQMgrMSGQ[s16MsgQIdx].u16MsgNum = _msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum = 0;
+    pMsgQmgr->u16MsgNum
+        = pMsgQmgr->u16InstantMsgNum
+        = 0;
 
-    _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_INVALID;
-    _msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize = 0;
+    pMsgQmgr->u16MsgQStatus = E_MSGQ_INVALID;
+    pMsgQmgr->u16MsgQSize = 0;
 
-    _msgQMgrMSGQ[s16MsgQIdx].s16MsgQNotifierID = INVALID_PTR;
-    _msgQMgrMSGQ[s16MsgQIdx].s16NextMsgQ = INVALID_PTR;
+    pMsgQmgr->s16MsgQNotifierID = INVALID_PTR;
+    pMsgQmgr->s16NextMsgQ = INVALID_PTR;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -356,17 +372,22 @@ void _MDrv_MSGQ_FreeMSG(MS_S16 s16MsgQIdx)
 /// @attention
 /// <b>[MXLIB] <em></em></b>
 //-------------------------------------------------------------------------------------------------
-void _MDrv_MSGQ_ClearMSG(MS_S16 s16MsgQIdx)
+void _MDrv_MSGQ_ClearMSG(MSGPOOL_MsgQMgr *pMsgQmgr)
 {
-    _MDrv_MSGPOOL_FreeMSGPoolItemQ(_msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst);
-    _MDrv_MSGPOOL_FreeMSGPoolItemQ(_msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst);
+    _MDrv_MSGPOOL_FreeMSGPoolItemQ(pMsgQmgr->s16MsgFirst);
+    _MDrv_MSGPOOL_FreeMSGPoolItemQ(pMsgQmgr->s16InstantMsgFirst);
 
-    _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst = _msgQMgrMSGQ[s16MsgQIdx].s16MsgEnd
-		= _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst = _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgEnd = INVALID_PTR;
+    pMsgQmgr->s16MsgFirst
+        = pMsgQmgr->s16MsgEnd
+        = pMsgQmgr->s16InstantMsgFirst
+        = pMsgQmgr->s16InstantMsgEnd
+        = INVALID_PTR;
 
-    _msgQMgrMSGQ[s16MsgQIdx].u16MsgNum = _msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum = 0;
+    pMsgQmgr->u16MsgNum
+        = pMsgQmgr->u16InstantMsgNum
+        = 0;
 
-    _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_EMPTY;
+    pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
 }
 
 //----------------------------------------------------------------------------
@@ -426,6 +447,7 @@ void MDrv_MSGPOOL_DeInit()
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
+#if 0 //msgQmgr is in notifier
 MSGPOOL_Result MDrv_MSGQ_Init()
 {
     MS_U16 u16MsgQIdx;
@@ -446,7 +468,7 @@ MSGPOOL_Result MDrv_MSGQ_Init()
 
     return E_MSGPOOL_SUCCESS;
 }
-
+#endif
 //-------------------------------------------------------------------------------------------------
 /// Register message class
 /// @param  s16MsgQNotifierID                  \b IN: The Async Notifier ID with the register class
@@ -460,35 +482,32 @@ MSGPOOL_Result MDrv_MSGQ_Init()
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_RegisterMSG(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQFirst, MS_S16 s16MsgQID, MS_U16 u16MsgQSize)
+MSGPOOL_Result MDrv_MSGQ_RegisterMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQFirst, MS_S16 s16MsgQID, MS_U16 u16MsgQSize)
 {
-    if(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID == s16MsgQNotifierID) //already registed by this app
-    {
+    MSGPOOL_MsgQMgr *pMsgQmgr;
+
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQID]);
+
+    if (pMsgQmgr->u16MsgQStatus != E_MSGQ_INVALID) //already registed by this app
         return E_MSGPOOL_ERR_SLOT_AREADY_OPENNED;
-    }
 
-    if(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID != INVALID_PTR) //not the requester, but also not invalid, means others has register the msg class.
-    {
-		goto Register_NotifyID; //maybe different AsyncID produce different NotifierID
-    }
-
-    if(E_MSGPOOL_ERR_NO_MORE_MEMORY == _MDrv_MSGPOOL_RegisterSlots(u16MsgQSize))
-    {
+    if (E_MSGPOOL_ERR_NO_MORE_MEMORY == _MDrv_MSGPOOL_RegisterSlots(u16MsgQSize))
         return E_MSGPOOL_ERR_NO_MORE_MEMORY;
-    }
 
-Register_NotifyID:
     //success registed, then allocate the msg q:
-    _msgQMgrMSGQ[s16MsgQID].s16MsgFirst = _msgQMgrMSGQ[s16MsgQID].s16MsgEnd
-		= _msgQMgrMSGQ[s16MsgQID].s16InstantMsgFirst = _msgQMgrMSGQ[s16MsgQID].s16InstantMsgEnd = INVALID_PTR;
+    pMsgQmgr->s16MsgFirst
+        = pMsgQmgr->s16MsgEnd
+        = pMsgQmgr->s16InstantMsgFirst
+        = pMsgQmgr->s16InstantMsgEnd
+        = INVALID_PTR;
 
-    _msgQMgrMSGQ[s16MsgQID].u16MsgNum = _msgQMgrMSGQ[s16MsgQID].u16InstantMsgNum = 0;
+    pMsgQmgr->u16MsgNum = pMsgQmgr->u16InstantMsgNum = 0;
 
-    _msgQMgrMSGQ[s16MsgQID].u16MsgQStatus = E_MSGQ_EMPTY;
-    _msgQMgrMSGQ[s16MsgQID].u16MsgQSize = u16MsgQSize;
+    pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
+    pMsgQmgr->u16MsgQSize = u16MsgQSize;
 
-    _msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID = s16MsgQNotifierID;
-    _msgQMgrMSGQ[s16MsgQID].s16NextMsgQ = s16MsgQFirst;
+    pMsgQmgr->s16MsgQNotifierID = s16MsgQNotifierID;
+    pMsgQmgr->s16NextMsgQ = s16MsgQFirst;
 
     return E_MSGPOOL_SUCCESS;
 }
@@ -506,51 +525,41 @@ Register_NotifyID:
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_UnRegisterMSG(MS_S16 s16MsgQNotifierID,  MS_S16* ps16MsgQFirst, MS_S16 s16MsgQID, MS_BOOL bForceDiscardMsgQueue)
+MSGPOOL_Result MDrv_MSGQ_UnRegisterMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQNotifierID,  MS_S16* ps16MsgQFirst, MS_S16 s16MsgQID, MS_BOOL bForceDiscardMsgQueue)
 {
     MS_S16 s16MsgQIdx = *ps16MsgQFirst;
+    MSGPOOL_MsgQMgr *pMsgQmgrFirst, *pMsgQmgrRegister;
+
+    pMsgQmgrRegister = &(pMbxAsyncNotifier->msgQmgr[s16MsgQID]);
 
     //if not opened yet?
-    if(!IS_VALID_PTR(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID) || (_msgQMgrMSGQ[s16MsgQID].u16MsgQStatus== E_MSGQ_INVALID) )
-    {
+    if (pMsgQmgrRegister->u16MsgQStatus == E_MSGQ_INVALID)
         return E_MSGPOOL_ERR_SLOT_NOT_OPENNED;
-    }
-
-    //if used by another application?
-    if(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID != s16MsgQNotifierID)
-    {
-        return E_MSGPOOL_ERR_SLOT_BUSY;
-    }
 
     //if has pending msg and app not force discard:
-    if((!bForceDiscardMsgQueue) && ((_msgQMgrMSGQ[s16MsgQID].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQID].u16MsgNum) >  0))
-    {
+    if ((!bForceDiscardMsgQueue) && ((pMsgQmgrRegister->u16InstantMsgNum + pMsgQmgrRegister->u16MsgNum) >  0))
         return E_MSGPOOL_ERR_HAS_MSG_PENDING;
-    }
 
     //free msgq and discard msg if has pending:
     //MSGPOOL_ASSERT(IS_VALID_PTR(*ps16MsgQFirst), "Invlid first MSGQ Ptr for un-register!\n");
-    if(!IS_VALID_PTR(*ps16MsgQFirst))
-    {
+    if (!IS_VALID_PTR(*ps16MsgQFirst)) {
         printk("[MailBox (Driver)]Invlid first MSGQ Ptr for un-register!\n");
         return E_MSGPOOL_UNKNOW_ERROR;
     }
 
-    if(s16MsgQIdx != s16MsgQID)
-    {
-        while(_msgQMgrMSGQ[s16MsgQIdx].s16NextMsgQ != s16MsgQID)
-        {
-            s16MsgQIdx = _msgQMgrMSGQ[s16MsgQIdx].s16NextMsgQ;
+    if (s16MsgQIdx != s16MsgQID) {
+        pMsgQmgrFirst = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+        while (pMsgQmgrFirst->s16NextMsgQ != s16MsgQID) {
+            s16MsgQIdx = pMsgQmgrFirst->s16NextMsgQ;
+            pMsgQmgrFirst = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
         }
 
-	 _msgQMgrMSGQ[s16MsgQIdx].s16NextMsgQ = _msgQMgrMSGQ[s16MsgQID].s16NextMsgQ;
-    }
-    else
-    {
-        *ps16MsgQFirst = _msgQMgrMSGQ[s16MsgQID].s16NextMsgQ;
+        pMsgQmgrFirst->s16NextMsgQ = pMsgQmgrRegister->s16NextMsgQ;
+    } else {
+        *ps16MsgQFirst = pMsgQmgrRegister->s16NextMsgQ;
     }
 
-    _MDrv_MSGQ_FreeMSG(s16MsgQID);
+    _MDrv_MSGQ_FreeMSG(pMsgQmgrRegister);
 
     return E_MSGPOOL_SUCCESS;
 }
@@ -563,22 +572,18 @@ MSGPOOL_Result MDrv_MSGQ_UnRegisterMSG(MS_S16 s16MsgQNotifierID,  MS_S16* ps16Ms
 /// @attention
 /// <b>[MXLIB] <em></em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_ClearMSG(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQID)
+MSGPOOL_Result MDrv_MSGQ_ClearMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQID)
 {
-    //if not opened yet?
-    if(!IS_VALID_PTR(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID) || (_msgQMgrMSGQ[s16MsgQID].u16MsgQStatus== E_MSGQ_INVALID) )
-    {
-        return E_MSGPOOL_ERR_SLOT_NOT_OPENNED;
-    }
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
-    //if used by another application?
-    if(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID != s16MsgQNotifierID)
-    {
-        return E_MSGPOOL_ERR_SLOT_BUSY;
-    }
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQID]);
+
+    //if not opened yet?
+    if (pMsgQmgr->u16MsgQStatus == E_MSGQ_INVALID)
+        return E_MSGPOOL_ERR_SLOT_NOT_OPENNED;
 
     //Clear msgq:
-    _MDrv_MSGQ_ClearMSG(s16MsgQID);
+    _MDrv_MSGQ_ClearMSG(pMsgQmgr);
 
     return E_MSGPOOL_SUCCESS;
 }
@@ -594,38 +599,31 @@ MSGPOOL_Result MDrv_MSGQ_ClearMSG(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQID)
 /// @attention
 /// <b>[OBAMA] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_GetMsgQStatus(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQID, MBX_MSGQ_Status *pMsgQStatus)
+MSGPOOL_Result MDrv_MSGQ_GetMsgQStatus(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQID, MBX_MSGQ_Status *pMsgQStatus)
 {
-    if(!IS_VALID_PTR(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID) || (_msgQMgrMSGQ[s16MsgQID].u16MsgQStatus== E_MSGQ_INVALID)) //already registed by this app
-    {
-        return E_MSGPOOL_ERR_SLOT_NOT_OPENNED;
-    }
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
-    //if used by another application?
-    if(_msgQMgrMSGQ[s16MsgQID].s16MsgQNotifierID != s16MsgQNotifierID)
-    {
-        return E_MSGPOOL_ERR_SLOT_BUSY;
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQID]);
+
+    if (pMsgQmgr->u16MsgQStatus== E_MSGQ_INVALID) {
+        //already registed by this app
+        return E_MSGPOOL_ERR_SLOT_NOT_OPENNED;
     }
 
     pMsgQStatus->status = 0;
 
-    if(_msgQMgrMSGQ[s16MsgQID].u16MsgQStatus == E_MSGQ_OVERFLOW)
-    {
+    if (pMsgQmgr->u16MsgQStatus == E_MSGQ_OVERFLOW)
         pMsgQStatus->status |= MBX_STATUS_QUEUE_OVER_FLOW;
-    }
 
-    if(_msgQMgrMSGQ[s16MsgQID].u16MsgNum > 0)
-    {
+    if (pMsgQmgr->u16MsgNum > 0)
         pMsgQStatus->status |= MBX_STATUS_QUEUE_HAS_NORMAL_MSG;
-    }
 
-    if(_msgQMgrMSGQ[s16MsgQID].u16InstantMsgNum > 0)
-    {
+    if (pMsgQmgr->u16InstantMsgNum > 0)
         pMsgQStatus->status |= MBX_STATUS_QUEUE_HAS_INSTANT_MSG;
-    }
 
-    pMsgQStatus->u32InstantMsgCount = _msgQMgrMSGQ[s16MsgQID].u16InstantMsgNum;
-    pMsgQStatus->u32NormalMsgCount = _msgQMgrMSGQ[s16MsgQID].u16MsgNum;
+    pMsgQStatus->u32InstantMsgCount = pMsgQmgr->u16InstantMsgNum;
+    pMsgQStatus->u32NormalMsgCount = pMsgQmgr->u16MsgNum;
+
     return E_MSGPOOL_SUCCESS;
 }
 
@@ -638,31 +636,29 @@ MSGPOOL_Result MDrv_MSGQ_GetMsgQStatus(MS_S16 s16MsgQNotifierID, MS_S16 s16MsgQI
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_UnRegisterMSGQ(MS_S16 s16MsgQFirst, MS_BOOL bForceDiscardPendingMsg)
+MSGPOOL_Result MDrv_MSGQ_UnRegisterMSGQ(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQFirst, MS_BOOL bForceDiscardPendingMsg)
 {
+    MSGPOOL_MsgQMgr *pMsgQmgr;
     MS_S16 s16MsgQNext = s16MsgQFirst;
 
-    if(!bForceDiscardPendingMsg)
-    {
-        while(IS_VALID_PTR(s16MsgQNext))
-        {
-            if((_msgQMgrMSGQ[s16MsgQNext].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQNext].u16MsgNum) >  0)
-            {
+    if (!bForceDiscardPendingMsg) {
+        while (IS_VALID_PTR(s16MsgQNext)) {
+            pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQNext]);
+            if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) >  0)
                 return E_MSGPOOL_ERR_HAS_MSG_PENDING;
-            }
 
-            s16MsgQNext = _msgQMgrMSGQ[s16MsgQNext].s16NextMsgQ;
+            s16MsgQNext = pMsgQmgr->s16NextMsgQ;
         }
     }
 
     s16MsgQNext = s16MsgQFirst;
 
-    while(IS_VALID_PTR(s16MsgQNext))
-    {
+    while (IS_VALID_PTR(s16MsgQNext)) {
         s16MsgQFirst = s16MsgQNext;
-        s16MsgQNext = _msgQMgrMSGQ[s16MsgQFirst].s16NextMsgQ;
+        pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQFirst]);
+        s16MsgQNext = pMsgQmgr->s16NextMsgQ;
 
-        _MDrv_MSGQ_FreeMSG(s16MsgQFirst);
+        _MDrv_MSGQ_FreeMSG(pMsgQmgr);
     }
 
     return E_MSGPOOL_SUCCESS;
@@ -678,73 +674,176 @@ MSGPOOL_Result MDrv_MSGQ_UnRegisterMSGQ(MS_S16 s16MsgQFirst, MS_BOOL bForceDisca
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_RecvMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg)
+MSGPOOL_Result MDrv_MSGQ_RecvMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg, MS_U16 *pu16MsgRecvID)
 {
     MS_S16 s16MsgSlotIdx;
     MSGPOOL_Result msgPoolResult;
     MS_U32 flags;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
     spin_lock_irqsave(&lock, flags);
-    if(bInstantMsg )
-    {//get instant msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum>0)
-        {
-            s16MsgSlotIdx = _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst;
-            if (s16MsgSlotIdx == INVALID_PTR)
-            {
-                _MDrv_MSGQ_ClearMSG(s16MsgQIdx);
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+    if (bInstantMsg) {
+        //get instant msg:
+        if (pMsgQmgr->u16InstantMsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16InstantMsgFirst;
+
+            if (s16MsgSlotIdx == INVALID_PTR) {
+                _MDrv_MSGQ_ClearMSG(pMsgQmgr);
                 spin_unlock_irqrestore(&lock, flags);
+
                 return E_MSGPOOL_ERR_NO_MORE_MSG;
             }
+
             _MDrv_MSGPOOL_GetMsgFromPoolItem(s16MsgSlotIdx, pMsg);
-            _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
+            _MDrv_MSGPOOL_GetMsgIDFromPoolItem(s16MsgSlotIdx, pu16MsgRecvID);
+            pMsgQmgr->s16InstantMsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
             _MDrv_MSGPOOL_FreeSlot(s16MsgSlotIdx);
-            _msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum--;
+            pMsgQmgr->u16InstantMsgNum--;
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
-    }
-    else
-    {//get normal msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum>0)
-        {
-            s16MsgSlotIdx = _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst;
-            if (s16MsgSlotIdx == INVALID_PTR)
-            {
-                _MDrv_MSGQ_ClearMSG(s16MsgQIdx);
+    } else {
+        //get normal msg:
+        if (pMsgQmgr->u16MsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16MsgFirst;
+
+            if (s16MsgSlotIdx == INVALID_PTR) {
+                _MDrv_MSGQ_ClearMSG(pMsgQmgr);
                 spin_unlock_irqrestore(&lock, flags);
+
                 return E_MSGPOOL_ERR_NO_MORE_MSG;
             }
-            _MDrv_MSGPOOL_GetMsgFromPoolItem(s16MsgSlotIdx, pMsg);
-            _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
-            _MDrv_MSGPOOL_FreeSlot(s16MsgSlotIdx);
-            _msgQMgrMSGQ[s16MsgQIdx].u16MsgNum--;
 
+            _MDrv_MSGPOOL_GetMsgFromPoolItem(s16MsgSlotIdx, pMsg);
+            _MDrv_MSGPOOL_GetMsgIDFromPoolItem(s16MsgSlotIdx, pu16MsgRecvID);
+            pMsgQmgr->s16MsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
+            _MDrv_MSGPOOL_FreeSlot(s16MsgSlotIdx);
+            pMsgQmgr->u16MsgNum--;
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
     }
     spin_unlock_irqrestore(&lock, flags);
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<_msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_NORMAL;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) < pMsgQmgr->u16MsgQSize)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_NORMAL;
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<=0)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_EMPTY;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) <= 0)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
 
     return msgPoolResult;
 }
 
+MSGPOOL_Result MDrv_MSGQ_DequeueMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MS_BOOL bInstantMsg, MS_U16 u16MsgRecvID)
+{
+    MS_S16 s16MsgSlotIdx;
+    MSGPOOL_Result msgPoolResult;
+    MS_U32 flags;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
+    MS_U16 u16MsgRecvIDGet = 0;
+    MS_S16 s16MsgNext, s16MsgFirst, s16MsgForward;
+
+    spin_lock_irqsave(&lock, flags);
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+    if (bInstantMsg) {
+        //get instant msg:
+        if (pMsgQmgr->u16InstantMsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16InstantMsgFirst;
+
+            if (s16MsgSlotIdx == INVALID_PTR) {
+                _MDrv_MSGQ_ClearMSG(pMsgQmgr);
+                spin_unlock_irqrestore(&lock, flags);
+
+                return E_MSGPOOL_ERR_NO_MORE_MSG;
+            }
+
+            /* remove the ID of the message */
+            s16MsgNext = s16MsgSlotIdx;
+            while (IS_VALID_PTR(s16MsgNext)) {
+                s16MsgFirst = s16MsgNext;
+                s16MsgForward = s16MsgFirst;
+
+                _MDrv_MSGPOOL_GetMsgIDFromPoolItem(s16MsgFirst, &u16MsgRecvIDGet);
+
+                if (u16MsgRecvID == u16MsgRecvIDGet) {
+                    if (s16MsgFirst == s16MsgSlotIdx) {
+                        /* the msg pool index of the first msg changed */
+                        pMsgQmgr->s16InstantMsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+                    } else {
+                        /* set forward's next to now's next */
+                        s16MsgNext = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+                        _MDrv_MSGPOOL_SetNextSlot(s16MsgForward, s16MsgNext);
+                    }
+
+                    _MDrv_MSGPOOL_FreeSlot(s16MsgFirst);
+                    pMsgQmgr->u16InstantMsgNum--;
+                    msgPoolResult = E_MSGPOOL_SUCCESS;
+                    break;
+                }
+
+                s16MsgForward = s16MsgFirst;
+                s16MsgNext = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+            }
+            msgPoolResult = E_MSGPOOL_SUCCESS;
+        } else {
+            msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
+        }
+    } else {
+        //get normal msg:
+        if (pMsgQmgr->u16MsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16MsgFirst;
+
+            if (s16MsgSlotIdx == INVALID_PTR) {
+                _MDrv_MSGQ_ClearMSG(pMsgQmgr);
+                spin_unlock_irqrestore(&lock, flags);
+
+                return E_MSGPOOL_ERR_NO_MORE_MSG;
+            }
+
+            /* remove the ID of the message */
+            s16MsgNext = s16MsgSlotIdx;
+            while (IS_VALID_PTR(s16MsgNext)) {
+                s16MsgFirst = s16MsgNext;
+                s16MsgForward = s16MsgFirst;
+
+                _MDrv_MSGPOOL_GetMsgIDFromPoolItem(s16MsgFirst, &u16MsgRecvIDGet);
+
+                if (u16MsgRecvID == u16MsgRecvIDGet) {
+                    if (s16MsgFirst == s16MsgSlotIdx) {
+                        /* the msg pool index of the first msg changed */
+                        pMsgQmgr->s16MsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+                    } else {
+                        /* set forward's next to now's next */
+                        s16MsgNext = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+                        _MDrv_MSGPOOL_SetNextSlot(s16MsgForward, s16MsgNext);
+                    }
+                    _MDrv_MSGPOOL_FreeSlot(s16MsgFirst);
+                    pMsgQmgr->u16MsgNum--;
+                    msgPoolResult = E_MSGPOOL_SUCCESS;
+                    break;
+                }
+
+                s16MsgForward = s16MsgFirst;
+                s16MsgNext = _MDrv_MSGPOOL_GetNextSlot(s16MsgFirst);
+            }
+            msgPoolResult = E_MSGPOOL_SUCCESS;
+        } else {
+            msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
+        }
+    }
+    spin_unlock_irqrestore(&lock, flags);
+
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) < pMsgQmgr->u16MsgQSize)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_NORMAL;
+
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) <= 0)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
+
+    return msgPoolResult;
+}
 
 //-------------------------------------------------------------------------------------------------
 /// Check message from msg class queue
@@ -757,16 +856,17 @@ MSGPOOL_Result MDrv_MSGQ_RecvMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInst
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 /// <b>[OBAMA] <em>This pMsg contains no message content, only MsgClass available for checking</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_CheckMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg)
+MSGPOOL_Result MDrv_MSGQ_CheckMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bInstantMsg)
 {
     MS_S16 s16MsgSlotIdx;
     MSGPOOL_Result msgPoolResult;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
-    if(bInstantMsg )
-    {//check instant msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum>0)
-        {
-            s16MsgSlotIdx = _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst;
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+    if (bInstantMsg) {
+        //check instant msg:
+        if (pMsgQmgr->u16InstantMsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16InstantMsgFirst;
             _MDrv_MSGPOOL_GetMsgFromPoolItem(s16MsgSlotIdx, pMsg);
 
             _infoLatestMSGP.bInstantMsg=bInstantMsg;
@@ -774,17 +874,13 @@ MSGPOOL_Result MDrv_MSGQ_CheckMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bIns
             _infoLatestMSGP.s16MsgSlotIdx=s16MsgSlotIdx;
 
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
-    }
-    else
-    {//check normal msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum>0)
-        {
-            s16MsgSlotIdx = _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst;
+    } else {
+        //check normal msg:
+        if (pMsgQmgr->u16MsgNum > 0) {
+            s16MsgSlotIdx = pMsgQmgr->s16MsgFirst;
             _MDrv_MSGPOOL_GetMsgFromPoolItem(s16MsgSlotIdx, pMsg);
 
             _infoLatestMSGP.bInstantMsg=bInstantMsg;
@@ -792,22 +888,16 @@ MSGPOOL_Result MDrv_MSGQ_CheckMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bIns
             _infoLatestMSGP.s16MsgSlotIdx=s16MsgSlotIdx;
 
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
     }
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<_msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_NORMAL;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) < pMsgQmgr->u16MsgQSize)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_NORMAL;
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<=0)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_EMPTY;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) <= 0)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
 
     return msgPoolResult;
 }
@@ -819,56 +909,47 @@ MSGPOOL_Result MDrv_MSGQ_CheckMsg(MS_S16 s16MsgQIdx, MBX_Msg* pMsg, MS_BOOL bIns
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_RemoveLatestMsg(void)
+MSGPOOL_Result MDrv_MSGQ_RemoveLatestMsg(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier)
 {
     MS_S16 s16MsgSlotIdx, s16MsgQIdx;
     MS_BOOL bInstantMsg;
     MSGPOOL_Result msgPoolResult;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
-    s16MsgQIdx=_infoLatestMSGP.s16MsgQIdx;
-    bInstantMsg=_infoLatestMSGP.bInstantMsg;
-    s16MsgSlotIdx=_infoLatestMSGP.s16MsgSlotIdx;
-    if(bInstantMsg )
-    {//check instant msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum>0)
-        {
-            _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
+    s16MsgQIdx = _infoLatestMSGP.s16MsgQIdx;
+    bInstantMsg = _infoLatestMSGP.bInstantMsg;
+    s16MsgSlotIdx = _infoLatestMSGP.s16MsgSlotIdx;
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+
+    if (bInstantMsg) {
+        //check instant msg:
+        if (pMsgQmgr->u16InstantMsgNum > 0) {
+            pMsgQmgr->s16InstantMsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
             _MDrv_MSGPOOL_FreeSlot(s16MsgSlotIdx);
-            _msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum--;
-
+            pMsgQmgr->u16InstantMsgNum--;
 
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
-    }
-    else
-    {//check normal msg:
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum>0)
-        {
-            _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
+    } else {
+        //check normal msg:
+        if (pMsgQmgr->u16MsgNum > 0) {
+            pMsgQmgr->s16MsgFirst = _MDrv_MSGPOOL_GetNextSlot(s16MsgSlotIdx);
             _MDrv_MSGPOOL_FreeSlot(s16MsgSlotIdx);
-            _msgQMgrMSGQ[s16MsgQIdx].u16MsgNum--;
+            pMsgQmgr->u16MsgNum--;
 
             msgPoolResult = E_MSGPOOL_SUCCESS;
-        }
-        else
-        {
+        } else {
             msgPoolResult = E_MSGPOOL_ERR_NO_MORE_MSG;
         }
     }
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<_msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_NORMAL;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) < pMsgQmgr->u16MsgQSize)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_NORMAL;
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum)<=0)
-    {
-        _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_EMPTY;
-    }
+    if ((pMsgQmgr->u16InstantMsgNum + pMsgQmgr->u16MsgNum) <= 0)
+        pMsgQmgr->u16MsgQStatus = E_MSGQ_EMPTY;
 
     return msgPoolResult;
 }
@@ -881,9 +962,13 @@ MSGPOOL_Result MDrv_MSGQ_RemoveLatestMsg(void)
 /// @attention
 /// <b>[OBAMA] <em> </em></b>
 //-------------------------------------------------------------------------------------------------
-MS_S16 MDrv_MSGQ_GetNextMsgQ(MS_S16 s16MsgQIdx)
+MS_S16 MDrv_MSGQ_GetNextMsgQ(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx)
 {
-    return _msgQMgrMSGQ[s16MsgQIdx].s16NextMsgQ;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
+
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+
+    return pMsgQmgr->s16NextMsgQ;
 }
 
 //-------------------------------------------------------------------------------------------------
@@ -895,64 +980,53 @@ MS_S16 MDrv_MSGQ_GetNextMsgQ(MS_S16 s16MsgQIdx)
 /// @attention
 /// <b>[OBAMA] <em>Use spin lock to protect co-access</em></b>
 //-------------------------------------------------------------------------------------------------
-MSGPOOL_Result MDrv_MSGQ_AddMSG(MBX_Msg* pMbxMsg)
+MSGPOOL_Result MDrv_MSGQ_AddMSG(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MBX_Msg* pMbxMsg, MS_U16 u16MsgID)
 {
     MS_S16 s16MsgItemIdx = -1;
     MS_S16 s16MsgQIdx = pMbxMsg->u8MsgClass;
     MS_U32 flags;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
 
-    if((_msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus == E_MSGQ_INVALID))
-    {
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+
+    if ((pMsgQmgr->u16MsgQStatus == E_MSGQ_INVALID))
         return E_MSGPOOL_ERR_NOT_INITIALIZED;
-    }
 
-    if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus == E_MSGQ_OVERFLOW)
-    {
+    if (pMsgQmgr->u16MsgQStatus == E_MSGQ_OVERFLOW)
         return E_MSGPOOL_ERR_NO_MORE_MEMORY;
-    }
 
     spin_lock_irqsave(&lock, flags);
-    if(_MDrv_MSGPOOL_AllocateSlot(&s16MsgItemIdx) == E_MSGPOOL_SUCCESS)
-    {
-        _MDrv_MSGPOOL_SetMsgToPoolItem(s16MsgItemIdx, pMbxMsg);
-        if(pMbxMsg->eMsgType == E_MBX_MSG_TYPE_INSTANT)
-        {
-            if(_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum > 0)
-            {
-                _MDrv_MSGPOOL_SetNextSlot(_msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgEnd,s16MsgItemIdx);
-                _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgEnd = s16MsgItemIdx;
-            }
-            else
-            {
-                _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgFirst = _msgQMgrMSGQ[s16MsgQIdx].s16InstantMsgEnd = s16MsgItemIdx;
+    if (_MDrv_MSGPOOL_AllocateSlot(&s16MsgItemIdx) == E_MSGPOOL_SUCCESS) {
+        _MDrv_MSGPOOL_SetMsgToPoolItem(s16MsgItemIdx, pMbxMsg, u16MsgID);
+        if (pMbxMsg->eMsgType == E_MBX_MSG_TYPE_INSTANT) {
+            if (pMsgQmgr->u16InstantMsgNum > 0) {
+                _MDrv_MSGPOOL_SetNextSlot(pMsgQmgr->s16InstantMsgEnd, s16MsgItemIdx);
+                pMsgQmgr->s16InstantMsgEnd = s16MsgItemIdx;
+            } else {
+                pMsgQmgr->s16InstantMsgFirst
+                    = pMsgQmgr->s16InstantMsgEnd
+                    = s16MsgItemIdx;
             }
 
-            _msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum++;
-        }
-        else
-        {
-            if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum > 0)
-            {
-                _MDrv_MSGPOOL_SetNextSlot(_msgQMgrMSGQ[s16MsgQIdx].s16MsgEnd,s16MsgItemIdx);
-                _msgQMgrMSGQ[s16MsgQIdx].s16MsgEnd = s16MsgItemIdx;
-            }
-            else
-            {
-                _msgQMgrMSGQ[s16MsgQIdx].s16MsgFirst= _msgQMgrMSGQ[s16MsgQIdx].s16MsgEnd = s16MsgItemIdx;
+            pMsgQmgr->u16InstantMsgNum++;
+        } else {
+            if (pMsgQmgr->u16MsgNum > 0) {
+                _MDrv_MSGPOOL_SetNextSlot(pMsgQmgr->s16MsgEnd, s16MsgItemIdx);
+                pMsgQmgr->s16MsgEnd = s16MsgItemIdx;
+            } else {
+                pMsgQmgr->s16MsgFirst
+                    = pMsgQmgr->s16MsgEnd
+                    = s16MsgItemIdx;
             }
 
-            _msgQMgrMSGQ[s16MsgQIdx].u16MsgNum++;
+            pMsgQmgr->u16MsgNum++;
         }
 
-        if(_msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus == E_MSGQ_EMPTY)
-        {
-            _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_NORMAL;
-        }
+        if (pMsgQmgr->u16MsgQStatus == E_MSGQ_EMPTY)
+            pMsgQmgr->u16MsgQStatus = E_MSGQ_NORMAL;
 
-        if((_msgQMgrMSGQ[s16MsgQIdx].u16MsgNum+_msgQMgrMSGQ[s16MsgQIdx].u16InstantMsgNum)>=_msgQMgrMSGQ[s16MsgQIdx].u16MsgQSize)
-        {
-            _msgQMgrMSGQ[s16MsgQIdx].u16MsgQStatus = E_MSGQ_OVERFLOW;
-        }
+        if ((pMsgQmgr->u16MsgNum + pMsgQmgr->u16InstantMsgNum) >= pMsgQmgr->u16MsgQSize)
+            pMsgQmgr->u16MsgQStatus = E_MSGQ_OVERFLOW;
 
         spin_unlock_irqrestore(&lock, flags);
         return E_MSGPOOL_SUCCESS;
@@ -969,7 +1043,27 @@ MSGPOOL_Result MDrv_MSGQ_AddMSG(MBX_Msg* pMbxMsg)
 /// @attention
 /// <b>[OBAMA] <em></em></b>
 //-------------------------------------------------------------------------------------------------
-MS_S16 MDrv_MSGQ_GetNotiferIDByQID(MS_S16 s16MsgQIdx)
+MS_S16 MDrv_MSGQ_GetNotiferIDByQID(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx)
 {
-    return _msgQMgrMSGQ[s16MsgQIdx].s16MsgQNotifierID;
+    MSGPOOL_MsgQMgr *pMsgQmgr;
+
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+
+    return pMsgQmgr->s16MsgQNotifierID;
+}
+
+//-------------------------------------------------------------------------------------------------
+/// get NotifierID by msg Q ID
+/// @param  s16MsgQIdx                  \b IN: the msg q id
+/// @return void
+/// @attention
+/// <b>[OBAMA] <em></em></b>
+//-------------------------------------------------------------------------------------------------
+MS_U16 MDrv_MSGQ_GetQStatusByQID(MBX_ASYNC_NOTIFIER *pMbxAsyncNotifier, MS_S16 s16MsgQIdx)
+{
+    MSGPOOL_MsgQMgr *pMsgQmgr;
+
+    pMsgQmgr = &(pMbxAsyncNotifier->msgQmgr[s16MsgQIdx]);
+
+    return pMsgQmgr->u16MsgQStatus;
 }

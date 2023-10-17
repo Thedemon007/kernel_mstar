@@ -58,20 +58,33 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/delay.h>
-#include <linux/slab.h>
 
 #include <mstar/mstar_chip.h>
 #include <linux/thermal.h>
 #include <linux/cpufreq.h>
 #include <linux/cpu_cooling.h>
 #include <linux/module.h>
+#include <linux/version.h>
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+#if defined(CONFIG_ENERGY_MODEL)
+#include <linux/energy_model.h>
+#endif
+#endif
+
+#include <linux/pm_opp.h>
+#include <linux/cpu.h>
 
 #include <linux/fs.h>
 #include <asm/segment.h>
 #include <asm/uaccess.h>
 #include <linux/buffer_head.h>
+#ifdef CONFIG_AMAZON_SIGN_OF_LIFE
+#include <linux/sign_of_life.h>
+#endif
 
 #include "mdrv_dvfs.h"
+#include "mdrv_CPU_cluster_calibrating.h"
 
 #ifndef __MHAL_DVFS_H__
 #include "mhal_dvfs.h"
@@ -93,19 +106,19 @@
 
 #include <linux/slab.h>
 
-#ifdef CONFIG_AMAZON_SIGN_OF_LIFE
-#include <linux/metricslog.h>
-#include <linux/sign_of_life.h>
-#endif
+extern struct mstar_cpufreq_policy ondemand_timer[CONFIG_NR_CPUS];
+
 DEFINE_MUTEX(MDrvDvfsCpuTempMutex);
 DEFINE_MUTEX(MHalDvfsGetCpuFreqMutex);
 DEFINE_MUTEX(MHalDvfsWriteMutex);
+DEFINE_MUTEX(MHalDvfsInitMutex);
 
 static struct file *gFile = NULL;
 static loff_t gPos;
 static char gDVFS_BUFFER[100];
 static mm_segment_t gFS;
 static int gBeClosed = 1;
+
 
 extern unsigned int get_cpu_midr(int cpu);
 #define CONFIG_DVFS_CPU_CLOCK_DISPLAY_ENABLE 1
@@ -116,57 +129,11 @@ static U32 gDVFS_TEMP_OFFSET = 0;
 int halTotalClusterNumber;
 
 static U32 gDVFS_auto_measurement=0;
-static U16 pre_dvfs_state = CONFIG_DVFS_CORNER_CHIP_UNKNOWN;
 static U16 u16CpuClockSet[DVFS_CLUSTER_NUM];
 static volatile MSTAR_DVFS_REG_INFO *DvfsRegInfo = 0;
 static U32 u32DefaultClock = 0;
-static struct platform_device mstar_dvfs_dev = {
-    .name   = "mstar_dvfs",
-    .id     = 0,
-};
-#define DVFS_HAL_TOTAL_CLUSTER_NUM  (sizeof(hMstarDvfsInfo)/sizeof(MSTAR_DVFS_INFO))
-//=================================================================================================
 
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-#define NORMAL_THERMAL_REPORT_INTERVAL_MINS 60
-#define OVER_TEMP_THERMAL_REPORT_INTERVAL_MINS 5
-#define METRICS_BUF_SIZE 512
-static U32 prev_mode;
-static struct timespec last_reported_time;
-static struct timespec curr_time;
-static temp_log_metrics(S32 temperature, U32 mode, U8 type)
-{
-	char buf[512];
-	char mode_name[32];
-	int throttling_state = 0;
-	if (type == 0) {
-		switch (mode) {
-		case CONFIG_DVFS_INIT_MODE:
-			snprintf(mode_name, sizeof(mode_name), "%s", "DVFS_INIT_MODE");
-			break;
-		case CONFIG_DVFS_FREEZE_MODE:
-			snprintf(mode_name, sizeof(mode_name), "%s", "DVFS_FREEZE_MODE");
-			break;
-		case CONFIG_DVFS_NORMAL_MODE:
-			snprintf(mode_name, sizeof(mode_name), "%s", "DVFS_NORMAL_MODE");
-			break;
-		case CONFIG_DVFS_OVER_TEMPERATURE_MODE:
-			snprintf(mode_name, sizeof(mode_name), "%s", "DVFS_OVER_TEMPERATURE_MODE");
-			throttling_state = 1;
-			break;
-		default:
-			snprintf(mode_name, sizeof(mode_name), "%s", "unknown mode");
-			break;
-		}
-		snprintf(buf, sizeof(buf),
-			 "Thermal:def:Throttle %s_trip%d temperature=%d;CT;1:NR",
-			 mode_name, throttling_state, temperature);
-	} else
-		snprintf(buf, sizeof(buf),
-			 "Thermal:def:Shutdown SOC_Overheated_Thermal_Shutdown temperature = %d;CT;1:NR", temperature);
-	log_to_metrics(ANDROID_LOG_INFO, "ThermalEvent", buf);
-}
-#endif
+#define DVFS_HAL_TOTAL_CLUSTER_NUM  (sizeof(hMstarDvfsInfo)/sizeof(MSTAR_DVFS_INFO))
 
 int MHalDvfsSetStatus(unsigned int status, unsigned int cpu)
 {
@@ -420,18 +387,6 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
         }
         else if(DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state == CONFIG_DVFS_OVER_TEMPERATURE_MODE)
         {
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		struct timespec delta_time;
-		char buf[METRICS_BUF_SIZE];
-		getnstimeofday(&curr_time);
-		delta_time = timespec_sub(curr_time, last_reported_time);
-		if (abs(delta_time.tv_sec) >= OVER_TEMP_THERMAL_REPORT_INTERVAL_MINS*60) {
-			snprintf(buf, sizeof(buf), "thermzone:def:soc=%d;CT;1;NR",
-				 hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-			log_to_metrics(ANDROID_LOG_INFO, "ThermalEvent", buf);
-			last_reported_time = curr_time;
-		}
-#endif
             //Over-Temperature Mode
             if(hMstarDvfsInfo[dwCluster].dwCpuTemperature >
                hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsTemperatureInfo.dwMaxLevelTemperature)
@@ -441,29 +396,18 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
                 {
                     DVFS_HAL_DEBUG("\033[1;31m[DVFS] Over Temperature Protection: Count = %d / Temperature = %d\033[0m\n",
                         (unsigned int) hMstarDvfsInfo[dwCluster].dwResetCounter, (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		    if (prev_mode != CONFIG_DVFS_OVER_TEMPERATURE_MODE) {
-			    temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			    prev_mode = DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state;
-		    }
-#endif
                     hMstarDvfsInfo[dwCluster].dwResetCounter ++;
 
                 }
                 else
                 {
-			pr_err("\033[1;31m[DVFS] Current Temperature: %d\033[0m\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-			pr_err("\033[1;31m[DVFS] Over Temperature Mode: SYSTEM RESET\033[0m\n");
+                    DVFS_HAL_INFO("\033[1;31m[DVFS] Current Temperature: %d\033[0m\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
+                    DVFS_HAL_INFO("\033[1;31m[DVFS] Over Temperature Mode: SYSTEM RESET\033[0m\n");
 
 #ifdef CONFIG_AMAZON_SIGN_OF_LIFE
-			pr_err("Over temperature %d, Reboot System!!! \n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-			life_cycle_set_boot_reason(WARMBOOT_BY_SOC_OVER_TEMP);
+		    pr_err("Over temperature %d, Reboot System!!! \n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
+		    life_cycle_set_boot_reason(WARMBOOT_BY_SOC_OVER_TEMP);
 #endif
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, 0, 1);
-#endif
-
-
                     //Trigger a WDT Reset
                     MHalDvfsRegisterWrite(0x00300a,0x00);
                     MHalDvfsRegisterWrite(0x003008,0x00);
@@ -492,12 +436,6 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
                 //Keep at Over-Temperature Mode
                 hMstarDvfsInfo[dwCluster].dwOverTemperatureFlag = 1;
                 DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_OVER_TEMPERATURE_MODE;
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		if (prev_mode != CONFIG_DVFS_OVER_TEMPERATURE_MODE) {
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			prev_mode = CONFIG_DVFS_OVER_TEMPERATURE_MODE;
-		}
-#endif
 
                 DVFS_HAL_DEBUG("\033[1;31m[DVFS] Current Temperature: %d\033[0m\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
                 DVFS_HAL_DEBUG("\033[1;31m[DVFS] Over-Temperature Mode: CPU Clock: %dMHz\033[0m\n", hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock);
@@ -516,12 +454,6 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
             {
                 //Return to Normal Mode
                 DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_NORMAL_MODE;
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		if (prev_mode != CONFIG_DVFS_NORMAL_MODE) {
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			prev_mode = CONFIG_DVFS_NORMAL_MODE;
-		}
-#endif
 
                 DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
                 DVFS_HAL_DEBUG("[DVFS] Normal Mode: CPU Clock: %dMHz\n", dwCpuClock);
@@ -530,12 +462,6 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
             {
                 //Keep at Freeze Mode
                 DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_FREEZE_MODE;
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		if (prev_mode != CONFIG_DVFS_FREEZE_MODE) {
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			prev_mode = CONFIG_DVFS_FREEZE_MODE;
-		}
-#endif
 
                 DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
                 DVFS_HAL_DEBUG("[DVFS] Freeze Mode: CPU Clock: %dMHz\n", dwCpuClock);
@@ -548,30 +474,12 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
         }
         else
         {
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		struct timespec delta_time;
-		char buf[METRICS_BUF_SIZE];
-		getnstimeofday(&curr_time);
-		delta_time = timespec_sub(curr_time, last_reported_time);
-		if (abs(delta_time.tv_sec) >= NORMAL_THERMAL_REPORT_INTERVAL_MINS*60) {
-			snprintf(buf, sizeof(buf), "thermzone:def:soc=%d;CT;1;NR",
-				 hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-			log_to_metrics(ANDROID_LOG_INFO, "ThermalEvent", buf);
-			last_reported_time = curr_time;
-		}
-#endif
             //Normal Mode
             if(hMstarDvfsInfo[dwCluster].dwCpuTemperature >=
                hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsTemperatureInfo.dwUpperLevelTemperature)
             {
                 //Change to Over-Temperature Mode
                 DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_OVER_TEMPERATURE_MODE;
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		if (prev_mode != CONFIG_DVFS_OVER_TEMPERATURE_MODE) {
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			prev_mode = CONFIG_DVFS_OVER_TEMPERATURE_MODE;
-		}
-#endif
 
                 DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
                 DVFS_HAL_DEBUG("[DVFS] Over-Temperature Mode: CPU Clock: %dMHz\n", hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock);
@@ -585,12 +493,7 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
             {
                 //Change to Freeze Mode
                 DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_FREEZE_MODE;
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		if (prev_mode != CONFIG_DVFS_FREEZE_MODE) {
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			prev_mode = CONFIG_DVFS_FREEZE_MODE;
-		}
-#endif
+
                 DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
                 DVFS_HAL_DEBUG("[DVFS] Freeze Mode: CPU Clock: %dMHz\n", dwCpuClock);
 
@@ -599,71 +502,20 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
             }
             else
             {
-                if(DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk != CONFIG_DVFS_DYNAMIC_CLOCK_ADJUST_INIT)
-                {
-                    U32 dwRegisterValue = 0;
-                    dwRegisterValue = DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk;
+                U32 dwClockLevel = 0;
+                //Keep at Normal Mode
+                DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_NORMAL_MODE;
 
-                    if((dwRegisterValue >= hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwMinimumCpuClock) && \
-                            (dwRegisterValue <= hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwMaximumCpuClock))
-                    {
-                        //Special Clock Mode
-                        DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_SPECIAL_CLOCK_MODE;
+                dwClockLevel = MHalDvfsSearchCpuClockLevel(dwCpuClock, dwCpu);
+                DVFS_HAL_DEBUG("[DVFS] dwClockLevel: %d dwCpuClock: %d \n", dwClockLevel, dwCpuClock);
+                DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
+                DVFS_HAL_DEBUG("[DVFS] Normal Mode: CPU Clock: %dMHz\n", hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock);
 
-                        DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-                        DVFS_HAL_DEBUG("[DVFS] Special Clock Mode: CPU Clock: %dMHz\n", dwRegisterValue);
+                MHalDvfsCpuClockAdjustment(hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock, dwCpu);
 
-                        MHalDvfsCpuClockAdjustment(dwRegisterValue, dwCpu);
+                DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk = CONFIG_DVFS_DYNAMIC_CLOCK_ADJUST_INIT;
+                hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock;
 
-                        DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk = CONFIG_DVFS_DYNAMIC_CLOCK_ADJUST_INIT;
-                        hMstarDvfsInfo[dwCluster].dwFinalCpuClock = dwRegisterValue;
-                    }
-                    else
-                    {
-                        U32 dwClockLevel = 0;
-                        //Return to  Normal Mode
-                        DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_NORMAL_MODE;
-
-                        dwClockLevel = MHalDvfsSearchCpuClockLevel(dwCpuClock, dwCpu);
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-			if (prev_mode != CONFIG_DVFS_NORMAL_MODE) {
-				temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-				prev_mode = CONFIG_DVFS_NORMAL_MODE;
-			}
-#endif
-                        //DVFS_HAL_DEBUG("[DVFS] dwClockLevel: %d dwCpuClock: %d \n", dwClockLevel, dwCpuClock);
-                        DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-                        DVFS_HAL_DEBUG("[DVFS] Normal Mode: CPU Clock: %dMHz\n", hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock);
-
-
-                        MHalDvfsCpuClockAdjustment(hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock, dwCpu);
-
-                        DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk = CONFIG_DVFS_DYNAMIC_CLOCK_ADJUST_INIT;
-                        hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock;
-                    }
-                }
-                else
-                {
-                    U32 dwClockLevel = 0;
-                    //Keep at Normal Mode
-                    DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state = CONFIG_DVFS_NORMAL_MODE;
-
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-		    if (prev_mode != CONFIG_DVFS_NORMAL_MODE) {
-			    temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-			    prev_mode = CONFIG_DVFS_NORMAL_MODE;
-		    }
-#endif
-                    dwClockLevel = MHalDvfsSearchCpuClockLevel(dwCpuClock, dwCpu);
-                    DVFS_HAL_DEBUG("[DVFS] dwClockLevel: %d dwCpuClock: %d \n", dwClockLevel, dwCpuClock);
-                    DVFS_HAL_DEBUG("[DVFS] Current Temperature: %d\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-                    DVFS_HAL_DEBUG("[DVFS] Normal Mode: CPU Clock: %dMHz\n", hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock);
-
-                    MHalDvfsCpuClockAdjustment(hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock, dwCpu);
-
-                    DvfsRegInfo->dvfs_reg[dwCluster].reg_special_cpu_clk = CONFIG_DVFS_DYNAMIC_CLOCK_ADJUST_INIT;
-                    hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwClockLevel].DvfsCpuInfo.dwLowerCpuClock;
-                }
             }
         }
 
@@ -677,24 +529,15 @@ U32 MHalDvfsProc(U32 dwCpuClock, U8 dwCpu)
 
 _MHalDvfsProcExit:
 
-    DVFS_HAL_DEBUG("[DVFS] Current DVFS State: %d\n", (unsigned int) DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    char data[25];
-    char *envp[] = {data, NULL};
-    bool stateChanged = (pre_dvfs_state != DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    bool stateWatched = (CONFIG_DVFS_NORMAL_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state
-		 || CONFIG_DVFS_OVER_TEMPERATURE_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    if (stateChanged && stateWatched) {
-	pre_dvfs_state = DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state;
-	int thermalStateValue = (CONFIG_DVFS_NORMAL_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state) ? 0 : 1;
-	snprintf(data, sizeof(data), "THERMAL_STATE=%d", thermalStateValue);
-	kobject_uevent_env(&mstar_dvfs_dev.dev.kobj, KOBJ_CHANGE, envp);
-	pr_debug("[DVFS] DVFS Thermal State change (%d)\n", thermalStateValue);
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-	temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-	prev_mode = pre_dvfs_state;
-#endif
-     }
-    DVFS_HAL_DEBUG("[DVFS] hMstarDvfsInfo[%d].dwFinalCpuClock: %d\n", dwCluster, hMstarDvfsInfo[dwCluster].dwFinalCpuClock);
+    if (hMstarDvfsInfo[dwCluster].dwFinalCpuClock == 0)
+    {
+        DVFS_HAL_DEBUG("[DVFS] Current DVFS State: %d\n", (unsigned int) DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
+        DVFS_HAL_DEBUG("[DVFS] hMstarDvfsInfo[%d].dwFinalCpuClock: %d\n", dwCluster, hMstarDvfsInfo[dwCluster].dwFinalCpuClock);
+    }
+    else
+    {
+        hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsInitModeInfo.DvfsCpuInfo.dwLowerCpuClock;
+    }
 
     return hMstarDvfsInfo[dwCluster].dwFinalCpuClock;
 }
@@ -707,6 +550,14 @@ U32 MHalDvfsInit(U8 dwCluster)
     if(DvfsRegInfo == NULL)
     {
         DvfsRegInfo = (volatile MSTAR_DVFS_REG_INFO *)(CONFIG_REGISTER_BASE_ADDRESS + (DVFS_REG_BANK << 1));
+    }
+
+    mutex_lock(&MHalDvfsInitMutex);
+
+    if (hMstarDvfsInfo[dwCluster].bDvfsInitOk == 1)
+    {
+        mutex_unlock(&MHalDvfsInitMutex);
+        return bDvfsInitStatus;
     }
 
     MHalDvfsRegisterWrite_ClearBit((hMstarDvfsInfo[dwCluster].dwAnaMiscBank + 0xb2),DVFS_BIT0);
@@ -748,7 +599,7 @@ U32 MHalDvfsInit(U8 dwCluster)
 #else
     hMstarDvfsInfo[dwCluster].bDvfsInitOk = 1;
 #endif
-
+    mutex_unlock(&MHalDvfsInitMutex);
     return bDvfsInitStatus;
 }
 
@@ -816,7 +667,7 @@ int MHalDvfsCpuDisplay(U8 dwCluster)
             }
         }
     }
-    DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_cpu_clock = dwRegisterValue;
+    //DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_cpu_clock = dwRegisterValue;
 
     DVFS_HAL_DEBUG("[DVFS] CPU Clock: %dMHz\n", (unsigned int) dwRegisterValue);
 #endif
@@ -922,7 +773,7 @@ void MHalDvfsCpuClockAdjustment(U32 dwCpuClock, U8 dwCpu)
         mutex_lock(&MHalDvfsWriteMutex);
         if (!gBeClosed)
         {
-            snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|cpu = %d|state = %d\0",dwCpu,DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
+            snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|cpu = %d|state = %d%c",dwCpu,DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state, '\0');
             vfs_write(gFile, gDVFS_BUFFER, strlen(gDVFS_BUFFER), &gPos);
         }
         mutex_unlock(&MHalDvfsWriteMutex);
@@ -941,7 +792,7 @@ void MHalDvfsCpuClockAdjustment(U32 dwCpuClock, U8 dwCpu)
             mutex_lock(&MHalDvfsWriteMutex);
             if (!gBeClosed)
             {
-                snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|clock = %d\0",dwCpuClock);
+                snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|clock = %d%c",dwCpuClock, '\0');
                 vfs_write(gFile, gDVFS_BUFFER, strlen(gDVFS_BUFFER), &gPos);
             }
             mutex_unlock(&MHalDvfsWriteMutex);
@@ -1028,7 +879,7 @@ void MHalDvfsCpuClockAdjustment(U32 dwCpuClock, U8 dwCpu)
         mutex_lock(&MHalDvfsWriteMutex);
         if (!gBeClosed)
         {
-            snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"\n\0");
+            snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"\n%c", '\0');
             vfs_write(gFile, gDVFS_BUFFER, strlen(gDVFS_BUFFER), &gPos);
         }
         mutex_unlock(&MHalDvfsWriteMutex);
@@ -1177,7 +1028,7 @@ void MHalDvfsCpuPowerAdjustment(U32 dwCpuPowerVoltage, U8 dwCpu)
             mutex_lock(&MHalDvfsWriteMutex);
             if (!gBeClosed)
             {
-                snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|voltage = %d\0",dwCpuPowerVoltage);
+                snprintf(gDVFS_BUFFER,sizeof(gDVFS_BUFFER),"|voltage = %d%c",dwCpuPowerVoltage, '\0');
                 vfs_write(gFile, gDVFS_BUFFER, strlen(gDVFS_BUFFER), &gPos);
             }
             mutex_unlock(&MHalDvfsWriteMutex);
@@ -1306,15 +1157,12 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
                     else
                     {
                         //Maximum Level Threshold Temperature in Over-Temperature Mode
-			pr_err("\033[1;31m[DVFS] Current Temperature: %d\033[0m\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
-			pr_err("\033[1;31m[DVFS] Over Temperature Mode: SYSTEM RESET\033[0m\n");
+                        DVFS_HAL_INFO("\033[1;31m[DVFS] Current Temperature: %d\033[0m\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
+                        DVFS_HAL_INFO("\033[1;31m[DVFS] Over Temperature Mode: SYSTEM RESET\033[0m\n");
 
 #ifdef CONFIG_AMAZON_SIGN_OF_LIFE
 			pr_err("Over temperature %d, Reboot System!!! \n", (unsigned int) hMstarDvfsInfo[dwCluster].dwCpuTemperature);
 			life_cycle_set_boot_reason(WARMBOOT_BY_SOC_OVER_TEMP);
-#endif
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-			temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, 0, 1);
 #endif
                         //Trigger a WDT Reset
                         MHalDvfsRegisterWrite(0x00300a,0x00);
@@ -1372,6 +1220,8 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
 
                         hMstarDvfsInfo[dwCluster].bDvfsModeChange = 1;
                         hMstarDvfsInfo[dwCluster].dwTemperatureCounter = 0;
+                        MHalDvfsCpuClockAdjustment(hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock, dwCpu);
+                        hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock;
                     }
 
                     hMstarDvfsInfo[dwCluster].dwBootTimeCounter = 0;
@@ -1428,7 +1278,7 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
                 }
                 else
                 {
-                    hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwMaximumCpuClock;
+                    hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwIRBoostCpuClock;
                 }
             }
             else if((DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state == CONFIG_DVFS_NORMAL_MODE) || (DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state == CONFIG_DVFS_SPECIAL_CLOCK_MODE))
@@ -1450,6 +1300,8 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
                         DVFS_HAL_DEBUG("[DVFS] Over Temperature Mode, Support CPU Clock: %dMHz\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature);
 
                         hMstarDvfsInfo[dwCluster].dwTemperatureCounter = 0;
+                        MHalDvfsCpuClockAdjustment(hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock, dwCpu);
+                        hMstarDvfsInfo[dwCluster].dwFinalCpuClock = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwProtectedCpuClock;
                     }
                 }
                 else if((hMstarDvfsInfo[dwCluster].dwCpuTemperature < hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsTemperatureInfo.dwLowerFreezeTemperature) && \
@@ -1474,12 +1326,12 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
                 else
                 {
                     //Keep at Normal Mode
-                    hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwMaximumCpuClock;
+                    hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwIRBoostCpuClock;
                 }
             }
             else
             {
-                hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwMaximumCpuClock;
+                hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsSysInfo.dwIRBoostCpuClock;
             }
         }
     }
@@ -1487,22 +1339,6 @@ U32 MHalDvfsQueryCpuClockByTemperature(U8 dwCpu)
 _MHalDvfsQueryCpuClockByTemperatureExit:
 
     DVFS_HAL_DEBUG("[DVFS] Current DVFS State: %d\n", (unsigned int) DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    char data[25];
-    char *envp[] = {data, NULL};
-    bool stateChanged = (pre_dvfs_state != DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    bool stateWatched = (CONFIG_DVFS_NORMAL_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state
-		 || CONFIG_DVFS_OVER_TEMPERATURE_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state);
-    if (stateChanged && stateWatched) {
-	pre_dvfs_state = DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state;
-	int thermalStateValue = (CONFIG_DVFS_NORMAL_MODE == DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_dvfs_state) ? 0 : 1;
-	snprintf(data, sizeof(data), "THERMAL_STATE=%d", thermalStateValue);
-	kobject_uevent_env(&mstar_dvfs_dev.dev.kobj, KOBJ_CHANGE, envp);
-	pr_debug("[DVFS] DVFS Thermal State change (%d)\n", thermalStateValue);
-#if defined(CONFIG_AMAZON_METRICS_LOG)
-	temp_log_metrics(hMstarDvfsInfo[dwCluster].dwCpuTemperature, prev_mode, 0);
-	prev_mode = pre_dvfs_state;
-#endif
-    }
     DVFS_HAL_DEBUG("[DVFS] Current Valid CPU Clock: %dMHz\n", (unsigned int) hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature);
 
     return hMstarDvfsInfo[dwCluster].dwMaxCpuClockByTemperature;
@@ -1550,14 +1386,7 @@ U32 MHalDvfsGetCpuTemperature(U8 dwCpu)
     {
         DvfsRegInfo = (volatile MSTAR_DVFS_REG_INFO *)(CONFIG_REGISTER_BASE_ADDRESS + (DVFS_REG_BANK << 1));
     }
-
-	// temperature is updated by dvfs once a second in Mdrv_CPU_T_sensor_Check_callback()
-	// Here update temperature only if the cached value is not valid
-	if (hMstarDvfsInfo[dwCluster].dwCpuTemperature >
-		hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsTemperatureInfo.dwUpperLevelTemperature){
-		MHalDvfsCpuTemperature(dwCluster);
-	}
-
+    MHalDvfsCpuTemperature(dwCluster);
     DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_cpu_temp = hMstarDvfsInfo[dwCluster].dwCpuTemperature;
     return DvfsRegInfo->dvfs_reg[dwCluster].reg_cur_cpu_temp;
 }
@@ -1673,14 +1502,14 @@ void MHalDvfsGetDvfsTable(U8 dwCpu, dvfs_opp_table *opp_table)
     // add over temperature mode in opp_table
     opp_table[dwCpu].per_cpu_table[0].clk = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsOverTemperatureModeInfo.DvfsCpuInfo.dwLowerCpuClock * 1000000;
     opp_table[dwCpu].per_cpu_table[0].volt = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsOverTemperatureModeInfo.DvfsPowerInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_cpu_pwr_type].dwCpuPower* 10000;
-    printk("opp_table[%d][%d].clk: %d  volt: %d \n", dwCpu, 0, opp_table[dwCpu].per_cpu_table[0].clk,opp_table[dwCpu].per_cpu_table[0].volt);
+    printk("opp_table[%d][%d].clk: %lu  volt: %lu \n", dwCpu, 0, opp_table[dwCpu].per_cpu_table[0].clk,opp_table[dwCpu].per_cpu_table[0].volt);
 
     // add normal mode in opp_table
     for (dwLoop = 1; dwLoop < CONFIG_DVFS_POWER_CTL_SEGMENT + 1; dwLoop++)
     {
         opp_table[dwCpu].per_cpu_table[dwLoop].clk = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwLoop-1].DvfsCpuInfo.dwLowerCpuClock * 1000000;
         opp_table[dwCpu].per_cpu_table[dwLoop].volt = hMstarDvfsInfo[dwCluster].DvfsModeInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_chip_package].DvfsNormalModeInfo[dwLoop-1].DvfsPowerInfo[DvfsRegInfo->dvfs_reg[dwCluster].reg_cpu_pwr_type].dwCpuPower * 10000;
-        printk("opp_table[%d][%d].clk: %d  volt: %d \n", dwCpu, dwLoop, opp_table[dwCpu].per_cpu_table[dwLoop].clk,opp_table[dwCpu].per_cpu_table[dwLoop].volt);
+        printk("opp_table[%d][%d].clk: %lu  volt: %lu \n", dwCpu, dwLoop, opp_table[dwCpu].per_cpu_table[dwLoop].clk,opp_table[dwCpu].per_cpu_table[dwLoop].volt);
     }
 }
 
@@ -1771,9 +1600,19 @@ void MHalDvfsCorePowerInit(U8 dwCluster)
 {
     //TBD
 }
-
 //=================================================================================================
-#ifdef CONFIG_THERMAL_GOV_POWER_ALLOCATOR
+void MHalDvfsGetTemperatureInfo(U8 dwCpu, DVFS_THERMAL_INFO *thermal_info)
+{
+   // not support
+}
+//=================================================================================================
+static struct platform_device mstar_dvfs_dev =
+{
+    .name   = "mstar_dvfs",
+    .id     = 0,
+};
+//=================================================================================================
+#if defined(CONFIG_THERMAL_GOV_STEP_WISE) || defined(CONFIG_THERMAL_GOV_POWER_ALLOCATOR)
 
 #define SOC_SENSOR "SENSOR_TEMP_SOC"
 enum cluster_type {
@@ -1856,6 +1695,62 @@ FF_power_table[POWER_TABLE_NUM_VOLT][POWER_TABLE_NUM_TEMP] = {
 
 };
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+#if defined(CONFIG_ENERGY_MODEL)
+int active_power(unsigned long *power, unsigned long *freq, int cpu)
+{
+    unsigned long MainCpu = getClusterMainCpu(cpu);
+    int i, ret = 0;
+    u32 freq_mhz, voltage_mv, num_opps;
+    u64 capacitance = 0;
+    u64 est_power;
+    struct dev_pm_opp *opp = NULL;
+
+    /* check cpu device */
+    struct device *dev = get_cpu_device(MainCpu);
+    if (!dev) {
+        pr_err("No cpu device for cpu %d\n",cpu);
+        return -1;
+    }
+    /* check opp table */
+    num_opps = dev_pm_opp_get_opp_count(dev);
+    if (num_opps <= 0) {
+        pr_err("size of opp table should not be zero\n");
+        return -1;
+    }
+    /* based corner chip type to set dynamic power coefficient */
+    if (DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 0 || DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 1)
+        capacitance = SS_cluster_data[i].dyn_coeff;
+    else
+        capacitance = FF_cluster_data[i].dyn_coeff;
+
+    rcu_read_lock();
+    *freq = (*freq) * 1000;
+    opp = dev_pm_opp_find_freq_ceil(dev, freq);
+    printk("[opp] freq from opp = %d Hz\n",*freq);
+
+    freq_mhz = (*freq) / 1000000;
+    voltage_mv = dev_pm_opp_get_voltage(opp) / 1000;
+    rcu_read_unlock();
+    /*
+     * Do the multiplication with MHz and millivolt so as
+     * to not overflow.
+     */
+    est_power = capacitance * freq_mhz * voltage_mv * voltage_mv;
+    do_div(est_power, 1000000000);
+
+    /* frequency is stored in power_table in KHz */
+    *freq = (*freq) / 1000;
+
+    /* power is stored in mW */
+    *power = est_power;
+
+    printk("[energy model] freq = %d KHz, power = %d mw\n",*freq, *power);
+    return 0;
+}
+#endif
+#endif
+
 static u32 interpolate(int value, const int *x, const unsigned int *y, int len)
 {
     u64 tmp64;
@@ -1888,7 +1783,7 @@ static u32 interpolate(int value, const int *x, const unsigned int *y, int len)
     return ret;
 }
 
-static int get_static_power(cpumask_t *cpumask, int interval,
+int get_static_power(cpumask_t *cpumask, int interval,
         unsigned long u_volt, u32 *power)
 {
     struct thermal_zone_device *tzd = mstar_temp_sensor.tzd;
@@ -1937,6 +1832,7 @@ static int get_static_power(cpumask_t *cpumask, int interval,
     do_div(*power, 1000);
     return 0;
 }
+EXPORT_SYMBOL(get_static_power);
 
 static int get_temp(void *data,int *temp)
 {
@@ -1964,6 +1860,11 @@ static int mstar_thermal_probe(struct platform_device *pdev)
     struct device_node *np;
     int cpu;
     int i, j;
+	struct thermal_cooling_device *cdev;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+    struct cpufreq_policy *policy;
+#endif
+
     if(DvfsRegInfo == NULL)
     {
         DvfsRegInfo = (volatile MSTAR_DVFS_REG_INFO *)(CONFIG_REGISTER_BASE_ADDRESS + (0x100500 << 1));
@@ -1994,21 +1895,46 @@ static int mstar_thermal_probe(struct platform_device *pdev)
             continue;
         }
 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+#if defined(CONFIG_ENERGY_MODEL)
+        struct em_data_callback energy_data;
+        energy_data.active_power = active_power;
+        if(em_register_perf_domain(&(sensor_data->cluster[i]),CONFIG_DVFS_POWER_CTL_SEGMENT,&energy_data))
+            printk("[energy model] register energy model fail\n");
+#endif
+#endif
+
         if (DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 0 || DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 1)// SS/TT Corner IC
-	{
+		{
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+            cdev = of_cpufreq_cooling_register(ondemand_timer[getClusterMainCpu(i)].policy);
+            if(cdev == NULL)
+                printk("[cooling device] register cooling device fail\n");
+            else
+                sensor_data->cdevs[j] = cdev;
+#else
             sensor_data->cdevs[j] =
             of_cpufreq_power_cooling_register(np,
                               &sensor_data->cluster[i],
                               SS_cluster_data[i].dyn_coeff,
                               get_static_power);
+#endif
         }
         else // FF Corner IC
-	{
+		{
+#if LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0)
+            cdev = of_cpufreq_cooling_register(ondemand_timer[getClusterMainCpu(i)].policy);
+            if(cdev == NULL)
+                printk("[cooling device] register cooling device fail\n");
+            else
+                sensor_data->cdevs[j] = cdev;
+#else
             sensor_data->cdevs[j] =
             of_cpufreq_power_cooling_register(np,
                               &sensor_data->cluster[i],
                               FF_cluster_data[i].dyn_coeff,
                               get_static_power);
+#endif
         }
 
         if (IS_ERR(sensor_data->cdevs[i])) {
@@ -2046,14 +1972,14 @@ static int mstar_thermal_remove(struct platform_device *pdev)
 }
 
 static struct of_device_id mstar_thermal_of_match[] = {
-    { .compatible = "mstar-thermal" },
+    { .compatible = "mtk-thermal" },
     {},
 };
 MODULE_DEVICE_TABLE(of, mstar_thermal_of_match);
 
 static struct platform_driver mstar_thermal_platdrv = {
     .driver = {
-        .name       = "mstar-thermal",
+        .name       = "mtk-thermal",
         .owner      = THIS_MODULE,
         .of_match_table = mstar_thermal_of_match,
     },
@@ -2110,15 +2036,15 @@ static int __init mstar_power_allocation_init(void)
     }
     if (DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 0)// SS Corner IC
     {
-        memcpy(vt_voltages,SS_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
+        memcpy((void*)vt_voltages,SS_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
     }
     else if (DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 1)// TT Corner IC
     {
-        memcpy(vt_voltages,TT_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
+        memcpy((void*)vt_voltages,TT_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
     }
     else if (DvfsRegInfo->dvfs_reg[0].reg_cpu_pwr_type == 2)// FF Corner IC
     {
-        memcpy(vt_voltages,FF_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
+        memcpy((void*)vt_voltages,FF_vt_voltages,sizeof(int)*POWER_TABLE_NUM_VOLT);
     }
     else
     {
@@ -2151,6 +2077,7 @@ static int mstar_dvfs_drv_suspend(struct device *dev)
 
     for (cluster = 0; cluster < DVFS_HAL_TOTAL_CLUSTER_NUM; cluster ++)
     {
+        hMstarDvfsInfo[cluster].bDvfsInitOk = 0;
         DvfsRegInfo->dvfs_reg[cluster].reg_vid_dvfs_id = 0;
     }
 #if defined(CONFIG_MSTAR_IIC) && defined(CONFIG_MSTAR_DVFS_KERNEL_IIC)
@@ -2262,7 +2189,7 @@ static void __init mstar_dvfs_exit(void)
     platform_device_unregister(&mstar_dvfs_dev);
     platform_driver_unregister(&mstar_dvfs_driver);
 }
-#ifdef CONFIG_THERMAL_GOV_POWER_ALLOCATOR
+#if defined(CONFIG_THERMAL_GOV_STEP_WISE) || defined(CONFIG_THERMAL_GOV_POWER_ALLOCATOR)
 late_initcall(mstar_power_allocation_init);
 #endif
 //i2c drive (Level 3) rmust earlier than dvfs driver

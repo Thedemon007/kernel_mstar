@@ -93,15 +93,8 @@
 #include <linux/compat.h>
 #endif
 
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-#include <linux/hw_breakpoint.h>
-#endif
 
-#if defined(CONFIG_MIPS)
-#include <asm/mips-boards/prom.h>
-#include "mdrv_cache.h"
-#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-#endif
+#include <internal.h>
 
 #include "mst_devid.h"
 #include "mdrv_mpool.h"
@@ -122,9 +115,6 @@
 //-------------------------------------------------------------------------------------------------
 //  Global variables
 //-------------------------------------------------------------------------------------------------
-#if defined(CONFIG_MIPS)
-unsigned int bMPoolInit = 0;
-#endif
 //-------------------------------------------------------------------------------------------------
 //  Local Defines
 //-------------------------------------------------------------------------------------------------
@@ -136,14 +126,7 @@ unsigned int bMPoolInit = 0;
 #define KER_CACHEMODE_CACHE   1
 #define KER_CACHEMODE_UNCACHE_BUFFERABLE 2
 
-#if defined(CONFIG_MP_MMAP_MMAP_BOUNDARY_PROTECT)
-#define KER_CACHEMODE_TRAP                          3
-
-#define KER_CACHEMODE_UNCACHE_NONBUFFERABLE_PROTECT 4
-#define KER_CACHEMODE_CACHE_PROTECT                 5
-#define KER_CACHEMODE_UNCACHE_BUFFERABLE_PROTECT    6
-#endif
-
+#define REPAIR_PAGE_FAULT 0
 
 // Define MPOOL Device
 U32 linux_base;
@@ -153,7 +136,7 @@ U32 linux2_size;
 U32 emac_base;
 U32 emac_size;
 
-#if defined(CONFIG_ARM) || defined(CONFIG_MIPS)
+#if defined(CONFIG_ARM)
 typedef  struct
 {
    U32 mpool_base;
@@ -177,7 +160,6 @@ typedef  struct
    unsigned int u8MapCached;
    bool setflag;
 }MMAP_FileData;
-
 #endif
 
 //bool setflag;
@@ -248,7 +230,13 @@ static MPoolModHandle MPoolDev=
     },
 };
 
+static struct list_head mpool_mapping_range_list;
 
+struct mpool_allowed_range_info {
+	unsigned long allowed_bus_address_start;
+	unsigned long allowed_bus_address_end;
+	struct list_head list_node;
+};
 
 //-------------------------------------------------------------------------------------------------
 //  Debug Functions
@@ -258,26 +246,76 @@ static MPoolModHandle MPoolDev=
 //-------------------------------------------------------------------------------------------------
 //  Local Functions
 //-------------------------------------------------------------------------------------------------
+int add_mpool_allowed_range(unsigned long allowed_mapping_address_start, unsigned long allowed_mapping_size)
+{
+	struct mpool_allowed_range_info *add_range_info = NULL;
+	unsigned long pa_start, ba_start, ba_end = 0;
+
+	add_range_info = (struct mpool_allowed_range_info *)kzalloc(sizeof(struct mpool_allowed_range_info), GFP_KERNEL);
+	if(!add_range_info)
+	{
+		printk(KERN_EMERG "\033[35mFunction = %s, alloc mpool_allowed_range_info fail\033[m\n", __PRETTY_FUNCTION__);
+		return -ENOMEM;
+	}
+
+	// convert pa to ba
+	pa_start = allowed_mapping_address_start;
+	if( (pa_start >= ARM_MIU0_BASE_ADDR) && (pa_start < ARM_MIU1_BASE_ADDR) )
+		ba_start = pa_start - ARM_MIU0_BASE_ADDR + ARM_MIU0_BUS_BASE;
+	else if( (pa_start >= ARM_MIU1_BASE_ADDR) && (pa_start < ARM_MIU2_BASE_ADDR) )
+		ba_start = pa_start - ARM_MIU1_BASE_ADDR + ARM_MIU1_BUS_BASE;
+	else
+	{
+		printk(KERN_EMERG "\033[35mFunction = %s, pa_start 0x%lX not support\033[m\n", __PRETTY_FUNCTION__, pa_start);
+		kfree(add_range_info);
+		return -EINVAL;
+	}
+	ba_end = ba_start + allowed_mapping_size;
+
+	// add range info with ba_start, ba_end
+	add_range_info->allowed_bus_address_start = ba_start;
+	add_range_info->allowed_bus_address_end = ba_end;
+
+	mutex_lock(&mpool_iomap_mutex);
+	list_add(&add_range_info->list_node, &mpool_mapping_range_list);
+	mutex_unlock(&mpool_iomap_mutex);
+
+	printk("\033[35mFunction = %s, add pa range 0x%lX to 0x%lX\033[m\n", __PRETTY_FUNCTION__, pa_start, (pa_start + allowed_mapping_size));
+	return 0;
+}
+EXPORT_SYMBOL(add_mpool_allowed_range);
+
+int is_remap_cma_page(unsigned long pfn)
+{
+	if(!pfn_valid(pfn))
+		return 0;
+	return is_cma_page(pfn_to_page(pfn));
+}
+EXPORT_SYMBOL(is_remap_cma_page);
+
 static inline int mpool_io_remap_range(struct vm_area_struct *vma, unsigned long addr,
 		    unsigned long pfn, unsigned long size, pgprot_t prot)
 {
 	unsigned long end = addr + PAGE_ALIGN(size);
 	int err;
-    vma->vm_flags |= VM_PFNMAP;
+	vma->vm_flags |= VM_PFNMAP;
 
-    do {
+	if(is_remap_cma_page(pfn))
+		printk(KERN_EMERG "\033[31m[WRONG_USAGE] cma mapping from 0x%lX to 0x%lX\033[m\n", pfn << PAGE_SHIFT, (pfn << PAGE_SHIFT) + size);
+
+	do {
 		/* pfn_valid(pfn) means the page is in linux memory
 		 * we will also map linux memory to user_space
 		 */
-        //if(!pfn_valid(pfn))
+		if(!pfn_valid(pfn))
 		{
-    		err = vm_insert_pfn(vma, addr, pfn);
-    		if (err)
-    			break;
-        }
-    }while(pfn++, addr += PAGE_SIZE, addr != end);
+			err = vm_insert_pfn(vma, addr, pfn);
+			if (err)
+				break;
+		}
+	} while(pfn++, addr += PAGE_SIZE, addr != end);
 
-    return 0;
+	return 0;
 }
 
 static int _MDrv_MPOOL_Open (struct inode *inode, struct file *filp)
@@ -304,323 +342,283 @@ static int _MDrv_MPOOL_Release(struct inode *inode, struct file *filp)
     return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+static vm_fault_t _mpool_cpu_page_fault_handler(struct vm_fault *vmf)
+#else
+int _mpool_cpu_page_fault_handler(struct vm_area_struct *vma, struct vm_fault *vmf)
+#endif
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	unsigned long virt_offset = 0;
+	struct vm_area_struct *vma = vmf->vma;
+
+	printk(KERN_EMERG "======================================== @@@START@@@ ========================================\n");
+	virt_offset = vmf->fault_real_address - vma->vm_start;                          // fault virt_offset
+	printk(KERN_EMERG "\033[31mFunction = %s, Line = %d, pid is %d, tgid is %d, comm is %s\033[m\n", __PRETTY_FUNCTION__, __LINE__, current->pid, current->tgid, current->comm);
+	printk(KERN_EMERG "\033[31mmapping start bus address is 0x%lX\n\033[m\n", vma->vm_private_data);
+	printk(KERN_EMERG "\033[31mmapping size is 0x%lX\n\033[m\n", (vma->vm_end - vma->vm_start));
+	printk(KERN_EMERG "\033[31mmapping va from 0x%lX to 0x%lX\033[m\n", vma->vm_start, vma->vm_end);
+	printk(KERN_EMERG "\033[31mfault virt_offset is 0x%lX\033[m\n", virt_offset);
+	printk(KERN_EMERG "\033[35mvmf->pgoff   (fault_pa, aligned) = 0x%lX\033[m\n", vmf->pgoff << PAGE_SHIFT);
+	printk(KERN_EMERG "\033[31mvmf->address (fault_va, aligned) = 0x%lX\n\033[m\n", vmf->address);
+	printk(KERN_EMERG "\033[31mvmf->fault_real_address (real fault va, not aligned) = 0x%lX\n\033[m\n", vmf->fault_real_address);
+
+	printk(KERN_EMERG "======================================== @@@END@@@ ========================================\n");
+	// vmf->pgoff is fault pa, page aligned
+	// vmf->address is fault va, page aligned
+	// vmf->fault_real_address is real fault va
+	// vma->vm_private_data is mmaping start ba
+#else
+	unsigned long virt_offset = 0;
+
+	printk(KERN_EMERG "======================================== @@@START@@@ ========================================\n");
+	virt_offset = vmf->virtual_address - vma->vm_start;                          // fault virt_offset
+	printk(KERN_EMERG "\033[31mFunction = %s, Line = %d, pid is %d, tgid is %d, comm is %s\033[m\n", __PRETTY_FUNCTION__, __LINE__, current->pid, current->tgid, current->comm);
+	printk(KERN_EMERG "\033[31mmapping start bus address is 0x%lX\n\033[m\n", vma->vm_private_data);
+	printk(KERN_EMERG "\033[31mmapping size is 0x%lX\n\033[m\n", (vma->vm_end - vma->vm_start));
+	printk(KERN_EMERG "\033[31mmapping va from 0x%lX to 0x%lX\033[m\n", vma->vm_start, vma->vm_end);
+	printk(KERN_EMERG "\033[31mfault virt_offset is 0x%lX\033[m\n", virt_offset);
+	printk(KERN_EMERG "\033[31mvmf->virtual_address (fault_va, aligned) = 0x%lX\n\033[m\n", vmf->virtual_address);
+	printk(KERN_EMERG "======================================== @@@END@@@ ========================================\n");
+#endif
+
+#if REPAIR_PAGE_FAULT
+	vma->vm_flags |= VM_PFNMAP;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,19,0)
+	printk(KERN_EMERG "\033[35m(new kernel)remap for va 0x%lX to ba 0x%lX\033[m\n", vmf->address, (vma->vm_private_data + (vmf->address - vma->vm_start)));
+	int err = vmf_insert_pfn(vma, vmf->address, ((unsigned long)vma->vm_private_data + (vmf->address - vma->vm_start)) << PAGE_SHIFT);
+	printk(KERN_EMERG "\033[35mFunction = %s, Line = %d, err is %d\033[m\n", __PRETTY_FUNCTION__, __LINE__, err); // joe.liu
+	return err;
+#else
+	printk(KERN_EMERG "\033[35m(old kernel)remap for va 0x%lX to ba 0x%lX\033[m\n", vmf->virtual_address, (vma->vm_private_data + ((unsigned long)vmf->virtual_address - vma->vm_start)));
+	vm_insert_pfn(vma, (unsigned long)vmf->virtual_address, ((unsigned long)vma->vm_private_data + ((unsigned long)vmf->virtual_address - vma->vm_start)) << PAGE_SHIFT);
+	return VM_FAULT_RETRY;
+#endif
+#else
+	return VM_FAULT_SIGBUS;
+#endif
+}
+
+
+static struct vm_operations_struct mpool_vm_ops =
+{
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
+	.fault = _mpool_cpu_page_fault_handler
+#else
+	.nopfn = _mpool_cpu_page_fault_handler
+#endif
+};
 
 static int _MDrv_MPOOL_MMap(struct file *filp, struct vm_area_struct *vma)
 {
-    MMAP_FileData *mmapData = filp->private_data;
-    u32 miu0_len = 0x10000000;
+	unsigned long mapped_ba_start, mmaped_ba_end, allowed_ba_start, allowed_ba_end;
+	MMAP_FileData *mmapData = filp->private_data;
+	u32 miu0_len = 0x10000000;
 	unsigned long BUS_BASE = 0;
+	struct mpool_allowed_range_info *range_info = NULL, *range_info_next = NULL;
+	bool allowed_mmap = false;
 
-    mutex_lock(&mpool_iomap_mutex);
-    if(!mmapData->setflag)
+	mutex_lock(&mpool_iomap_mutex);
+	if(!mmapData->setflag)
 		vma->vm_pgoff = mmapData->mpool_base >> PAGE_SHIFT;
-    else
-    {
-    #if defined(CONFIG_MIPS)
-        if(mmapData->mmap_miusel == 0)
-            vma->vm_pgoff = mmapData->mmap_offset >> PAGE_SHIFT;
-        else
-            vma->vm_pgoff = (mmapData->mmap_offset+mmapData->mmap_interval) >> PAGE_SHIFT;
-    #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-        if(mmapData->mmap_miusel == 0)
-            vma->vm_pgoff = (mmapData->mmap_offset+ARM_MIU0_BASE_ADDR) >> PAGE_SHIFT;
-        else if(mmapData->mmap_miusel == 1)
-            vma->vm_pgoff = (mmapData->mmap_offset+ARM_MIU1_BASE_ADDR) >> PAGE_SHIFT;
-        else if(mmapData->mmap_miusel == 2)
-            vma->vm_pgoff = (mmapData->mmap_offset+ARM_MIU2_BASE_ADDR) >> PAGE_SHIFT;
-        else if(mmapData->mmap_miusel == 3)
-            vma->vm_pgoff = (mmapData->mmap_offset+ARM_MIU3_BASE_ADDR) >> PAGE_SHIFT;
-        else
-            panic("miu%d not support\n",mmapData->mmap_miusel);
-    #endif
+	else
+	{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+		if(mmapData->mmap_miusel == 0)
+			vma->vm_pgoff = (mmapData->mmap_offset + ARM_MIU0_BASE_ADDR) >> PAGE_SHIFT;
+		else if(mmapData->mmap_miusel == 1)
+			vma->vm_pgoff = (mmapData->mmap_offset + ARM_MIU1_BASE_ADDR) >> PAGE_SHIFT;
+		else if(mmapData->mmap_miusel == 2)
+			vma->vm_pgoff = (mmapData->mmap_offset + ARM_MIU2_BASE_ADDR) >> PAGE_SHIFT;
+		else if(mmapData->mmap_miusel == 3)
+			vma->vm_pgoff = (mmapData->mmap_offset + ARM_MIU3_BASE_ADDR) >> PAGE_SHIFT;
+		else
+		panic("miu%d not support\n",mmapData->mmap_miusel);
+#endif
     }
 
-    /* set page to no cache */
-    if((mmapData->u8MapCached == KER_CACHEMODE_CACHE)
-#if defined(CONFIG_MP_MMAP_MMAP_BOUNDARY_PROTECT)
-        || (mmapData->u8MapCached == KER_CACHEMODE_CACHE_PROTECT)
-#endif
-        )
-    {
-        #if defined(CONFIG_MIPS)
-        pgprot_val(vma->vm_page_prot) &= ~_CACHE_MASK;
-        pgprot_val(vma->vm_page_prot) |= _page_cachable_default;
-        #elif defined(CONFIG_ARM)
-        //vma->vm_page_prot=__pgprot_modify(vma->vm_page_prot, L_PTE_MT_MASK,L_PTE_MT_WRITEBACK);
-        vma->vm_page_prot=__pgprot_modify(vma->vm_page_prot,L_PTE_MT_MASK,L_PTE_MT_DEV_CACHED);
-		#elif defined(CONFIG_ARM64)
+	/* set page to no cache */
+	if((mmapData->u8MapCached == KER_CACHEMODE_CACHE))
+	{
+#if defined(CONFIG_ARM)
+		//vma->vm_page_prot=__pgprot_modify(vma->vm_page_prot, L_PTE_MT_MASK,L_PTE_MT_WRITEBACK);
+		vma->vm_page_prot=__pgprot_modify(vma->vm_page_prot,L_PTE_MT_MASK,L_PTE_MT_DEV_CACHED);
+#elif defined(CONFIG_ARM64)
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,32)
 		pgprot_val(vma->vm_page_prot) = pgprot_val(pgprot_cached(vma->vm_page_prot));
 #else
 		pgprot_val(vma->vm_page_prot) = pgprot_cached(vma->vm_page_prot);
 #endif
-        #endif
-    }
-#if defined(CONFIG_MP_MMAP_MMAP_BOUNDARY_PROTECT)
-    else if (mmapData->u8MapCached == KER_CACHEMODE_TRAP)
-    {
-        #if defined(CONFIG_MIPS)
-        pgprot_val(vma->vm_page_prot) = pgprot_val(PAGE_NONE);
-        #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-        pgprot_val(vma->vm_page_prot) = __PAGE_NONE;
-        #endif
-		printk("\033[35mUsing TRAP, vma->vm_flags is %lu, vma->vm_page_prot is %lu\033[m\n", vma->vm_flags, pgprot_val(vma->vm_page_prot));
-    }
 #endif
-    else
-    {
-        #if defined(CONFIG_MIPS)
-        pgprot_val(vma->vm_page_prot) &= ~_CACHE_MASK;
-        pgprot_val(vma->vm_page_prot) |= _CACHE_UNCACHED;
-        #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-        if((mmapData->u8MapCached == KER_CACHEMODE_UNCACHE_BUFFERABLE)
-#if defined(CONFIG_MP_MMAP_MMAP_BOUNDARY_PROTECT)
-            || (mmapData->u8MapCached == KER_CACHEMODE_UNCACHE_BUFFERABLE_PROTECT)
-#endif
-            )
-        {
-		 #if defined(CONFIG_ARM)
+	}
+	else
+	{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+		if((mmapData->u8MapCached == KER_CACHEMODE_UNCACHE_BUFFERABLE))
+		{
+#if defined(CONFIG_ARM)
 //pgprot_val(vma->vm_page_prot) = pgprot_dmacoherent(vma->vm_page_prot);  //This solution is only to modify mpool mmaping rule,
 //The Correct solution is to enable config_ARM_DMA_MEM_BUFFERABLE, but if enable config_ARM_DMA_MEM_BUFFERABLE , system will trigger the app to crash. 
 //if enable config_ARM_DMA_MEM_BUFFERABLE maybe have coherence, so app will crash now. but this solution only modify mpoool mmaping, mpool always have flush pipe.
 			pgprot_val(vma->vm_page_prot) = __pgprot_modify(vma->vm_page_prot, L_PTE_MT_MASK, L_PTE_MT_BUFFERABLE | L_PTE_XN);
-		 #else
+#else
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,32)
 			pgprot_val(vma->vm_page_prot) = pgprot_val(pgprot_dmacoherent(vma->vm_page_prot));
 #else
 			pgprot_val(vma->vm_page_prot) = pgprot_dmacoherent(vma->vm_page_prot);
 #endif
-	     #endif
-        }
-        else
-        {
-		 #if defined(CONFIG_ARM)
+#endif
+		}
+		else
+		{
+#if defined(CONFIG_ARM)
 //pgprot_val(vma->vm_page_prot) = pgprot_dmacoherent(vma->vm_page_prot); //This solution is only to modify mpool mmaping rule,
 //The Correct solution is to enable config_ARM_DMA_MEM_BUFFERABLE, but if enable config_ARM_DMA_MEM_BUFFERABLE , system will trigger the app to crash.
 //if enable config_ARM_DMA_MEM_BUFFERABLE maybe have coherence, so app will crash now. but this solution only modify mpoool mmaping, mpool always have flush pipe. 
-	      pgprot_val(vma->vm_page_prot)= __pgprot_modify(vma->vm_page_prot, L_PTE_MT_MASK, L_PTE_MT_BUFFERABLE | L_PTE_XN);
-		 #else
+			pgprot_val(vma->vm_page_prot)= __pgprot_modify(vma->vm_page_prot, L_PTE_MT_MASK, L_PTE_MT_BUFFERABLE | L_PTE_XN);
+#else
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,32)
 			pgprot_val(vma->vm_page_prot) = pgprot_val(pgprot_dmacoherent(vma->vm_page_prot));
 #else
 			pgprot_val(vma->vm_page_prot) = pgprot_dmacoherent(vma->vm_page_prot);
 #endif
-	     #endif
+#endif
         }
-        #endif
-    }
+#endif
+	}
 
-    if(mmapData->setflag)
-    {
+	if(mmapData->setflag)
+	{
 		if(mmapData->mmap_miusel == 0)
 		{
-			#if defined(CONFIG_MIPS)
-			BUS_BASE = MIPS_MIU0_BUS_BASE;
-			#if defined(CONFIG_MSTAR_KENYA) || defined(CONFIG_MSTAR_KERES)
-			if(mmapData->mmap_offset >= 0x10000000)
-				BUS_BASE += 0x40000000;
-			#endif
-			#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 			BUS_BASE = ARM_MIU0_BUS_BASE;
-			#endif
+#endif
 		}
 		else if(mmapData->mmap_miusel == 1)
 		{
-			#if defined(CONFIG_MIPS)
-			BUS_BASE = MIPS_MIU1_BUS_BASE;
-			#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 			BUS_BASE = ARM_MIU1_BUS_BASE;
-			#endif
+#endif
 		}
 		else if(mmapData->mmap_miusel == 2)
 		{
-			#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 			BUS_BASE = ARM_MIU2_BUS_BASE;
-			#endif
+#endif
 		}
 		else if(mmapData->mmap_miusel == 3)
 		{
-			#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 			BUS_BASE = ARM_MIU3_BUS_BASE;
-			#endif
-		}
-        else
-        {
-            panic("miu%d not support\n",mmapData->mmap_miusel);
-        }
-
-#ifdef CONFIG_MP_MMAP_MMAP_BOUNDARY_PROTECT
-		if ((mmapData->u8MapCached == KER_CACHEMODE_UNCACHE_NONBUFFERABLE_PROTECT) ||
-			(mmapData->u8MapCached == KER_CACHEMODE_CACHE_PROTECT) ||
-			(mmapData->u8MapCached == KER_CACHEMODE_UNCACHE_BUFFERABLE_PROTECT)) {
-			pgprot_t temp_prot;
-
-            #if defined(CONFIG_MIPS)
-			printk("\033[35m[MMAP]Boundary Protect for MIPS\033[m\n");
-
-			// we  divide into 3 sectios to do mpool_io_remap_range
-            mmapData->mmap_size -= 0x2000;
-            pgprot_val(temp_prot) = pgprot_val(vma->vm_page_prot);
-
-            // 1. Upper Boundary
-            pgprot_val(vma->vm_page_prot) = pgprot_val(PAGE_NONE);
-			if(io_remap_pfn_range(vma, vma->vm_start,
-                    (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, 0x1000,
-                            vma->vm_page_prot))
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-
-            // 2. Lower Boundary
-            pgprot_val(vma->vm_page_prot) = pgprot_val(PAGE_NONE);
-			if(io_remap_pfn_range(vma, vma->vm_start+mmapData->mmap_size+0x1000,
-                    (BUS_BASE+mmapData->mmap_offset+mmapData->mmap_size-0x1000) >> PAGE_SHIFT, 0x1000,
-                            vma->vm_page_prot))
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-
-            // 3. Main Area
-            pgprot_val(vma->vm_page_prot) = pgprot_val(temp_prot);
-			if(io_remap_pfn_range(vma, vma->vm_start+0x1000,
-                    (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, mmapData->mmap_size,
-                            vma->vm_page_prot))
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-            #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-			printk("\033[35m[MMAP]Boundary Protect for ARM\033[m\n");
-
-            // we  divide into 3 sectios to do mpool_io_remap_range
-            mmapData->mmap_size -= 0x2000;
-            temp_prot = vma->vm_page_prot;
-
-            // 1. Upper Boundary
-            pgprot_val(vma->vm_page_prot) = __PAGE_NONE;
-            if(mpool_io_remap_range(vma, vma->vm_start,
-                            (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, 0x1000,
-                                    vma->vm_page_prot))
-            {
-            	mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-
-            // 2. Lower Boundary
-            pgprot_val(vma->vm_page_prot) = __PAGE_NONE;
-            if(mpool_io_remap_range(vma, vma->vm_start+mmapData->mmap_size+0x1000,
-            				(BUS_BASE+mmapData->mmap_offset+mmapData->mmap_size-0x1000) >> PAGE_SHIFT, 0x1000,
-                            		vma->vm_page_prot))
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-
-            // 3. Main Area
-            pgprot_val(vma->vm_page_prot) = temp_prot;
-            if(mpool_io_remap_range(vma, vma->vm_start+0x1000,
-                            (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, mmapData->mmap_size,
-            						vma->vm_page_prot))
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
-            #endif
-		}
-        else
 #endif
+		}
+		else
 		{
-            #if defined(CONFIG_MIPS)
-            if(io_remap_pfn_range(vma, vma->vm_start,
-                    (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, mmapData->mmap_size,
-                            vma->vm_page_prot))
-            #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-            if(mpool_io_remap_range(vma, vma->vm_start,
-                    (BUS_BASE+mmapData->mmap_offset) >> PAGE_SHIFT, mmapData->mmap_size,
-                            vma->vm_page_prot))
-            #endif
-            {
-                mutex_unlock(&mpool_iomap_mutex);
-                return -EAGAIN;
-            }
+			panic("miu%d not support\n",mmapData->mmap_miusel);
+		}
+
+		// set page_fault handler
+		vma->vm_ops = &mpool_vm_ops;
+		vma->vm_private_data = (void *)(BUS_BASE + mmapData->mmap_offset);
+
+		mapped_ba_start = (BUS_BASE + mmapData->mmap_offset);
+		mmaped_ba_end = mapped_ba_start + mmapData->mmap_size;
+		list_for_each_entry_safe(range_info, range_info_next, &mpool_mapping_range_list, list_node)
+		{
+			allowed_ba_start = range_info->allowed_bus_address_start;
+			allowed_ba_end = range_info->allowed_bus_address_end;
+
+			if( (mapped_ba_start == allowed_ba_start) && (mmaped_ba_end == allowed_ba_end) )
+			{
+				allowed_mmap = true;
+				break;
+			}
+		}
+
+		if(allowed_mmap)
+			printk("\033[35mFunction = %s, Line = %d, [DEBUG_LOG] this is mapping 0x%lX to 0x%lX (do map it)\033[m\n",
+				__PRETTY_FUNCTION__, __LINE__, mapped_ba_start, mmaped_ba_end);
+		else
+		{
+			printk("\033[35mFunction = %s, Line = %d, [DEBUG_LOG] this is mapping 0x%lX to 0x%lX (do not map it)\033[m\n",
+				__PRETTY_FUNCTION__, __LINE__, mapped_ba_start, mmaped_ba_end);
+			mutex_unlock(&mpool_iomap_mutex);
+			return -EINVAL;
+		}
+
+		{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+			if(mpool_io_remap_range(vma, vma->vm_start,
+				(BUS_BASE + mmapData->mmap_offset) >> PAGE_SHIFT, mmapData->mmap_size,
+				vma->vm_page_prot))
+#endif
+			{
+				mutex_unlock(&mpool_iomap_mutex);
+				return -EAGAIN;
+			}
 		}
 	}
 	else
 	{
-
-
 		unsigned long u32MIU0_MapStart = 0;
 		unsigned long u32MIU0_MapSize = 0;
 		unsigned long u32MIU1_MapStart = 0;
 		unsigned long u32MIU1_MapSize = 0;
 
+		printk(KERN_EMERG "\033[35m[WRONG_USAGE] Function = %s, Line = %d, not here\033[m\n", __PRETTY_FUNCTION__, __LINE__);
+		panic("mpool do not go here");
 
-        //calculate map size & start
-        if(mmapData->mpool_base<miu0_len)
-        {
-            u32MIU0_MapStart=mmapData->mpool_base;
+		//calculate map size & start
+		if(mmapData->mpool_base < miu0_len)
+		{
+			u32MIU0_MapStart = mmapData->mpool_base;
 
-            if((mmapData->mpool_base+mmapData->mpool_size)>miu0_len)
-            {
-                u32MIU0_MapSize=(miu0_len-mmapData->mpool_base);
-                u32MIU1_MapSize=mmapData->mpool_size-u32MIU0_MapSize;
-                #if defined(CONFIG_MIPS)
-                u32MIU1_MapStart=MIPS_MIU1_BUS_BASE;
-                #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-                u32MIU1_MapStart=ARM_MIU1_BUS_BASE;
-                #endif
-            }
-	    	else
-            {
-                u32MIU0_MapSize=mmapData->mpool_size;
-                u32MIU1_MapSize=0;
-                #if defined(CONFIG_MIPS)
-                u32MIU1_MapStart=MIPS_MIU1_BUS_BASE;
-                #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-                u32MIU1_MapStart=ARM_MIU1_BUS_BASE;
-                #endif
-            }
-        }
-        else
-        {
-            u32MIU0_MapStart=0;
-            u32MIU0_MapSize=0;
-            #if defined(CONFIG_MIPS)
-            u32MIU1_MapStart=(mmapData->mpool_base-miu0_len)+MIPS_MIU1_BUS_BASE;
-            #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-            u32MIU1_MapStart=ARM_MIU1_BUS_BASE;
-            #endif
-            u32MIU1_MapSize=mmapData->mpool_size;
-        }
-        //printk("MPOOL MAP INFORMATION:\n");
-        //printk("    MIU0 Length=0x%08X\n",miu0_len);
-        //printk("    MIU0 MAP:0x%08lX,0x%08lX\n",u32MIU0_MapStart,u32MIU0_MapSize);
-        //printk("    MIU1 MAP:0x%08lX,0x%08lX\n",u32MIU1_MapStart,u32MIU1_MapSize);
+			if((mmapData->mpool_base + mmapData->mpool_size) > miu0_len)
+			{
+				u32MIU0_MapSize = (miu0_len - mmapData->mpool_base);
+				u32MIU1_MapSize = mmapData->mpool_size - u32MIU0_MapSize;
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+				u32MIU1_MapStart=ARM_MIU1_BUS_BASE;
+#endif
+			}
+			else
+			{
+				u32MIU0_MapSize = mmapData->mpool_size;
+				u32MIU1_MapSize = 0;
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+				u32MIU1_MapStart=ARM_MIU1_BUS_BASE;
+#endif
+			}
+		}
+		else
+		{
+			u32MIU0_MapStart = 0;
+			u32MIU0_MapSize = 0;
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+			u32MIU1_MapStart = ARM_MIU1_BUS_BASE;
+#endif
+			u32MIU1_MapSize = mmapData->mpool_size;
+		}
 
-        if(u32MIU0_MapSize)
-        {
-            if (mpool_io_remap_range(vma, vma->vm_start+ mmapData->mpool_base,
-                                        u32MIU0_MapStart >> PAGE_SHIFT, u32MIU0_MapSize,
-                                        vma->vm_page_prot))
-            {
-              mutex_unlock(&mpool_iomap_mutex);
-              return -EAGAIN;
-            }
-        }
+		if(u32MIU0_MapSize)
+		{
+			if (mpool_io_remap_range(vma, vma->vm_start+ mmapData->mpool_base,
+				u32MIU0_MapStart >> PAGE_SHIFT, u32MIU0_MapSize,
+				vma->vm_page_prot))
+			{
+				mutex_unlock(&mpool_iomap_mutex);
+				return -EAGAIN;
+			}
+		}
 
-        if(u32MIU1_MapSize)
-        {
-			#if defined(CONFIG_MIPS)
-           	if(io_remap_pfn_range(vma, vma->vm_start+u32MIU0_MapSize,
-                                       MIPS_MIU1_BUS_BASE >> PAGE_SHIFT, u32MIU1_MapSize,
-                                       vma->vm_page_prot))
-			#elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+		if(u32MIU1_MapSize)
+		{
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 			if(mpool_io_remap_range(vma, vma->vm_start+u32MIU0_MapSize,
-                                       ARM_MIU1_BUS_BASE >> PAGE_SHIFT, u32MIU1_MapSize,
-                                       vma->vm_page_prot))
-            #endif
+				ARM_MIU1_BUS_BASE >> PAGE_SHIFT, u32MIU1_MapSize,
+				vma->vm_page_prot))
+#endif
 			{
 				mutex_unlock(&mpool_iomap_mutex);
 				return -EAGAIN;
@@ -629,7 +627,7 @@ static int _MDrv_MPOOL_MMap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 	mutex_unlock(&mpool_iomap_mutex);
-    return 0;
+	return 0;
 }
 
 #if defined(CONFIG_COMPAT)
@@ -653,7 +651,7 @@ static long Compat_MDrv_MPOOL_Ioctl(struct file *filp, unsigned int cmd, unsigne
 		}
 		case COMPAT_MPOOL_IOC_FLUSHDCACHE_PAVA:
 		{
-			compat_u64 u64;
+			compat_u64 u64_data;
 			compat_size_t u;
 
 			DrvMPool_Flush_Info_t32 __user *data32;
@@ -665,21 +663,15 @@ static long Compat_MDrv_MPOOL_Ioctl(struct file *filp, unsigned int cmd, unsigne
 			data32 = compat_ptr(arg);
 			err = get_user(u, &data32->u32AddrVirt);
 			err |= put_user(u, &data->u32AddrVirt);
-			err |= get_user(u64, &data32->u32AddrPhys);
-			err |= put_user(u64, &data->u32AddrPhys);
-			err |= get_user(u64, &data32->u32Size);
-			err |= put_user(u64, &data->u32Size);
+			err |= get_user(u64_data, &data32->u32AddrPhys);
+			err |= put_user(u64_data, &data->u32AddrPhys);
+			err |= get_user(u64_data, &data32->u32Size);
+			err |= put_user(u64_data, &data->u32Size);
 			if (err)
 				return err;
 
 			return filp->f_op->unlocked_ioctl(filp, MPOOL_IOC_FLUSHDCACHE_PAVA,(unsigned long)data);
 		}
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-		case MPOOL_IOC_SETWATCHPT:
-			break;
-		case MPOOL_IOC_GETWATCHPT:
-			break;
-#endif
 		default:
 			return -ENOIOCTLCMD;
 	}
@@ -734,53 +726,154 @@ static int _MDrv_MPOOL_Ioctl(struct inode *inode, struct file *filp, unsigned in
     //------------------------------------------------------------------------------
     case MPOOL_IOC_INFO:
         {
-            DrvMPool_Info_t i ;
-	    memset(&i, 0, sizeof(DrvMPool_Info_t));
-
-            i.u32Addr = mmapData->mpool_base;
-            i.u32Size = mmapData->mpool_size;
-            MPOOL_DPRINTK("MPOOL_IOC_INFO i.u32Addr = %d\n", i.u32Addr);
-            MPOOL_DPRINTK("MPOOL_IOC_INFO i.u32Size = %d\n", i.u32Size);
-
-            ret= copy_to_user( (void *)arg, &i, sizeof(i) );
+            pr_emerg("Unknown ioctl command\n");
+            return -ENOTTY;
         }
         break;
-    case MPOOL_IOC_FLUSHDCACHE:        
-	    MDrv_MPOOL_IOC_FlushDache(arg);	
-            
-        
-        break;
+    case MPOOL_IOC_FLUSHDCACHE:
+        {
+            DrvMPool_Info_t i;
+            struct mm_struct *mm = current->active_mm;
+            struct vm_area_struct *vma;
+            unsigned long start,end;
+#ifdef CONFIG_CPU_SW_DOMAIN_PAN
+            unsigned int __ua_flags;
+#endif
+
+            ret = copy_from_user(&i, (void __user *)arg, sizeof(i));
+            if (ret) {
+                pr_err("%s(%d) copy_from_user failed!\n", __func__, __LINE__);
+                return ret;
+            }
+
+            // check input va is user va or kernel va
+            if (!access_ok(VERIFY_WRITE, (void *)i.u32Addr, i.u32Size)) {
+                pr_err("error input va\n");
+                return -EINVAL;
+            }
+
+            start = i.u32Addr;
+            end = i.u32Addr + i.u32Size;
+            if (end < start)
+                return -EINVAL;
+
+            down_read(&mm->mmap_sem);
+            vma = find_vma(mm, start);
+            if (vma && vma->vm_start < end) {
+                if (start < vma->vm_start)
+                    start = vma->vm_start;
+                if (end > vma->vm_end)
+                    end = vma->vm_end;
+
+                i.u32Addr = start;
+                i.u32Size = end - start;
+
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+                uaccess_enable_not_uao();
+#elif CONFIG_CPU_SW_DOMAIN_PAN
+                __ua_flags = uaccess_save_and_enable();
+#endif
+                MDrv_MPOOL_IOC_FlushDache(i);
+
+                outer_flush_range(start, end);
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+                uaccess_disable_not_uao();
+#elif CONFIG_CPU_SW_DOMAIN_PAN
+                uaccess_restore(__ua_flags);
+#endif
+
+#ifndef CONFIG_OUTER_CACHE
+                extern void Chip_Flush_Miu_Pipe(void);
+                Chip_Flush_Miu_Pipe();
+#endif
+                up_read(&mm->mmap_sem);
+            } else {
+                up_read(&mm->mmap_sem);
+                return -EINVAL;
+            }
+            break;
+        }
     case MPOOL_IOC_FLUSHDCACHE_PAVA:
         {
 
-            DrvMPool_Flush_Info_t i ;
-            ret= copy_from_user(&i, (void __user *)arg, sizeof(i));
+            DrvMPool_Flush_Info_t i;
+            struct mm_struct *mm = current->active_mm;
+            struct vm_area_struct *vma;
+            unsigned long start,end,size;
+#ifdef CONFIG_CPU_SW_DOMAIN_PAN
+            unsigned int __ua_flags;
+#endif
+
+
+            ret = copy_from_user(&i, (void __user *)arg, sizeof(i));
+            if (ret) {
+                pr_err("%s(%d) copy_from_user failed!\n", __func__, __LINE__);
+                return ret;
+            }
+
+            // check input va is user va or kernel va
+            if (!access_ok(VERIFY_WRITE, (void *)i.u32AddrVirt, i.u32Size)) {
+                pr_err("error input va\n");
+                return -EINVAL;
+            }
+
+            start = i.u32AddrVirt;
+            end = i.u32AddrVirt + i.u32Size;
+            if (end < start)
+                return -EINVAL;
+
+            down_read(&mm->mmap_sem);
+            vma = find_vma(mm, start);
+            if (vma && vma->vm_start < end) {
+                if (start < vma->vm_start)
+                    start = vma->vm_start;
+                if (end > vma->vm_end)
+                    end = vma->vm_end;
+                size = end - start;
 
            /*Compare "u32AddrPhys" with "miu_base" to decide if which miu is located*/
-           if(i.u32AddrPhys >= ARM_MIU3_BASE_ADDR)
-               Chip_Flush_Cache_Range_VA_PA(i.u32AddrVirt, (i.u32AddrPhys - ARM_MIU3_BASE_ADDR) + ARM_MIU3_BUS_BASE , i.u32Size);
-           if((i.u32AddrPhys >= ARM_MIU2_BASE_ADDR) && (i.u32AddrPhys < ARM_MIU3_BASE_ADDR))
-               Chip_Flush_Cache_Range_VA_PA(i.u32AddrVirt, (i.u32AddrPhys - ARM_MIU2_BASE_ADDR) + ARM_MIU2_BUS_BASE , i.u32Size);
-           if((i.u32AddrPhys >= ARM_MIU1_BASE_ADDR) && (i.u32AddrPhys < ARM_MIU2_BASE_ADDR))
-               Chip_Flush_Cache_Range_VA_PA(i.u32AddrVirt, (i.u32AddrPhys - ARM_MIU1_BASE_ADDR) + ARM_MIU1_BUS_BASE , i.u32Size);
-           else
-               Chip_Flush_Cache_Range_VA_PA(i.u32AddrVirt, i.u32AddrPhys + ARM_MIU0_BUS_BASE , i.u32Size);
+                if (i.u32AddrPhys >= ARM_MIU3_BASE_ADDR)
+                    Chip_Flush_Cache_Range_VA_PA(start, (i.u32AddrPhys - ARM_MIU3_BASE_ADDR) + ARM_MIU3_BUS_BASE , size);
+                if ((i.u32AddrPhys >= ARM_MIU2_BASE_ADDR) && (i.u32AddrPhys < ARM_MIU3_BASE_ADDR))
+                    Chip_Flush_Cache_Range_VA_PA(start, (i.u32AddrPhys - ARM_MIU2_BASE_ADDR) + ARM_MIU2_BUS_BASE , size);
+                if ((i.u32AddrPhys >= ARM_MIU1_BASE_ADDR) && (i.u32AddrPhys < ARM_MIU2_BASE_ADDR))
+                    Chip_Flush_Cache_Range_VA_PA(start, (i.u32AddrPhys - ARM_MIU1_BASE_ADDR) + ARM_MIU1_BUS_BASE , size);
+                if (i.u32AddrPhys >= ARM_MIU0_BASE_ADDR)
+                    Chip_Flush_Cache_Range_VA_PA(start, (i.u32AddrPhys - ARM_MIU0_BASE_ADDR) + ARM_MIU0_BUS_BASE , size);
+                else
+                    return -EINVAL;
+
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+                uaccess_enable_not_uao();
+#elif CONFIG_CPU_SW_DOMAIN_PAN
+                __ua_flags = uaccess_save_and_enable();
+#endif
+
+                outer_flush_range(start, end);
+
+#ifdef CONFIG_ARM64_SW_TTBR0_PAN
+                uaccess_disable_not_uao();
+#elif CONFIG_CPU_SW_DOMAIN_PAN
+                uaccess_restore(__ua_flags);
+#endif
+
+
+#ifndef CONFIG_OUTER_CACHE
+                extern void Chip_Flush_Miu_Pipe(void);
+                Chip_Flush_Miu_Pipe();
+#endif
+                up_read(&mm->mmap_sem);
+            } else {
+                up_read(&mm->mmap_sem);
+                return -EINVAL;
+            }
     	}
         break ;
     case MPOOL_IOC_GET_BLOCK_OFFSET:
         {
-            DrvMPool_Info_t i ;
-
-	    memset(&i, 0, sizeof(DrvMPool_Info_t));
-            ret= copy_from_user( &i, (void __user *)arg, sizeof(i) );
-            #if defined(__aarch64__)
-            MDrv_SYS_GetMMAP((int)i.u32Addr, &(i.u32Addr), &(i.u32Size)) ;
-            #else
-            MDrv_SYS_GetMMAP((int)i.u32Addr, (unsigned int *)&(i.u32Addr), (unsigned int *)&(i.u32Size)) ;
-            #endif
-            ret= copy_to_user( (void __user *)arg, &i, sizeof(i) );
+            pr_emerg("Unknown ioctl command\n");
+            return -ENOTTY;
         }
-        break ;
     case MPOOL_IOC_SET_MAP_CACHE:
         {
             ret= copy_from_user(&mmapData->u8MapCached, (void __user *)arg, sizeof(mmapData->u8MapCached));
@@ -788,18 +881,17 @@ static int _MDrv_MPOOL_Ioctl(struct inode *inode, struct file *filp, unsigned in
         break;
     case MPOOL_IOC_SET:
         {
-           	DrvMPool_Info_t i;
+			DrvMPool_Info_t i;
+			memset(&i, 0, sizeof(DrvMPool_Info_t));
 
-	    memset(&i, 0, sizeof(DrvMPool_Info_t));
-           	ret= copy_from_user(&i, (void __user *)arg, sizeof(i));
-            mmapData->setflag = true;
-            mmapData->mmap_offset = i.u32Addr;
-            mmapData->mmap_size = i.u32Size;
-            mmapData->mmap_interval = i.u32Interval;
-            mmapData->mmap_miusel = i.u8MiuSel;
+			ret= copy_from_user(&i, (void __user *)arg, sizeof(i));
+			mmapData->setflag = true;
+			mmapData->mmap_offset = i.u32Addr;
+			mmapData->mmap_size = i.u32Size;
+			mmapData->mmap_interval = i.u32Interval;
+			mmapData->mmap_miusel = i.u8MiuSel;
         }
         break;
-
 	case MPOOL_IOC_KERNEL_DETECT:
 			{
 				DrvMPool_Kernel_Info_t i;
@@ -826,109 +918,39 @@ static int _MDrv_MPOOL_Ioctl(struct inode *inode, struct file *filp, unsigned in
 #endif
     }
     break ;
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-    //edit by york
-    case MPOOL_IOC_SETWATCHPT:
-    {
-        DrvMPool_Watchpt_Info_t info;
-        ret = copy_from_user(&info, (void __user *)arg, sizeof(info));
-#ifdef CONFIG_ARM
-{
-	unsigned int tmp,WCR;
-
-	if(info.rwx == 0)	/*read*/
-		WCR = 0x1EF;
-	else if(info.rwx == 1)	/*write*/
-		WCR = 0x1F7;
-        else			/*read,write*/
-		WCR = 0x1FF;
-
-	ARM_DBG_WRITE(c0, c0, 6, info.u32AddrVirt);
-	tmp = (info.mask << 24)| WCR ;/*shift 24 is because the mask control bit is defined there*/
-		 ARM_DBG_WRITE(c0, c0, 7, tmp);
-
-	/*printk("The input 0 is:%#x and the mask bit is:%#x\n",tmp,info.mask);
-	tmp = 0;
-	tmp = info.u32AddrVirt | (1  << (info.mask * 4))
-	asm volatile(
-			input[0] = ;
-        "mov	r1, %[i0]\n\t"									\
-        "mov	%[o1], r1\n\t"									\
-        : [o1] "=r"(out)									\
-	: [i0] "g"(tmp)									\
-        : "memory"                                                                              \
-    	);
-	printk("The input 0 is:%#x and  output[1] is :%#x, the size is:%#x\n",tmp,out,info.mask);*/
-        printk("The register is written\n");
-}
-#elif defined(CONFIG_ARM64)
-#else
-        if(info.global == 1)
-                 write_c0_watchhi0(0x40000000);
-#endif
-
-     }
-     break ;
-     case MPOOL_IOC_GETWATCHPT:
-     {
-
-	#ifdef CONFIG_ARM
-	char str[200];
-        DrvMPool_Wcvr_Info_t info;
-	int m;
-        ARM_DBG_READ(c0, c1, 6, info.wvr1);
-	for(m = 0; m < 10000; m++);
-        ARM_DBG_READ(c0, c0, 6, info.wvr0);
-	for(m = 0; m < 10000; m++);
-        ARM_DBG_READ(c0, c1, 7, info.wcr1);
-	for(m = 0; m < 10000; m++);
-        ARM_DBG_READ(c0, c0, 7, info.wcr0);
-	for(m = 0; m < 10000; m++);
-	sprintf(str,"ARM HW watchpoint register,the wvr0 is:%#x,wvr1 is:%#x,wcr0 is:%#x,wcr1 is:%#x",info.wvr0,info.wvr1,info.wcr0,info.wcr1);
-	ret = copy_to_user( (void *)arg, str, sizeof(str) );
-	#endif
-     }
-     break;
-#endif //CONFIG_HAVE_HW_BREAKPOINT
 
 	case MPOOL_IOC_PA2BA:
 	{
 		MS_PHY64 bus_address = 0;
 		MS_PHY64 phy_address = 0;
+
 		ret= copy_from_user(&phy_address, (void __user *)arg, sizeof(MS_PHY64));
-#if ARM_MIU0_BASE_ADDR != 0
-		if( (phy_address >= ARM_MIU0_BASE_ADDR) && (phy_address < ARM_MIU1_BASE_ADDR) ) // MIU0
-#else
-		if(phy_address < ARM_MIU1_BASE_ADDR) // MIU0
-#endif
-			bus_address = phy_address - ARM_MIU1_BASE_ADDR + ARM_MIU0_BUS_BASE;
-		else if( (phy_address >= ARM_MIU1_BASE_ADDR) && (phy_address < ARM_MIU2_BASE_ADDR) )    // MIU1
-			bus_address = phy_address - ARM_MIU1_BASE_ADDR + ARM_MIU1_BUS_BASE;
-		else
-			bus_address = phy_address - ARM_MIU2_BASE_ADDR + ARM_MIU2_BUS_BASE;    // MIU2
 
-        if (bus_address == 0)
-            return -EFAULT;
+                if ((phy_address >= ARM_MIU1_BASE_ADDR) && (phy_address < ARM_MIU2_BASE_ADDR))
+			bus_address = phy_address - ARM_MIU1_BASE_ADDR + ARM_MIU1_BUS_BASE; // MIU1
+                if ((phy_address >= ARM_MIU0_BASE_ADDR) && (phy_address < ARM_MIU1_BASE_ADDR))
+			bus_address = phy_address - ARM_MIU0_BASE_ADDR + ARM_MIU0_BUS_BASE; // MIU0
+                else
+                    return -EINVAL;
 
-		ret |= copy_to_user( (void *)arg, (void __user*)bus_address, sizeof(MS_PHY64));
+		ret |= copy_to_user((void *)arg, &bus_address, sizeof(MS_PHY64));
 		break;
 	}
 	case MPOOL_IOC_BA2PA:
 	{
 		MS_PHY64 bus_address = 0;
 		MS_PHY64 phy_address = 0;
+
 		ret= copy_from_user(&bus_address, (void __user *)arg, sizeof(MS_PHY64));
-		if( (bus_address >= ARM_MIU0_BUS_BASE) && (bus_address < ARM_MIU1_BUS_BASE) ) // MIU0
-			phy_address = bus_address - ARM_MIU0_BUS_BASE + ARM_MIU0_BASE_ADDR;
-		else if( (bus_address >= ARM_MIU1_BUS_BASE) && (bus_address < ARM_MIU2_BUS_BASE) ) // MIU1
-			phy_address = bus_address - ARM_MIU1_BUS_BASE + ARM_MIU1_BASE_ADDR;
+
+		if ((bus_address >= ARM_MIU1_BUS_BASE) && (bus_address < ARM_MIU2_BUS_BASE))
+			phy_address = bus_address - ARM_MIU1_BUS_BASE + ARM_MIU1_BASE_ADDR; // MIU1
+		if ((bus_address >= ARM_MIU0_BUS_BASE) && (bus_address < ARM_MIU1_BUS_BASE))
+			phy_address = bus_address - ARM_MIU0_BUS_BASE + ARM_MIU0_BASE_ADDR; // MIU0
 		else
-			phy_address = bus_address - ARM_MIU2_BUS_BASE + ARM_MIU2_BASE_ADDR; // MIU2
+			return -EINVAL;
 
-        if (phy_address == 0)
-            return -EFAULT;
-
-		ret |= copy_to_user( (void *)arg, (void __user*)phy_address, sizeof(MS_PHY64) );
+		ret |= copy_to_user((void *)arg, &phy_address, sizeof(MS_PHY64));
 		break;
 	}
     default:
@@ -943,68 +965,47 @@ static int _MDrv_MPOOL_Ioctl(struct inode *inode, struct file *filp, unsigned in
 
 MSYSTEM_STATIC int __init mod_mpool_init(void)
 {
-    int s32Ret;
-    dev_t dev;
+	int s32Ret;
+	dev_t dev;
 
-    //MDrv_SYS_GetMMAP(E_SYS_MMAP_LINUX_BASE, &mpool_size, &mpool_base);
-    //mpool_size = MDrv_SYS_GetDRAMLength()-mpool_base ;
+	mpool_class = class_create(THIS_MODULE, "mpool");
+	if (IS_ERR(mpool_class))
+		return PTR_ERR(mpool_class);
 
-    #if defined(CONFIG_MIPS)
-    //get_boot_mem_info(LINUX_MEM, &linux_base, &linux_size);
-    //get_boot_mem_info(LINUX_MEM2, &linux2_base, &linux2_size);
-    //get_boot_mem_info(MPOOL_MEM, &mpool_base, &mpool_size);
-    //get_boot_mem_info(EMAC_MEM, &emac_base, &emac_size);
-    #elif defined(CONFIG_ARM) || defined(CONFIG_ARM64)
-    //add here later
+	if (MPoolDev.s32MPoolMajor)
+	{
+		dev = MKDEV(MPoolDev.s32MPoolMajor, MPoolDev.s32MPoolMinor);
+		s32Ret = register_chrdev_region(dev, MOD_MPOOL_DEVICE_COUNT, MOD_MPOOL_NAME);
+	}
+	else
+	{
+		s32Ret = alloc_chrdev_region(&dev, MPoolDev.s32MPoolMinor, MOD_MPOOL_DEVICE_COUNT, MOD_MPOOL_NAME);
+		MPoolDev.s32MPoolMajor = MAJOR(dev);
+	}
 
-    #endif
+	if ( 0 > s32Ret)
+	{
+		MPOOL_DPRINTK("Unable to get major %d\n", MPoolDev.s32MPoolMajor);
+		class_destroy(mpool_class);
+		return s32Ret;
+	}
 
-    //printk( "\nMpool base=0x%08X\n", mpool_base );
-    //printk( "\nMpool size=0x%08X\n", mpool_size );
+	cdev_init(&MPoolDev.cDevice, &MPoolDev.MPoolFop);
+	if (0!= (s32Ret= cdev_add(&MPoolDev.cDevice, dev, MOD_MPOOL_DEVICE_COUNT)))
+	{
+		MPOOL_DPRINTK("Unable add a character device\n");
+		unregister_chrdev_region(dev, MOD_MPOOL_DEVICE_COUNT);
+		class_destroy(mpool_class);
+		return s32Ret;
+	}
 
-    mpool_class = class_create(THIS_MODULE, "mpool");
-    if (IS_ERR(mpool_class))
-    {
-        return PTR_ERR(mpool_class);
-    }
-
-    if (MPoolDev.s32MPoolMajor)
-    {
-        dev = MKDEV(MPoolDev.s32MPoolMajor, MPoolDev.s32MPoolMinor);
-        s32Ret = register_chrdev_region(dev, MOD_MPOOL_DEVICE_COUNT, MOD_MPOOL_NAME);
-    }
-    else
-    {
-        s32Ret = alloc_chrdev_region(&dev, MPoolDev.s32MPoolMinor, MOD_MPOOL_DEVICE_COUNT, MOD_MPOOL_NAME);
-        MPoolDev.s32MPoolMajor = MAJOR(dev);
-    }
-
-    if ( 0 > s32Ret)
-    {
-        MPOOL_DPRINTK("Unable to get major %d\n", MPoolDev.s32MPoolMajor);
-        class_destroy(mpool_class);
-        return s32Ret;
-    }
-
-    cdev_init(&MPoolDev.cDevice, &MPoolDev.MPoolFop);
-    if (0!= (s32Ret= cdev_add(&MPoolDev.cDevice, dev, MOD_MPOOL_DEVICE_COUNT)))
-    {
-        MPOOL_DPRINTK("Unable add a character device\n");
-        unregister_chrdev_region(dev, MOD_MPOOL_DEVICE_COUNT);
-        class_destroy(mpool_class);
-        return s32Ret;
-    }
-
-
-    device_create(mpool_class, NULL, dev, NULL, MOD_MPOOL_NAME);
-#ifdef CONFIG_MIPS
-	bMPoolInit = 1;
-#endif
-    return 0;
+	INIT_LIST_HEAD(&mpool_mapping_range_list);
+	device_create(mpool_class, NULL, dev, NULL, MOD_MPOOL_NAME);
+	return 0;
 }
 
-int MDrv_MPOOL_IOC_FlushDache(unsigned long arg){
-	return MHal_MPOOL_IOC_FlushDache(arg);
+int MDrv_MPOOL_IOC_FlushDache(DrvMPool_Info_t i){
+        return MHal_MPOOL_IOC_FlushDache(i);
 }
 MSYSTEM_STATIC void __exit mod_mpool_exit(void)
 {

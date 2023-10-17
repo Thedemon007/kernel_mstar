@@ -1,3 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0-only OR BSD-3-Clause */
+/******************************************************************************
+ *
+ * This file is provided under a dual license.  When you use or
+ * distribute this software, you may choose to be licensed under
+ * version 2 of the GNU General Public License ("GPLv2 License")
+ * or BSD License.
+ *
+ * GPLv2 License
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ *
+ * BSD LICENSE
+ *
+ * Copyright(C) 2019 MediaTek Inc.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ *  * Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *  * Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *  * Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ *****************************************************************************/
+
 #include <generated/autoconf.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -35,9 +89,10 @@
 #include "mdrv_ir_st.h"
 #include "mdrv_ir_io.h"
 #include "ir_config.h"
+#include "ir_ts.h"
 //-------------------------------------------------------------------------------------------------
 #define REG(addr)                   (*(volatile u32 *)(addr))
-
+#define REG_IR_CLEAN_FIFO_BIT       BIT15
 
 #define MSTAR_IR_DEVICE_NAME    "MStar Smart TV IR Receiver"
 #define MSTAR_IR_DRIVER_NAME    "MStar_IR"
@@ -50,6 +105,24 @@
 #endif
 
 #define uart_switch_debug(fmt, args...) printk("[%s] " fmt, __FUNCTION__, ##args)
+
+static DEFINE_SPINLOCK(ts_lock);
+extern struct list_head stage_List;
+extern unsigned int ts_IsEnable;
+static void free_list_time_stage(void){
+    spin_lock(&ts_lock);
+    struct  list_head *pos, *q;
+    list_for_each_safe(pos, q, &stage_List)
+    {
+        struct time_stage *ts = NULL;
+        ts = list_entry(pos, struct time_stage, list);
+        list_del_init(pos);
+        kfree(ts);
+    }
+    spin_unlock(&ts_lock);
+}
+
+
 /*******************  Global Variable  Start ******************/
 static u8 ir_irq_enable = 0xFF; //for record irq enable status
 static u8 ir_irq_sel = 0xFF;   //for record irq type (IR_RC or IR_ALL)
@@ -62,10 +135,6 @@ static u8 u8RepeatCount = 0;
 //for record get ir key time
 static u32 u32KeyTime = 0;
 static spinlock_t  irq_read_lock;
-#if defined(CONFIG_MSTAR_M5621)||defined(CONFIG_MSTAR_M7322)
-struct kobject *kobj_ref;
-unsigned long uart_switch_number=0;
-#endif
 /*******************  extern function Start ******************/
 #ifdef CONFIG_MIRC_INPUT_DEVICE
 #if(CONFIG_IR_KEYMAP_MSTAR_NEC)
@@ -73,8 +142,8 @@ unsigned long uart_switch_number=0;
     void exit_key_map_mstar_tv(void);
 #endif
 #if(CONFIG_IR_KEYMAP_TCL_RCA)
-    int init_key_map_tcl_tv(void);
-    void exit_key_map_tcl_tv(void);
+    int init_key_map_tcl_rca_tv(void);
+    void exit_key_map_tcl_rca_tv(void);
 #endif
 #if(CONFIG_IR_KEYMAP_TCL)
     int init_key_map_tcl_tv(void);
@@ -117,6 +186,14 @@ unsigned long uart_switch_number=0;
     void exit_key_map_metz_rm18(void);
     int init_key_map_metz_rm19(void);
     void exit_key_map_metz_rm19(void);
+#endif
+#if(CONFIG_IR_KEYMAP_SAMPO)
+int init_key_map_rc311_samp(void);
+void exit_key_map_rc311_samp(void);
+#endif
+#if(CONFIG_IR_KEYMAP_BEKO_RC5)
+int init_key_map_beko_rc5_tv(void);
+void exit_key_map_beko_rc5_tv(void);
 #endif
 #endif
 #if defined(CONFIG_EVDEV_MISC) || defined(CONFIG_EVDEV_MISC_MODULE)
@@ -169,23 +246,38 @@ IRModHandle IRDev=
     },
 };
 
-static void _Mdrv_IR_SetHeaderCode(u32 u32Headcode)
+static void _Mdrv_IR_SetHeaderCode(u32 u32Headcode0,u32 u32Headcode1)
 {
     IRModHandle* mstar_dev = &IRDev;
     u8 i = 0;
+    u8 index = 0;
+    u32IRHeaderCode[0] = u32Headcode0;
+    u32IRHeaderCode[1] = u32Headcode1;
     if (mstar_dev->pIRDev->ir_mode == IR_TYPE_FULLDECODE_MODE)
     {
-        u32IRHeaderCode[0] = u32Headcode;
-        //set register for full mode decoder
-        REG(REG_IR_CCODE) = ((u32IRHeaderCode[0]&0xff)<<8)|((u32IRHeaderCode[0]>>8) &0xff);
+        if((u32Headcode0 != 0xFFFF) && (u32Headcode0 != 0x0000))
+        {
+            //set register for full mode decoder0
+            REG(REG_IR_CCODE) = ((u32IRHeaderCode[0]&0xff)<<8)|((u32IRHeaderCode[0]>>8) &0xff);
+        }
+        if((u32Headcode1 != 0xFFFF) && (u32Headcode1 != 0x0000))
+        {
+            //set register for full mode decoder1
+            REG(REG_IR_CCODE1) = ((u32IRHeaderCode[1]&0xff)<<8)|((u32IRHeaderCode[1]>>8) &0xff);
+        }
     }
 
     for(i = 0;i< mstar_dev->pIRDev->support_num;i++)
     {
         if(mstar_dev->pIRDev->support_ir[i].eIRType == IR_TYPE_NEC)
         {
-            mstar_dev->pIRDev->support_ir[i].u32HeadCode = u32Headcode;
-            return ;
+            if((u32IRHeaderCode[index] != 0xFFFF) && (u32IRHeaderCode[index] != 0x0000))
+            {
+                mstar_dev->pIRDev->support_ir[i].u32HeadCode = u32IRHeaderCode[index];
+            }
+            index++;
+            if(index == 2)
+                return;
         }
 
     }
@@ -280,6 +372,10 @@ static void mstar_ir_hw_fulldecode_config(void)
     }
     ir_config_mode = IR_TYPE_FULLDECODE_MODE;
     IR_PRINT("##### Mstar IR HW Full Decode Config #####\n");
+    //Prevent residual value exist in sw fifo when system wakeup from standby status
+    REG(REG_IR_CTRL) &= (0xFF00); //disable IR ctrl regs
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= REG_IR_CLEAN_FIFO_BIT; //clear IR FIFO(Trigger reg_ir_fifo_clr)
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) &= (0xFF); //disable IR FIFO settings
     //3. set NEC timing & FIFO depth 16 bytes
     _MDrv_IR_Timing();
     REG(REG_IR_SEPR_BIT_FIFO_CTRL) = 0xF00UL;//[10:8]: FIFO depth, [11]:Enable FIFO full
@@ -329,7 +425,9 @@ int mstar_ir_isr_getdata_fulldecode(IRModHandle *mstar_dev)
     ev.pulse = u8Repeat;
     IRDBG_INFO(" u8Ir_Index = %d\n",u8Ir_Index);
     IRDBG_INFO("[Full Decode] Headcode =%x Key =%x\n",u32IRHeaderCode[u8Ir_Index],u8Keycode);
+    #ifdef CONFIG_MIRC_INPUT_DEVICE
     mstar_dev->pIRDev->map_num = mstar_dev->pIRDev->support_ir[u8Ir_Index].u32HeadCode;
+    #endif
 
     u32IRSpeed = mstar_dev->pIRDev->support_ir[u8Ir_Index].u32IRSpeed;
     if(u8Repeat)
@@ -350,8 +448,9 @@ int mstar_ir_isr_getdata_fulldecode(IRModHandle *mstar_dev)
     ret = MIRC_Data_Store(mstar_dev->pIRDev, &ev);
     if (ret < 0)
     {
-        IRDBG_ERR("Store IR data Error!\n");
+        printk_once("Store IR data Error and ret =%d \n",ret);
     }
+
     mstar_ir_nec_clearfifo();
     return ret;
 }
@@ -362,6 +461,10 @@ static void mstar_ir_hw_rawdecode_config(void)
         return ;
     ir_config_mode = IR_TYPE_RAWDATA_MODE;
     IR_PRINT("##### Mstar IR HW RAW Decode Config #####\n");
+    //Prevent residual value exist in sw fifo when system wakeup from standby status
+    REG(REG_IR_CTRL) &= (0xFF00); //disable IR ctrl regs
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= REG_IR_CLEAN_FIFO_BIT; //clear IR FIFO(Trigger reg_ir_fifo_clr)
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) &= (0xFF); //disable IR FIFO settings
     //1. set NEC timing  & FIFO depth 16 bytes
     _MDrv_IR_Timing();
     REG(REG_IR_SEPR_BIT_FIFO_CTRL) = 0xF00UL;//[10:8]: FIFO depth, [11]:Enable FIFO full
@@ -401,7 +504,10 @@ int mstar_ir_isr_getdata_rawdecode(IRModHandle *mstar_dev)
         REG(REG_IR_FIFO_RD_PULSE) |= 0x0001UL; //read
         for (i=0; i<10; i++); //For Delay
     }
-    IRDBG_INFO("[Raw Decode] Headcode =%x Key =%x\n",(_u8IRRawModeBuf[0]<<8|_u8IRRawModeBuf[1]),_u8IRRawModeBuf[2]);
+    if ((_u8IRRawModeBuf[0]<<8|_u8IRRawModeBuf[1]) != 0) //Headcode != 0
+    {
+        IRDBG_INFO("[Raw Decode] Headcode =%x Key =%x\n",(_u8IRRawModeBuf[0]<<8|_u8IRRawModeBuf[1]),_u8IRRawModeBuf[2]);
+    }
     for(i = 0;i< mstar_dev->pIRDev->support_num;i++)
     {
         if((_u8IRRawModeBuf[0] == (((u8)((mstar_dev->pIRDev->support_ir[i].u32HeadCode)>> 8))&0xff))&&(_u8IRRawModeBuf[1] == (((u8)(mstar_dev->pIRDev->support_ir[i].u32HeadCode))&0xff) ))
@@ -433,7 +539,9 @@ int mstar_ir_isr_getdata_rawdecode(IRModHandle *mstar_dev)
                     repeatcount = 0;
                     mstar_dev->pIRDev->filter_flag = 0;
                 }
+                #ifdef CONFIG_MIRC_INPUT_DEVICE
                 mstar_dev->pIRDev->map_num = mstar_dev->pIRDev->support_ir[i].u32HeadCode;
+                #endif
                 ev.duration = (mstar_dev->pIRDev->support_ir[i].u32HeadCode<<8) | _u8IRRawModeBuf[2];
 
                 ret = MIRC_Data_Store(mstar_dev->pIRDev, &ev);
@@ -450,7 +558,7 @@ int mstar_ir_isr_getdata_rawdecode(IRModHandle *mstar_dev)
             }
         }
     }
-    IRDBG_ERR("NO IR Matched!!!\n");
+    IRDBG_INFO("NO IR Matched!!!\n");
     mstar_ir_nec_clearfifo();
     return ret;
 }
@@ -462,6 +570,10 @@ void mstar_ir_hw_rc5decode_config(void)
     ir_config_mode = IR_TYPE_HWRC5_MODE;
 
     IR_PRINT("##### Mstar IR HW RC5 Decode Config #####\n");
+    //Prevent residual value exist in sw fifo when system wakeup from standby status
+    REG(REG_IR_CTRL) &= (0xFF00); //disable IR ctrl regs
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= REG_IR_CLEAN_FIFO_BIT; //clear IR FIFO(Trigger reg_ir_fifo_clr)
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) &= (0xFF); //disable IR FIFO settings
     //00 register set rc5 enable
     REG(REG_IR_RC_CTRL) = IR_RC_EN;
 
@@ -485,6 +597,11 @@ void mstar_ir_hw_rc5decode_config(void)
 
     //50 register set code bytes
     REG(REG_IR_TIMEOUT_CYC_H_CODE_BYTE) = (IR_RC5_BITS<<8) | 0x30UL;//[6:4]=011 : timeout be clear at Key Data Code check pass
+
+    REG(REG_IR_CTRL) = IR_INV;
+
+    //REG(REG_IR_RC_FIFO_RD_PULSE)|=0x1UL;
+
 }
 
 int mstar_ir_isr_getdata_rc5decode(IRModHandle *mstar_dev)
@@ -492,11 +609,59 @@ int mstar_ir_isr_getdata_rc5decode(IRModHandle *mstar_dev)
     u8 u8KeyAddr = 0;
     u8 u8KeyCmd = 0;
     u8 u8Flag = 0;
-    u8KeyAddr = REG(REG_IR_RC_KEY_COMMAND_ADD)&0x3f;//RC5: {2'b0,toggle,address[4:0]} reg[7:0]
+    u8 i = 0;
+    int ret = -1;
+    u32 prev_duration = 0;
+    static u8 speed = 0;
+    static u8 repeatcount = 0;
+    DEFINE_IR_RAW_DATA(ev);
+    u8KeyAddr = REG(REG_IR_RC_KEY_COMMAND_ADD)&0x1f;//RC5: {2'b0,toggle,address[4:0]} reg[7:0]
     u8KeyCmd = (REG(REG_IR_RC_KEY_COMMAND_ADD)&0x3f00)>>8;//RC5: {repeat,1'b0,command[13:8]} reg[15:8]
     u8Flag = (REG(REG_IR_RC_KEY_COMMAND_ADD)&0x8000)>>15;//repeat
+    REG(REG_IR_RC_FIFO_RD_PULSE)|=0x1UL;
+    IRDBG_INFO("[RC5] u8KeyAddr = %x  u8KeyCmd = %x  repeat = %d .\n",u8KeyAddr,u8KeyCmd,u8Flag);
+
+    for(i = 0;i< mstar_dev->pIRDev->support_num;i++)
+    {
+        if(u8KeyAddr == ((u8)(mstar_dev->pIRDev->support_ir[i].u32HeadCode)))
+        {
+            ev.duration = (u8KeyAddr<<8) | u8KeyCmd;
+	    ev.pulse = u8Flag;
+            if((u8Flag == 1) && (ev.duration == prev_duration))
+            {
+                if (((speed != 0)&&( repeatcount >= speed))
+                || ((speed == 0)&&(repeatcount >= mstar_dev->pIRDev->speed)))
+                {
+                    mstar_dev->pIRDev->filter_flag = 0;
+                }
+                else
+                {
+                    repeatcount++;
+                    IRDBG_INFO("repeat filter ====\n");
+                    mstar_dev->pIRDev->filter_flag = 1;
+                }
+            }
+            else
+            {
+                speed = mstar_dev->pIRDev->support_ir[i].u32IRSpeed;
+                repeatcount = 0;
+                mstar_dev->pIRDev->filter_flag = 0;
+                prev_duration = ev.duration;
+            }
+#ifdef CONFIG_MIRC_INPUT_DEVICE
+            mstar_dev->pIRDev->map_num = mstar_dev->pIRDev->support_ir[i].u32HeadCode;
+#endif
+            ret = MIRC_Data_Store(mstar_dev->pIRDev, &ev);
+            if (ret < 0)
+            {
+                IRDBG_ERR("Store IR data Error!\n");
+            }
+            mstar_ir_rc_clearfifo();
+            return ret;
+        }
+    }
     mstar_ir_rc_clearfifo();
-    IRDBG_INFO("[RC5] u8KeyAddr = %x  u8KeyCmd = %x  u8Flag = %d .\n",u8KeyAddr,u8KeyCmd,u8Flag);
+    IRDBG_ERR("NO IR Matched!!!\n");
     return 0;
 }
 
@@ -520,6 +685,10 @@ void mstar_ir_hw_rc6decode_config(void)
     ir_config_mode = IR_TYPE_HWRC6_MODE;
 
     IR_PRINT("##### Mstar IR HW RC6 Decode Config #####\n");
+    //Prevent residual value exist in sw fifo when system wakeup from standby status
+    REG(REG_IR_CTRL) &= (0xFF00); //disable IR ctrl regs
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= REG_IR_CLEAN_FIFO_BIT; //clear IR FIFO(Trigger reg_ir_fifo_clr)
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) &= (0xFF); //disable IR FIFO settings
     //00 register set rc6 enable
     REG(REG_IR_RC_CTRL) = IR_RC_AUTOCONFIG|IR_RC_EN|IR_RC6_EN|(((IR_RC6_LDPS_THR(IR_RC6_LEADPULSE)>>5)&0x1f));
 
@@ -568,6 +737,10 @@ static void mstar_ir_sw_decode_config(void)
     ir_config_mode = IR_TYPE_SWDECODE_MODE;
 
     IR_PRINT("##### Mstar IR SW Decode Config #####\n");
+    //Prevent residual value exist in sw fifo when system wakeup from standby status
+    REG(REG_IR_CTRL) &= (0xFF00); //disable IR ctrl regs
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= REG_IR_CLEAN_FIFO_BIT; //clear IR FIFO(Trigger reg_ir_fifo_clr)
+    REG(REG_IR_SEPR_BIT_FIFO_CTRL) &= (0xFF); //disable IR FIFO settings
     //1. set ctrl enable IR
     REG(REG_IR_CTRL) = IR_TIMEOUT_CHK_EN |
                        IR_INV            |
@@ -629,6 +802,9 @@ irqreturn_t _MDrv_IR_ISR(int irq, void *dev_id)
 
     if (NULL == mstar_dev)
         return -EINVAL;
+
+    gettime(TIME_START,MDRV_IR_ISR);
+
     if(mstar_dev->pIRDev->ir_mode == IR_TYPE_FULLDECODE_MODE)
         ret = mstar_ir_isr_getdata_fulldecode(mstar_dev);
     else if(mstar_dev->pIRDev->ir_mode == IR_TYPE_RAWDATA_MODE)
@@ -650,6 +826,8 @@ irqreturn_t _MDrv_IR_ISR(int irq, void *dev_id)
     }
     if(ret >= 0)
         MIRC_Data_Wakeup(mstar_dev->pIRDev);
+
+    gettime(TIME_END,MDRV_IR_ISR);
 
     return IRQ_HANDLED;
 }
@@ -696,10 +874,12 @@ static void mstar_ir_enable(u8 bEnableIR)
         }
     }
 }
+extern int bypass_ir_config;
 static void mstar_ir_customer_config(void)
 {
     MIRC_Set_IRDBG_Level(ir_dbglevel);
     MIRC_Set_IRSpeed_Level(ir_speed);
+    if(!bypass_ir_config)
     MIRC_IRCustomer_Config(ir_config,IR_SUPPORT_NUM);
     return ;
 }
@@ -749,10 +929,10 @@ void mstar_ir_reinit(void)
     {
         if(ir_irq_sel == 0)
         {
-#ifdef E_FIQEXPL_IR_INT_RC
+#ifdef E_FIQEXPL_IR_INT_RC5_RC6
             free_irq(INT_NUM_IR_ALL,&IRDev);
             ir_irq_enable = 0;
-            ret = request_irq(E_FIQEXPL_IR_INT_RC, _MDrv_IR_RC_ISR, SA_INTERRUPT, "IR_RC", &IRDev);
+            ret = request_irq(E_FIQEXPL_IR_INT_RC5_RC6, _MDrv_IR_RC_ISR, SA_INTERRUPT, "IR_RC", &IRDev);
             if (ret < 0)
             {
                 IRDBG_ERR("IR IRQ registartion ERROR!\n");
@@ -770,8 +950,8 @@ void mstar_ir_reinit(void)
     {
         if(ir_irq_sel == 1)
         {
-#ifdef E_FIQEXPL_IR_INT_RC
-            free_irq(E_FIQEXPL_IR_INT_RC,&IRDev);
+#ifdef E_FIQEXPL_IR_INT_RC5_RC6
+            free_irq(E_FIQEXPL_IR_INT_RC5_RC6,&IRDev);
             ir_irq_enable = 0;
 #endif
             ret = request_irq(INT_NUM_IR_ALL, _MDrv_IR_ISR, SA_INTERRUPT, "IR", &IRDev);
@@ -795,9 +975,6 @@ static void mstar_ir_init(int bResumeInit)
 {
     int ret = 0;
     struct mstar_ir_dev *dev = IRDev.pIRDev;
-
-    //Prevent residual value exist in sw fifo when system wakeup from standby status
-    REG(REG_IR_SEPR_BIT_FIFO_CTRL) |= 0x8000UL; //clear IR FIFO(Trigger reg_ir_fifo_clr)
 
     if(NULL == dev)
         return ;
@@ -842,8 +1019,8 @@ static void mstar_ir_init(int bResumeInit)
         ir_irq_enable = 0;
         if((dev->ir_mode == IR_TYPE_HWRC5_MODE)||(dev->ir_mode == IR_TYPE_HWRC5X_MODE)||(dev->ir_mode == IR_TYPE_HWRC6_MODE))
         {
-        #ifdef E_FIQEXPL_IR_INT_RC
-            ret = request_irq(E_FIQEXPL_IR_INT_RC, _MDrv_IR_RC_ISR, SA_INTERRUPT, "IR_RC", &IRDev);
+        #ifdef E_FIQEXPL_IR_INT_RC5_RC6
+            ret = request_irq(E_FIQEXPL_IR_INT_RC5_RC6, _MDrv_IR_RC_ISR, SA_INTERRUPT, "IR_RC", &IRDev);
             ir_irq_sel = 1;
         #else
             printk("E_FIQEXPL_IR_INT_RC IRQ not Found\n");
@@ -1155,7 +1332,7 @@ static int _mod_ir_ioctl(struct inode *inode, struct file *filp, unsigned int cm
         if(copy_from_user(&bEnableIR, (int __user *)arg, sizeof bEnableIR ))
         {
             IR_PRINT("ioctl: MDRV_IR_ENABLE_IR fail\n");
-            return EFAULT;
+            return -EFAULT;
         }
         mstar_ir_enable(bEnableIR);
         if (bEnableIR) {
@@ -1191,7 +1368,7 @@ static int _mod_ir_ioctl(struct inode *inode, struct file *filp, unsigned int cm
         if(copy_to_user((pid_t __user *)arg,&masterPid ,sizeof masterPid))
         {
             IR_PRINT("ioctl: MDRV_IR_GET_MASTER_PID fail\n");
-            return EFAULT;
+            return -EFAULT;
         }
         break;
 
@@ -1206,17 +1383,29 @@ static int _mod_ir_ioctl(struct inode *inode, struct file *filp, unsigned int cm
         IRDBG_INFO("ioctl:MDRV_IR_GET_SWSHOT_BUF\n");
         break;
     case MDRV_IR_SET_HEADER:
+    {
+        MS_MultiIR_HeaderInfo stItMulti_HeaderInfo;
+        u32 u32HeadCode0 = 0;
+        u32 u32HeadCode1 = 0;
         IRDBG_INFO("ioctl:MDRV_IR_SET_HEADER\n");
-        if(copy_from_user(&u32HeadCode, (int __user *)arg, sizeof(u32)))
-        {
+        if (copy_from_user(&stItMulti_HeaderInfo, (MS_MultiIR_HeaderInfo __user *)arg, sizeof(MS_MultiIR_HeaderInfo))) {
             IR_PRINT("ioctl: MDRV_IR_SET_HEADER fail\n");
-            return EFAULT;
+            return -EFAULT;
         }
-        IRDBG_INFO("[SET_HEADER] u32HeadCode = %x",u32HeadCode);
-        _Mdrv_IR_SetHeaderCode(u32HeadCode);
+        u32HeadCode0 = (stItMulti_HeaderInfo._u8IRHeaderCode1 | (stItMulti_HeaderInfo._u8IRHeaderCode0 << 8))&0xFFFF;
+        u32HeadCode1 = (stItMulti_HeaderInfo._u8IR2HeaderCode1 | (stItMulti_HeaderInfo._u8IR2HeaderCode0 << 8))&0xFFFF;
+        IRDBG_INFO(KERN_ERR"[SET_HEADER] u32HeadCode0 = 0x%x",u32HeadCode0);
+        IRDBG_INFO(KERN_ERR"[SET_HEADER] u32HeadCode1 = 0x%x",u32HeadCode1);
+        _Mdrv_IR_SetHeaderCode(u32HeadCode0,u32HeadCode1);
         break;
+    }
     case MDRV_IR_SET_PROTOCOL:
         IRDBG_INFO("ioctl:MDRV_IR_SET_PROTOCOL\n");
+        break;
+    case MDRV_IR_ENABLE_WB_IR:
+        IRDBG_INFO("ioctl:MDRV_IR_ENABLE_WB_IR\n");
+        retval = __get_user(bEnableIR, (int __user *)arg);
+        MIRC_Set_WhiteBalance_Enable(bEnableIR);
         break;
     case MDRV_IR_SET_KEY_EVENT:
     {
@@ -1224,7 +1413,8 @@ static int _mod_ir_ioctl(struct inode *inode, struct file *filp, unsigned int cm
         IRDBG_INFO("ioctl:MDRV_IR_SET_KEY_EVENT\n");
         if (copy_from_user(&u8EventFlag, (U8 __user *)arg, sizeof(U8)))
         {
-            return EFAULT;
+            IR_PRINT("ioctl: MDRV_IR_SET_KEY_EVENT fail\n");
+            return -EFAULT;
         }
         MIRC_Send_KeyEvent(u8EventFlag);
         break;
@@ -1274,12 +1464,12 @@ static long _mod_ir_compat_ioctl(struct file *filp, unsigned int cmd, unsigned l
         IRDBG_INFO("ioctl:MDRV_IR_SEND_KEY\n");
         if(copy_from_user(&keyinfo.u8Key, &(((MS_IR_KeyInfo __user *)arg)->u8Key),sizeof keyinfo.u8Key))
         {
-            IR_PRINT("ioctl: MDRV_IR_ENABLE_IR keyinfo.u8Key fail\n");
+            IR_PRINT("ioctl: MDRV_IR_SEND_KEY keyinfo.u8Key fail\n");
             return -EFAULT;
         }
         if(copy_from_user(&keyinfo.u8Flag, &(((MS_IR_KeyInfo __user *)arg)->u8Flag),sizeof keyinfo.u8Flag))
         {
-            IR_PRINT("ioctl: MDRV_IR_ENABLE_IR keyinfo.u8Flag fail\n");
+            IR_PRINT("ioctl: MDRV_IR_SEND_KEY keyinfo.u8Flag fail\n");
             return -EFAULT;
         }
         keyvalue = (keyinfo.u8Key<<8 | keyinfo.u8Flag);
@@ -1321,7 +1511,7 @@ static long _mod_ir_compat_ioctl(struct file *filp, unsigned int cmd, unsigned l
         if(copy_from_user(&bEnableIR, (int __user *)arg, sizeof bEnableIR ))
         {
             IR_PRINT("ioctl: MDRV_IR_ENABLE_IR fail\n");
-            return EFAULT;
+            return -EFAULT;
         }
         mstar_ir_enable(bEnableIR);
         if (bEnableIR) {
@@ -1372,14 +1562,26 @@ static long _mod_ir_compat_ioctl(struct file *filp, unsigned int cmd, unsigned l
         IRDBG_INFO("ioctl:MDRV_IR_GET_SWSHOT_BUF\n");
         break;
     case MDRV_IR_SET_HEADER:
+    {
+        MS_MultiIR_HeaderInfo stItMulti_HeaderInfo;
+        u32 u32HeadCode0 = 0;
+        u32 u32HeadCode1 = 0;
         IRDBG_INFO("ioctl:MDRV_IR_SET_HEADER\n");
-        if(copy_from_user(&u32HeadCode, (int __user *)arg, sizeof(u32)))
-        {
+        if (copy_from_user(&stItMulti_HeaderInfo, (MS_MultiIR_HeaderInfo __user *)arg, sizeof(MS_MultiIR_HeaderInfo))) {
             IR_PRINT("ioctl: MDRV_IR_SET_HEADER fail\n");
-            return EFAULT;
+            return -EFAULT;
         }
-        IRDBG_INFO("[SET_HEADER] u32HeadCode = %x",u32HeadCode);
-        _Mdrv_IR_SetHeaderCode(u32HeadCode);
+        u32HeadCode0 = (stItMulti_HeaderInfo._u8IRHeaderCode1 | (stItMulti_HeaderInfo._u8IRHeaderCode0 << 8))&0xFFFF;
+        u32HeadCode1 = (stItMulti_HeaderInfo._u8IR2HeaderCode1 | (stItMulti_HeaderInfo._u8IR2HeaderCode0 << 8))&0xFFFF;
+        IRDBG_INFO(KERN_ERR"[SET_HEADER] u32HeadCode0 = 0x%x",u32HeadCode0);
+        IRDBG_INFO(KERN_ERR"[SET_HEADER] u32HeadCode1 = 0x%x",u32HeadCode1);
+        _Mdrv_IR_SetHeaderCode(u32HeadCode0,u32HeadCode1);
+        break;
+    }
+	case MDRV_IR_ENABLE_WB_IR:
+        IRDBG_INFO("ioctl:MDRV_IR_ENABLE_WB_IR\n");
+        retval = __get_user(bEnableIR, (int __user *)arg);
+        MIRC_Set_WhiteBalance_Enable(bEnableIR);
         break;
     case MDRV_IR_SET_PROTOCOL:
         IRDBG_INFO("ioctl:MDRV_IR_SET_PROTOCOL\n");
@@ -1450,7 +1652,7 @@ static ssize_t mstar_ir_show_protocols(struct device *device,struct device_attri
     IR_PRINT("===========Protocols Attr Show========\n");
     enable_protocols = MIRC_Get_Protocols();
     IR_PRINT("Eenable_Protocols =0x%llx \n",enable_protocols);
-    strcat(buf,"Eenable Protocols Name:");
+    strncat(buf,"Eenable Protocols Name:",23);
     for (i =0; i<IR_TYPE_MAX; i++)
     {
         if ((enable_protocols>>i)&0x01)
@@ -1458,20 +1660,23 @@ static ssize_t mstar_ir_show_protocols(struct device *device,struct device_attri
             switch (i)
             {
             case IR_TYPE_NEC :
-                strcat(buf,"NEC  ");
+                strncat(buf,"NEC  ",5);
                 break;
             case IR_TYPE_RCA :
-                strcat(buf,"RCA  ");
+                strncat(buf,"RCA  ",5);
                 break;
             case IR_TYPE_P7051:
-                strcat(buf,"PANASONIC 7051  ");
+                strncat(buf,"PANASONIC 7051  ",16);
+                break;
+            case IR_TYPE_METZ:
+                strcat(buf,"metz  ");
                 break;
             default:
                 break;
             }
         }
     }
-    strcat(buf,"\n");
+    strncat(buf,"\n",1);
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1488,6 +1693,7 @@ static ssize_t mstar_ir_store_protocols(struct device *device,struct device_attr
 
 static ssize_t mstar_ir_show_debug(struct device *device,struct device_attribute *mattr, char *buf)
 {
+#define CUR_DBG_LV_SZ 30
     ssize_t ret = 0;
     IR_DBG_LEVEL_e level = IR_DBG_NONE;
     IR_PRINT("===========Mstar IR Debug Show========\n");
@@ -1499,7 +1705,7 @@ static ssize_t mstar_ir_show_debug(struct device *device,struct device_attribute
     IR_PRINT("          4:IR_DBG_INFO\n");
     IR_PRINT("          5:IR_DBG_ALL\n");
     level = MIRC_Get_IRDBG_Level();
-    sprintf(buf, "Current Debug Level:  %d\n",level);
+    snprintf(buf, CUR_DBG_LV_SZ ,"Current Debug Level:  %d\n",level);
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1518,6 +1724,7 @@ static ssize_t mstar_ir_store_debug(struct device *device,struct device_attribut
 }
 static ssize_t mstar_ir_show_speed(struct device *device,struct device_attribute *mattr, char *buf)
 {
+#define CUR_SPD_LV_SZ 30
     ssize_t ret = 0;
     IR_DBG_LEVEL_e level = IR_DBG_NONE;
     IR_PRINT("===========Mstar IR Speed Show========\n");
@@ -1530,7 +1737,7 @@ static ssize_t mstar_ir_show_speed(struct device *device,struct device_attribute
     IR_PRINT("          5:IR_SPEED_SLOW_N\n");
     IR_PRINT("          6:IR_SPEED_SLOW_L\n");
     level = MIRC_Get_IRSpeed_Level();
-    sprintf(buf, "Current Speed Level:  %d\n",level);
+    snprintf(buf,CUR_SPD_LV_SZ, "Current Speed Level:  %d\n",level);
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1549,10 +1756,11 @@ static ssize_t mstar_ir_store_speed(struct device *device,struct device_attribut
 }
 static ssize_t mstar_ir_show_enable(struct device *device,struct device_attribute *mattr, char *buf)
 {
+#define CUR_IR_EN_SZ 30
     ssize_t ret = 0;
     unsigned int IsEnable = 0;
     IsEnable = ir_irq_enable;
-    sprintf(buf, "Current IR IsEnable:  %d\n",IsEnable);
+    snprintf(buf,CUR_IR_EN_SZ,"Current IR IsEnable:  %d\n",IsEnable);
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1576,8 +1784,9 @@ static ssize_t mstar_ir_store_enable(struct device *device,struct device_attribu
 //show usage IREvent
 static ssize_t mstar_ir_show_event(struct device *device,struct device_attribute *mattr, char *buf)
 {
+#define USAGE_SZ 30
     ssize_t ret = 0;
-    sprintf(buf, "usage: echo up > IREvent \n");
+    snprintf(buf,USAGE_SZ,"usage: echo up > IREvent \n");
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1598,14 +1807,103 @@ static ssize_t mstar_ir_store_event(struct device *device,struct device_attribut
 }
 
 
+static ssize_t mstar_ir_show_time_analysis_enable(struct device *device,struct device_attribute *mattr, char *buf)
+{
+    ssize_t ret = 0;
+    extern unsigned int ts_IsEnable ;
+    //IR_PRINT("===========ts IR enable Sshow========\n");
+    //IsEnable = MIRC_Get_IRSpeed_Level();
+    sprintf(buf, "Current IR ts_IsEnable:  %d\n",ts_IsEnable);
+    ret = strlen(buf)+1;
+    return ret;
+}
+
+static ssize_t mstar_ir_store_time_analysis_enable(struct device *device,struct device_attribute *mattr,const char *data,size_t len)
+{
+    extern unsigned int ts_IsEnable ;
+    ts_IsEnable = (unsigned int)simple_strtoul(data, NULL, 10);
+    if(ts_IsEnable)
+    {
+        printk("=======Enable IR ts!\n");
+    }
+    else
+    {
+        free_list_time_stage();
+        printk("=======Disable IR ts!\n");
+    }
+    return strlen(data);
+}
+
+char *keycode="key_code";
+char *repflag="flag";
+char *ir_isr="IR_ISR";
+char *data_get="Data_Get";
+char *decode_list_entry="Decode_list_entry";
+char *diff_protocol="Diff_protocol";
+char *keycode_from_map="Keycode_From_Map";
+char *data_ctrl_thread="Data_Ctrl_Thread";
+
+static ssize_t mstar_ir_show_time_analysis(struct device *device,struct device_attribute *mattr, char *buf)
+{
+
+    ssize_t   ret = 0;
+    extern unsigned int ts_IsEnable ;
+    struct list_head *pos, *q;
+    struct time_stage *ts;
+    int i=0;
+    if(ts_IsEnable == 0x1)
+        {
+
+            IR_PRINT(" no.%8s %4s %8s %10s %17s %15s %17s %17s (µs)\n",keycode,repflag,ir_isr,data_get,decode_list_entry,diff_protocol,keycode_from_map,data_ctrl_thread);
+
+
+            list_for_each_entry(ts,&stage_List,list)
+            {
+                i++;
+                IR_PRINT("%03d 0x%06x %4u %8lu %10lu %17lu %15lu %17lu %17lu\n",
+                         i,
+                         ts->keycode,
+                         ts->flag,
+                         ts->time_MDrv_IR_ISR.diff_time,
+                         //ts->time_MIRC_Data_Store.diff_time,
+                         ts->time_MIRC_Data_Get.diff_time,
+                         ts->time_MIRC_Decode_list_entry.diff_time,
+                         ts->time_MIRC_Diff_protocol.diff_time,
+                         //ts->time_MIRC_Data_Match_shotcount.diff_time,
+                         //ts->time_MIRC_Send_key_event.diff_time,
+                         //ts->time_MIRC_Data_Wakeup.diff_time,
+                         ts->time_MIRC_Keycode_From_Map.diff_time,
+                         ts->time_MIRC_Data_Ctrl_Thread.diff_time
+                        );
+            }
+            ret = strlen(buf)+1;
+        }
+    return ret;
+}
+
+static ssize_t mstar_ir_reset_time_analysis(struct device *device,struct device_attribute *mattr,const char *data,size_t len)
+{
+    if(data != NULL)
+    {
+        IRDBG_INFO(" data = %s\n",data);
+        if((strncmp(data,"reset",5) == 0) || (strncmp(data,"RESET",5) == 0))
+        free_list_time_stage();
+        return strlen(data);
+    }
+    else
+        return -1;
+}
+
+
 #ifdef CONFIG_MIRC_INPUT_DEVICE
 static ssize_t mstar_ir_show_timeout(struct device *device,struct device_attribute *mattr, char *buf)
 {
+#define CUR_EV_TIM_SZ 30
     ssize_t ret = 0;
     unsigned long timeout = 0;
     IR_PRINT("===========Mstar IR Timeout Show========\n");
     timeout = MIRC_Get_Event_Timeout();
-    sprintf(buf, "Current EventTimeout:  %lu\n",timeout);
+    snprintf(buf, CUR_EV_TIM_SZ ,"Current EventTimeout:  %lu\n",timeout);
     ret = strlen(buf)+1;
     return ret;
 }
@@ -1622,51 +1920,83 @@ static ssize_t mstar_ir_store_timeout(struct device *device,struct device_attrib
 static DEVICE_ATTR(IRTimeout, S_IRUGO | S_IWUSR, mstar_ir_show_timeout, mstar_ir_store_timeout);
 #endif
 
+static ssize_t mstar_ir_show_WhiteBalanceFlag(struct device *device,struct device_attribute *mattr, char *buf)
+{
+    ssize_t ret = 0;
+    bool flag = 0;
+    IR_PRINT("===========Mstar IR Timeout Show========\n");
+    flag = MIRC_IsEnable_WhiteBalance();
+    sprintf(buf, "WhiteBalance IR Status:  %s\n",(flag==TRUE)?"enable":"disable");
+    ret = strlen(buf)+1;
+    return ret;
+}
+
+static ssize_t mstar_ir_store_WhiteBalanceFlag(struct device *device,struct device_attribute *mattr,const char *data,size_t len)
+{
+    unsigned int Enable = 0;
+    Enable = (unsigned int)simple_strtoul(data, NULL, 10);
+    if(Enable)
+    {
+        printk("=======Enable WhiteBalance IR!\n");
+    }
+    else
+    {
+        printk("=======Disable WhiteBalance IR!\n");
+    }
+    MIRC_Set_WhiteBalance_Enable(Enable);
+    return strlen(data);
+}
+
+static ssize_t mstar_ir_show_Config(struct device *device,struct device_attribute *mattr, char *buf)
+{
+    ssize_t ret = 0;
+    IR_PRINT("===========Mstar IR config Show========\n");
+    MIRC_IR_Config_Dump();
+    sprintf(buf, "=======================================\n");
+    ret = strlen(buf)+1;
+    return ret;
+}
+
+static int str2ul(const char *str, u32 *val1,u32 * val2,u32 *val3)
+{
+    if(str == NULL)
+    {
+        return -1;
+    }
+    if(strchr(str,':') == NULL)
+    {
+        return -1;
+    }
+    if (sscanf(str, "%i:%i:%i", val1,val2,val3) == -1)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+static ssize_t mstar_ir_store_Config(struct device *device,struct device_attribute *mattr,const char *data,size_t len)
+{
+    u32 protocol = IR_TYPE_MAX;
+    u32 headcode = 0;
+    u32 enable = 0;
+    if(str2ul(data,&protocol,&headcode,&enable) !=0)
+    {
+        IRDBG_ERR("Data Format : echo protocol:headcode:enable > IRConfig\n");
+        return strlen(data);
+    }
+    printk("Config IR: protocol = %x,headcode = 0x%x,enable = %d!\n",protocol,headcode,enable);
+    MIRC_Set_IR_Enable((IR_Type_e)protocol ,headcode,(u8)enable);
+    return strlen(data);
+}
+static DEVICE_ATTR(IRConfig, S_IRUGO | S_IWUSR, mstar_ir_show_Config, mstar_ir_store_Config);
+static DEVICE_ATTR(IRWhiteBalance, S_IRUGO | S_IWUSR, mstar_ir_show_WhiteBalanceFlag, mstar_ir_store_WhiteBalanceFlag);
 static DEVICE_ATTR(IRProtocols, S_IRUGO | S_IWUSR, mstar_ir_show_protocols, mstar_ir_store_protocols);
 static DEVICE_ATTR(IRDebug, S_IRUGO | S_IWUSR, mstar_ir_show_debug, mstar_ir_store_debug);
 static DEVICE_ATTR(IRSpeed, S_IRUGO | S_IWUSR, mstar_ir_show_speed, mstar_ir_store_speed);
 static DEVICE_ATTR(IREnable, S_IRUGO | S_IWUSR, mstar_ir_show_enable, mstar_ir_store_enable);
 static DEVICE_ATTR(IREvent, S_IRUGO | S_IWUSR , mstar_ir_show_event, mstar_ir_store_event);
-
-/***************uart_switch sysfs Fuctions **********************/
-#if defined(CONFIG_MSTAR_M5621)||defined(CONFIG_MSTAR_M7322)
-static ssize_t uart_switch_sysfs_store(struct kobject *kobj,struct kobj_attribute *attr, char *buf, size_t count);
-static ssize_t uart_switch_sysfs_show(struct kobject *kobj,struct kobj_attribute *attr, char *buf, size_t count);
-struct kobj_attribute uart_switch[] = { __ATTR(uart_switch, 0660, uart_switch_sysfs_show, uart_switch_sysfs_store),};
-
-#if defined(CONFIG_ARM64)
-extern ptrdiff_t mstar_pm_base;
-#define RIU_VIRT_BASE  mstar_pm_base
-#else
-#define RIU_VIRT_BASE  0xFD000000
-#endif
-
-static ssize_t uart_switch_sysfs_store(struct kobject *kobj,struct kobj_attribute *attr, char *buf, size_t count){
-    uart_switch_debug("Sysfs uartswitch - Write!!!\n");
-    sscanf(buf,"%lx",&uart_switch_number);
-    uart_switch_debug("store uart_switch_number 0x%02x \n",__func__,uart_switch_number);
-    if(uart_switch_number==0x1){
-        (*(volatile unsigned int*)((RIU_VIRT_BASE+0x00203D4C))) |= (0x5);//101EA6
-    }else if (uart_switch_number==0x0){
-        (*(volatile unsigned int*)((RIU_VIRT_BASE+0x00203D4C))) &= 0xfff0;//101EA6
-        (*(volatile unsigned int*)((RIU_VIRT_BASE+0x00203D4C))) |= (0x4);//101EA6
-    }
-    return count;
-}
-
-
-static ssize_t uart_switch_sysfs_show(struct kobject *kobj,struct kobj_attribute *attr, char *buf, size_t count){
-    ssize_t ret = 0;
-    uart_switch_debug("Sysfs uartswitch - Read!!!\n");
-    unsigned int current_val=(*(volatile unsigned int*)((RIU_VIRT_BASE+0x00203D4C)));
-    uart_switch_debug("current_val:%X",current_val);
-    sscanf(buf,"%lx",&uart_switch_number);
-    uart_switch_debug("show uart_switch_number %X \n",uart_switch_number);
-    sprintf(buf, "%x\n",uart_switch_number);
-    ret = strlen(buf)+1;
-    return ret;
-}
-#endif
+static DEVICE_ATTR(ts_IREnable, S_IRUGO | S_IWUSR, mstar_ir_show_time_analysis_enable, mstar_ir_store_time_analysis_enable/*mstar_ir_store_enable*/);
+static DEVICE_ATTR(IRTimeAnalysis, S_IRUGO | S_IWUSR , mstar_ir_show_time_analysis, mstar_ir_reset_time_analysis);
 
 static int mstar_ir_creat_sysfs_attr(struct platform_device *pdev)
 {
@@ -1683,10 +2013,18 @@ static int mstar_ir_creat_sysfs_attr(struct platform_device *pdev)
         goto err_out;
     if ((ret = device_create_file(dev, &dev_attr_IREvent)))
         goto err_out;
+	if ((ret = device_create_file(dev, &dev_attr_IRWhiteBalance)))
+        goto err_out;
+    if ((ret = device_create_file(dev, &dev_attr_IRConfig)))
+        goto err_out;
 #ifdef CONFIG_MIRC_INPUT_DEVICE
     if ((ret = device_create_file(dev, &dev_attr_IRTimeout)))
         goto err_out;
 #endif
+    if ((ret = device_create_file(dev, &dev_attr_ts_IREnable)))
+        goto err_out;
+    if ((ret = device_create_file(dev, &dev_attr_IRTimeAnalysis)))
+        goto err_out;
     return 0;
 err_out:
     return ret;
@@ -1698,7 +2036,7 @@ static int mstar_ir_drv_probe(struct platform_device *pdev)
     int i=0;
     if (!(pdev->name) || strcmp(pdev->name,"Mstar-ir")|| pdev->id!=0)
     {
-        ret = -ENXIO;
+        IRDBG_ERR("platform_device pdev Failed! \n");
     }
     IRDev.u32IRFlag = 0;
 
@@ -1718,14 +2056,6 @@ static int mstar_ir_drv_probe(struct platform_device *pdev)
         IRDBG_ERR("mstar_ir_register_device Failed! \n");
     }
 
-#if defined(CONFIG_MSTAR_M5621)||defined(CONFIG_MSTAR_M7322)
-    kobj_ref= kobject_create_and_add("uart",kernel_kobj);
-    for(i=0;i<ARRAY_SIZE(uart_switch);i++)
-    if(sysfs_create_file(kobj_ref,&uart_switch[i].attr)){
-        uart_switch_debug("Cannot create sysfs file......\n");
-        goto err_sysfs;
-    }
-#endif
     pdev->dev.platform_data=&IRDev;
     mstar_ir_customer_config();
 
@@ -1734,14 +2064,6 @@ static int mstar_ir_drv_probe(struct platform_device *pdev)
     IRDev.u32IRFlag |= (IRFLAG_IRENABLE|IRFLAG_HWINITED);
 #endif
     return ret;
-#if defined(CONFIG_MSTAR_M5621)||defined(CONFIG_MSTAR_M7322)
-    err_sysfs:
-    kobject_put(kobj_ref);
-    for(i=0;i<ARRAY_SIZE(uart_switch);i++){
-        sysfs_remove_file(kernel_kobj,&uart_switch[i].attr);
-    }
-    return -1;
-#endif
 }
 
 static int mstar_ir_drv_remove(struct platform_device *pdev)
@@ -1825,7 +2147,7 @@ static int __init mstar_ir_drv_init_module(void)
     init_key_map_mstar_tv();
 #endif
 #if(CONFIG_IR_KEYMAP_TCL_RCA)
-    init_key_map_tcl_tv();
+    init_key_map_tcl_rca_tv();
 #endif
 #if(CONFIG_IR_KEYMAP_TCL)
     init_key_map_tcl_tv();
@@ -1858,6 +2180,13 @@ static int __init mstar_ir_drv_init_module(void)
     init_key_map_metz_rm18();
     init_key_map_metz_rm19();
 #endif
+#if(CONFIG_IR_KEYMAP_SAMPO)
+    init_key_map_rc311_samp();
+#endif
+#if(CONFIG_IR_KEYMAP_BEKO_RC5)
+    init_key_map_beko_rc5_tv();
+#endif
+
 #endif
     return ret;
 }
@@ -1870,7 +2199,7 @@ static void __exit mstar_ir_drv_exit_module(void)
     exit_key_map_mstar_tv();
 #endif
 #if(CONFIG_IR_KEYMAP_TCL_RCA)
-    exit_key_map_tcl_tv();
+    exit_key_map_tcl_rca_tv();
 #endif
 #if(CONFIG_IR_KEYMAP_TCL)
     exit_key_map_tcl_tv();
@@ -1902,6 +2231,12 @@ static void __exit mstar_ir_drv_exit_module(void)
 #if(CONFIG_IR_KEYMAP_METZ)
     exit_key_map_metz_rm18();
     exit_key_map_metz_rm19();
+#endif
+#if(CONFIG_IR_KEYMAP_SAMPO)
+    exit_key_map_rc311_samp();
+#endif
+#if(CONFIG_IR_KEYMAP_BEKO_RC5)
+    exit_key_map_beko_rc5_tv();
 #endif
 #endif
 }

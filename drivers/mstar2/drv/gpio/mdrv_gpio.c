@@ -171,74 +171,14 @@ void MDrv_GPIO_WriteRegBit(U32 u32Reg, U8 u8Enable, U8 u8BitMsk)
 EXPORT_SYMBOL(MDrv_GPIO_WriteRegBit);
 
 //-------------------------------------------------------------------------------------------------
-/// Set a Pad as GPIO
-/// @param  u8IndexGPIO              \b IN:  pad index
-/// @return None
-/// @note
-//-------------------------------------------------------------------------------------------------
-int MDrv_GPIO_Set_GPIO_Post_Init_Pad(const U8 u8IndexGPIO, const BOOL b_enable, const BOOL b_output_enable, const BOOL b_output_high)
-{
-	pr_info("[%s:%d] Set GPIO %u post init pad, enable = %u, output = %u, high = %u\n",
-		__FUNCTION__, __LINE__, u8IndexGPIO, b_enable, b_output_enable, b_output_high);
-
-	return MHal_GPIO_Set_Post_Init_GPIO_Pad(u8IndexGPIO, b_enable, b_output_enable, b_output_high);
-}
-EXPORT_SYMBOL(MDrv_GPIO_Set_GPIO_Post_Init_Pad);
-
-//-------------------------------------------------------------------------------------------------
-/// Set a Pad as GPIO
-/// @param  u8IndexGPIO              \b IN:  pad index
-/// @return None
-/// @note
-//-------------------------------------------------------------------------------------------------
-int MDrv_GPIO_Set_Pad_As_GPIO(const U8 u8IndexGPIO, const BOOL b_output_enable, const BOOL b_output_high)
-{
-	int result = 0;
-
-	if (u8IndexGPIO >= GPIO_UNIT_NUM) {
-		pr_err("[%s:%d] u8IndexGPIO >= %u\n", __FUNCTION__, __LINE__, GPIO_UNIT_NUM);
-		return -EINVAL;
-	}
-
-	pr_info("[%s:%d] Set GPIO %u pad as gpio, output_enable = %u, high = %u\n",
-		__FUNCTION__, __LINE__, u8IndexGPIO, b_output_enable, b_output_high);
-
-	result = MHal_GPIO_Set_Pad_As_GPIO(u8IndexGPIO);
-
-	if (b_output_enable == FALSE) {
-		MHal_GPIO_Set_Input(u8IndexGPIO);
-	} else if (b_output_high == TRUE) {
-		MHal_GPIO_Set_High(u8IndexGPIO);
-	} else {
-		MHal_GPIO_Set_Low(u8IndexGPIO);
-	}
-
-	return result;
-}
-EXPORT_SYMBOL(MDrv_GPIO_Set_Pad_As_GPIO);
-
-//-------------------------------------------------------------------------------------------------
-/// Get if a Pad is set as GPIO
-/// @param  u8IndexGPIO              \b IN:  pad index
-/// @param  pbIsGPIO                 \b OUT: TRUE if is GPIO, else FALSE
-/// @return 0 if success, otherwise kernel error no.
-/// @note
-//-------------------------------------------------------------------------------------------------
-int MDrv_GPIO_Is_Pad_GPIO(const U8 u8IndexGPIO, BOOL *const pbIsGPIO)
-{
-	return MHal_GPIO_Is_Pad_GPIO(u8IndexGPIO, pbIsGPIO);
-}
-EXPORT_SYMBOL(MDrv_GPIO_Is_Pad_GPIO);
-
-//-------------------------------------------------------------------------------------------------
 /// select one pad to set
 /// @param  u8IndexGPIO              \b IN:  pad index
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Pad_Set(U8 u8IndexGPIO)
+void MDrv_GPIO_Pad_Set(U32 u32IndexGPIO)
 {
-    MHal_GPIO_Pad_Set(u8IndexGPIO);
+    MHal_GPIO_Pad_Set(u32IndexGPIO);
 }
 EXPORT_SYMBOL(MDrv_GPIO_Pad_Set);
 
@@ -248,10 +188,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Pad_Set);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Pad_Oen(U8 u8IndexGPIO)
+void MDrv_GPIO_Pad_Oen(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Pad_Oen(u8IndexGPIO);
+   MHal_GPIO_Pad_Oen(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Pad_Oen);
@@ -262,10 +202,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Pad_Oen);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Pad_Odn(U8 u8IndexGPIO)
+void MDrv_GPIO_Pad_Odn(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Pad_Odn(u8IndexGPIO);
+   MHal_GPIO_Pad_Odn(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Pad_Odn);
@@ -276,11 +216,11 @@ EXPORT_SYMBOL(MDrv_GPIO_Pad_Odn);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-U8 MDrv_GPIO_Pad_Read(U8 u8IndexGPIO)
+U8 MDrv_GPIO_Pad_Read(U32 u32IndexGPIO)
 {
    U8 ret;
    LOCK_GPIO();
-   ret = MHal_GPIO_Pad_Level(u8IndexGPIO);
+   ret = MHal_GPIO_Pad_Level(u32IndexGPIO);
    UNLOCK_GPIO();
    return ret;
 }
@@ -292,11 +232,11 @@ EXPORT_SYMBOL(MDrv_GPIO_Pad_Read);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-U8 MDrv_GPIO_Pad_InOut(U8 u8IndexGPIO)
+U8 MDrv_GPIO_Pad_InOut(U32 u32IndexGPIO)
 {
    U8 ret;
    LOCK_GPIO();
-   ret = MHal_GPIO_Pad_InOut(u8IndexGPIO);
+   ret = MHal_GPIO_Pad_InOut(u32IndexGPIO);
    UNLOCK_GPIO();
    return ret;
 }
@@ -308,10 +248,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Pad_InOut);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Pull_High(U8 u8IndexGPIO)
+void MDrv_GPIO_Pull_High(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Pull_High(u8IndexGPIO);
+   MHal_GPIO_Pull_High(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Pull_High);
@@ -322,10 +262,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Pull_High);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Pull_Low(U8 u8IndexGPIO)
+void MDrv_GPIO_Pull_Low(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Pull_Low(u8IndexGPIO);
+   MHal_GPIO_Pull_Low(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Pull_Low);
@@ -336,10 +276,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Pull_Low);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Set_High(U8 u8IndexGPIO)
+void MDrv_GPIO_Set_High(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Set_High(u8IndexGPIO);
+   MHal_GPIO_Set_High(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Set_High);
@@ -350,10 +290,10 @@ EXPORT_SYMBOL(MDrv_GPIO_Set_High);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Set_Low(U8 u8IndexGPIO)
+void MDrv_GPIO_Set_Low(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Set_Low(u8IndexGPIO);
+   MHal_GPIO_Set_Low(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Set_Low);
@@ -364,28 +304,13 @@ EXPORT_SYMBOL(MDrv_GPIO_Set_Low);
 /// @return None
 /// @note
 //-------------------------------------------------------------------------------------------------
-void MDrv_GPIO_Set_Input(U8 u8IndexGPIO)
+void MDrv_GPIO_Set_Input(U32 u32IndexGPIO)
 {
    LOCK_GPIO();
-   MHal_GPIO_Set_Input(u8IndexGPIO);
+   MHal_GPIO_Set_Input(u32IndexGPIO);
    UNLOCK_GPIO();
 }
 EXPORT_SYMBOL(MDrv_GPIO_Set_Input);
-
-/*
-Get GPIO's current value
-It work for both output and input case
-Return value: 1 means high, 0 mmans low
- */
-int MDrv_GPIO_Get_Level(U8 u8IndexGPIO)
-{
-	int ret;
-	LOCK_GPIO();
-	ret = MHal_GPIO_Get_Level(u8IndexGPIO);
-	UNLOCK_GPIO();
-	return ret;
-}
-EXPORT_SYMBOL(MDrv_GPIO_Get_Level);
 
 #ifdef CONFIG_EXT_INTERRUPT_SUPPORT
 static void (*_GPIOCallback)(void);
@@ -403,7 +328,7 @@ EXPORT_SYMBOL(request_gpio_irq);
 
 int free_gpio_irq(int gpio_num, void *dev_id)
 {
-   return (MHal_GPIO_Disable_Interrupt(gpio_num));
+   return (MHal_GPIO_Disable_Interrupt(gpio_num, dev_id));
 }
 EXPORT_SYMBOL(free_gpio_irq);
 
@@ -415,6 +340,4 @@ void Mstar_Gpio_Irq_Attach(int gpio_num, unsigned long irqflags,void *ptr)
   request_gpio_irq(gpio_num,gpio_irq_handler,irqflags+1,NULL);
 }
 EXPORT_SYMBOL(Mstar_Gpio_Irq_Attach);
-
 #endif
-
