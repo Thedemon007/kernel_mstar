@@ -69,7 +69,7 @@ struct miscdevice  {
 };
 
 extern int misc_register(struct miscdevice *misc);
-extern void misc_deregister(struct miscdevice *misc);
+extern int misc_deregister(struct miscdevice *misc);
 
 /*
  * Helper macro for drivers that don't do anything special in module init / exit
