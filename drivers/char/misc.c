@@ -246,7 +246,7 @@ int misc_register(struct miscdevice * misc)
  *	successfully registered with misc_register().
  */
 
-int misc_deregister(struct miscdevice *misc)
+void misc_deregister(struct miscdevice *misc)
 {
 	int i = DYNAMIC_MINORS - misc->minor - 1;
 
@@ -259,7 +259,6 @@ int misc_deregister(struct miscdevice *misc)
 	if (i < DYNAMIC_MINORS && i >= 0)
 		clear_bit(i, misc_minors);
 	mutex_unlock(&misc_mtx);
-        return 0;
 }
 
 EXPORT_SYMBOL(misc_register);
