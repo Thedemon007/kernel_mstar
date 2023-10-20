@@ -1,6 +1,16 @@
 #
 # Makefile for physical layer USB drivers
 #
+
+# compatiblity with mstar
+EXTRA_CFLAGS      += -Idrivers/mstar/usb
+
+# compatiblity with mstar2
+EXTRA_CFLAGS      += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/usb
+EXTRA_CFLAGS      += -Idrivers/mstar2/include
+EXTRA_CFLAGS      += -Idrivers/mstar2/drv/gpio/
+EXTRA_CFLAGS      += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/gpio/
+
 obj-$(CONFIG_USB_PHY)			+= phy.o
 obj-$(CONFIG_OF)			+= of.o
 obj-$(CONFIG_USB_OTG_WAKELOCK)		+= otg-wakelock.o
@@ -24,6 +34,7 @@ obj-$(CONFIG_USB_ISP1301)		+= phy-isp1301.o
 obj-$(CONFIG_USB_MSM_OTG)		+= phy-msm-usb.o
 obj-$(CONFIG_USB_QCOM_8X16_PHY)	+= phy-qcom-8x16-usb.o
 obj-$(CONFIG_USB_MV_OTG)		+= phy-mv-usb.o
+obj-$(CONFIG_USB_MS_OTG)		+= phy-ms-usb.o
 obj-$(CONFIG_USB_MXS_PHY)		+= phy-mxs-usb.o
 obj-$(CONFIG_USB_ULPI)			+= phy-ulpi.o
 obj-$(CONFIG_USB_ULPI_VIEWPORT)		+= phy-ulpi-viewport.o

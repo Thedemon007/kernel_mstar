@@ -59,4 +59,26 @@ obj-$(CONFIG_MTD_NAND_BRCMNAND)		+= brcmnand/
 obj-$(CONFIG_MTD_NAND_QCOM)		+= qcom_nandc.o
 obj-$(CONFIG_MTD_NAND_MTK)		+= mtk_nand.o mtk_ecc.o
 
+ifeq ($(CONFIG_MSTAR_NAND),y)
+
+# compatiblity with mstar
+EXTRA_CFLAGS    += -Idrivers/mstar/nand/fcie3/inc/api
+EXTRA_CFLAGS    += -Idrivers/mstar/nand/fcie3/inc/common
+EXTRA_CFLAGS    += -Idrivers/mstar/nand/fcie3/inc/config
+
+# compatiblity with mstar2
+EXTRA_CFLAGS    += -Idrivers/mstar2/drv/nand/inc/api
+EXTRA_CFLAGS    += -Idrivers/mstar2/drv/nand/inc/common
+EXTRA_CFLAGS    += -Idrivers/mstar2/drv/nand/inc/config
+EXTRA_CFLAGS    += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/nand
+EXTRA_CFLAGS    += -Idrivers/mstar2/include
+
+endif
+
+ifeq ($(CONFIG_MSTAR_SPI_NAND),y)
+CONFIG_MSTAR_CHIP_NAME := $(subst ",,$(CONFIG_MSTAR_CHIP_NAME))
+EXTRA_CFLAGS      +=  -Idrivers/mstar/spinand/inc/common
+EXTRA_CFLAGS      +=  -Idrivers/mstar/spinand/inc/config
+EXTRA_CFLAGS      +=  -Idrivers/mstar/spinand/inc/config/$(CONFIG_MSTAR_CHIP_NAME)
+endif
 nand-objs := nand_base.o nand_bbt.o nand_timings.o

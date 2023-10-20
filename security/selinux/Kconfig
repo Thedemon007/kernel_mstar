@@ -74,6 +74,13 @@ config SECURITY_SELINUX_AVC_STATS
 	  /selinux/avc/cache_stats, which may be monitored via
 	  tools such as avcstat.
 
+config SECURITY_SELINUX_KERN_PERMISSIVE
+	bool "Allow kernel to set SELinux enforcing/permissive mode"
+	depends on SECURITY_SELINUX_DEVELOP
+	default n
+	help
+	This allows kernel code to set enforcing/permissive mode at runtime.
+
 config SECURITY_SELINUX_CHECKREQPROT_VALUE
 	int "NSA SELinux checkreqprot default value"
 	depends on SECURITY_SELINUX

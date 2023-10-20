@@ -227,12 +227,28 @@ export srctree objtree VPATH
 # then ARCH is assigned, getting whatever value it gets normally, and
 # SUBARCH is subsequently ignored.
 
-SUBARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
-				  -e s/sun4u/sparc64/ \
-				  -e s/arm.*/arm/ -e s/sa110/arm/ \
-				  -e s/s390x/s390/ -e s/parisc64/parisc/ \
-				  -e s/ppc.*/powerpc/ -e s/mips.*/mips/ \
-				  -e s/sh[234].*/sh/ -e s/aarch64.*/arm64/ )
+#SUBARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
+#				  -e s/sun4u/sparc64/ \
+#				  -e s/arm.*/arm/ -e s/sa110/arm/ \
+#				  -e s/s390x/s390/ -e s/parisc64/parisc/ \
+#				  -e s/ppc.*/powerpc/ -e s/mips.*/mips/ \
+#				  -e s/sh[234].*/sh/ -e s/aarch64.*/arm64/ )
+
+
+#wc means count the number of CONFIG_ARM/CONFIG_MIPS
+target_ARM = $(shell cat .config | sed -n '/CONFIG_ARM=/p' | wc -l )
+target_ARM64 = $(shell cat .config | sed -n '/CONFIG_ARM64=/p' | wc -l )
+target_MIPS = $(shell cat .config | sed -n '/CONFIG_MIPS=/p' | wc -l )
+
+ifeq ($(target_ARM),1)
+    SUBARCH = arm
+endif
+ifeq ($(target_ARM64),1)
+    SUBARCH = arm64
+endif
+ifeq ($(target_MIPS),1)
+    SUBARCH = mips
+endif
 
 # Cross compiling and selecting different set of gcc/bin-utils
 # ---------------------------------------------------------------------------
@@ -398,7 +414,12 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
+		   -fno-delete-null-pointer-checks \
 		   -std=gnu89
+
+#if defined(CONFIG_MSTAR_ARM)
+KBUILD_CFLAGS   += -fno-peephole2
+#endif
 KBUILD_CPPFLAGS := -D__KERNEL__
 KBUILD_AFLAGS_KERNEL :=
 KBUILD_CFLAGS_KERNEL :=
@@ -411,11 +432,18 @@ GCC_PLUGINS_CFLAGS :=
 KERNELRELEASE = $(shell cat include/config/kernel.release 2> /dev/null)
 KERNELVERSION = $(VERSION)$(if $(PATCHLEVEL),.$(PATCHLEVEL)$(if $(SUBLEVEL),.$(SUBLEVEL)))$(EXTRAVERSION)
 
+ifeq ($(DEBUGKERNEL),1)
+KCONFIG_DEBUG_PATH = lib/Kconfig.debug
+else
+KCONFIG_DEBUG_PATH = lib/Kconfig.debug.performance
+endif
+
 export VERSION PATCHLEVEL SUBLEVEL KERNELRELEASE KERNELVERSION
 export ARCH SRCARCH CONFIG_SHELL HOSTCC HOSTCFLAGS CROSS_COMPILE AS LD CC
 export CPP AR NM STRIP OBJCOPY OBJDUMP
 export MAKE AWK GENKSYMS INSTALLKERNEL PERL PYTHON UTS_MACHINE
 export HOSTCXX HOSTCXXFLAGS LDFLAGS_MODULE CHECK CHECKFLAGS
+export HOSTLDFLAGS
 
 export KBUILD_CPPFLAGS NOSTDINC_FLAGS LINUXINCLUDE OBJCOPYFLAGS LDFLAGS
 export KBUILD_CFLAGS CFLAGS_KERNEL CFLAGS_MODULE CFLAGS_KASAN CFLAGS_UBSAN
@@ -423,16 +451,23 @@ export KBUILD_AFLAGS AFLAGS_KERNEL AFLAGS_MODULE
 export KBUILD_AFLAGS_MODULE KBUILD_CFLAGS_MODULE KBUILD_LDFLAGS_MODULE
 export KBUILD_AFLAGS_KERNEL KBUILD_CFLAGS_KERNEL
 export KBUILD_ARFLAGS
+export KCONFIG_DEBUG_PATH
 
 # When compiling out-of-tree modules, put MODVERDIR in the module
 # tree rather than in the kernel tree. The kernel tree might
 # even be read-only.
 export MODVERDIR := $(if $(KBUILD_EXTMOD),$(firstword $(KBUILD_EXTMOD))/).tmp_versions
 
+ifdef MTK_EXTMOD_OBJ
+export MODVERDIR := $(if $(KBUILD_EXTMOD),$(firstword $(MTK_EXTMOD_OBJ))/).tmp_versions
+endif
+
 # Files to ignore in find ... statements
 
-export RCS_FIND_IGNORE := \( -name SCCS -o -name BitKeeper -o -name .svn -o    \
-			  -name CVS -o -name .pc -o -name .hg -o -name .git \) \
+export MTK_CLEAN_IGNORE_PATH   := fusion_loader
+
+export RCS_FIND_IGNORE := \( -name SCCS -o -name BitKeeper -o -name .svn -o \
+			  -name CVS -o -name .pc -o -name .hg -o -name .git -o -name $(MTK_CLEAN_IGNORE_PATH) \) \
 			  -prune -o
 export RCS_TAR_IGNORE := --exclude SCCS --exclude BitKeeper --exclude .svn \
 			 --exclude CVS --exclude .pc --exclude .hg --exclude .git
@@ -477,7 +512,6 @@ asm-generic:
 # of make so .config is not included in this case either (for *config).
 
 version_h := include/generated/uapi/linux/version.h
-old_version_h := include/linux/version.h
 
 no-dot-config-targets := clean mrproper distclean \
 			 cscope gtags TAGS tags help% %docs check% coccicheck \
@@ -541,6 +575,7 @@ config: scripts_basic outputmakefile FORCE
 	$(Q)$(MAKE) $(build)=scripts/kconfig $@
 
 %config: scripts_basic outputmakefile FORCE
+	$(Q)mkdir -p include/linux include/config
 	$(Q)$(MAKE) $(build)=scripts/kconfig $@
 
 else
@@ -765,6 +800,14 @@ ifdef CONFIG_CC_STACKPROTECTOR
 endif
 KBUILD_CFLAGS += $(stackp-flag)
 
+ifdef CONFIG_KCOV
+  ifeq ($(call cc-option, $(CFLAGS_KCOV)),)
+    $(warning Cannot use CONFIG_KCOV: \
+             -fsanitize-coverage=trace-pc is not supported by compiler)
+    CFLAGS_KCOV =
+  endif
+endif
+
 ifeq ($(cc-name),clang)
 ifneq ($(CROSS_COMPILE),)
 CLANG_TRIPLE    ?= $(CROSS_COMPILE)
@@ -882,8 +925,13 @@ KBUILD_CFLAGS  += $(call cc-option,-fno-stack-check,)
 # conserve stack if available
 KBUILD_CFLAGS   += $(call cc-option,-fconserve-stack)
 
+#change compile option to patch utopia2k compile error
+ifeq ($(CONFIG_MP_PLATFORM_UTOPIA2K_COMPILE_PATCH),y)
+KBUILD_CFLAGS   += $(call cc-option,-Wimplicit-int)
+else
 # disallow errors like 'EXPORT_GPL(foo);' with missing header
 KBUILD_CFLAGS   += $(call cc-option,-Werror=implicit-int)
+endif
 
 # require functions to have arguments in prototypes, not empty 'int foo()'
 KBUILD_CFLAGS   += $(call cc-option,-Werror=strict-prototypes)
@@ -1011,6 +1059,18 @@ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
 		     $(net-y) $(net-m) $(libs-y) $(libs-m) $(virt-y)))
 
+#for kdebugd
+ifdef CONFIG_KDEBUGD
+KDBGINCLUDE     := -Ikernel/kdebugd\
+		-Ikernel/kdebugd/include \
+		-Ikernel/kdebugd/include/kdebugd \
+                -Ikernel/kdebugd/aop \
+                -Ikernel/kdebugd/elf \
+                -Ikernel/kdebugd/elf/dem_src
+
+LINUXINCLUDE    += $(KDBGINCLUDE)
+export LINUXINCLUDE
+endif
 vmlinux-alldirs	:= $(sort $(vmlinux-dirs) $(patsubst %/,%,$(filter %/, \
 		     $(init-) $(core-) $(drivers-) $(net-) $(libs-) $(virt-))))
 
@@ -1104,14 +1164,14 @@ PHONY += prepare archprepare prepare0 prepare1 prepare2 prepare3
 # and if so do:
 # 1) Check that make has not been executed in the kernel src $(srctree)
 prepare3: include/config/kernel.release
-ifneq ($(KBUILD_SRC),)
-	@$(kecho) '  Using $(srctree) as source for kernel'
-	$(Q)if [ -f $(srctree)/.config -o -d $(srctree)/include/config ]; then \
-		echo >&2 "  $(srctree) is not clean, please run 'make mrproper'"; \
-		echo >&2 "  in the '$(srctree)' directory.";\
-		/bin/false; \
-	fi;
-endif
+#ifneq ($(KBUILD_SRC),)
+#	@$(kecho) '  Using $(srctree) as source for kernel'
+#	$(Q)if [ -f $(srctree)/.config -o -d $(srctree)/include/config ]; then \
+#		echo >&2 "  $(srctree) is not clean, please run 'make mrproper'"; \
+#		echo >&2 "  in the '$(srctree)' directory.";\
+#		/bin/false; \
+#	fi;
+#endif
 
 # prepare2 creates a makefile if using a separate output directory.
 # From this point forward, .config has been reprocessed, so any rules
@@ -1215,7 +1275,6 @@ endef
 
 $(version_h): $(srctree)/Makefile FORCE
 	$(call filechk,version.h)
-	$(Q)rm -f $(old_version_h)
 
 include/generated/utsrelease.h: include/config/kernel.release FORCE
 	$(call filechk,utsrelease.h)
@@ -1385,8 +1444,8 @@ CLEAN_DIRS  += $(MODVERDIR)
 
 # Directories & files removed with 'make mrproper'
 MRPROPER_DIRS  += include/config usr/include include/generated          \
-		  arch/*/include/generated .tmp_objdiff
-MRPROPER_FILES += .config .config.old .version .old_version \
+                  arch/*/include/generated
+MRPROPER_FILES += .config .config.old .version .old_version $(version_h) \
 		  Module.symvers tags TAGS cscope* GPATH GTAGS GRTAGS GSYMS \
 		  signing_key.pem signing_key.priv signing_key.x509	\
 		  x509.genkey extra_certificates signing_key.x509.keyid	\
@@ -1427,10 +1486,11 @@ mrproper: clean archmrproper $(mrproper-dirs)
 PHONY += distclean
 
 distclean: mrproper
-	@find $(srctree) $(RCS_FIND_IGNORE) \
+	@find -L $(srctree) $(RCS_FIND_IGNORE) \
 		\( -name '*.orig' -o -name '*.rej' -o -name '*~' \
 		-o -name '*.bak' -o -name '#*#' -o -name '.*.orig' \
-		-o -name '.*.rej' -o -name '*%'  -o -name 'core' \) \
+		-o -name '.*.rej' \
+		-o -name '*%' -o -name '.*.cmd' -o -name 'core' \) \
 		-type f -print | xargs rm -f
 
 
@@ -1456,6 +1516,9 @@ board-dirs := $(dir $(wildcard $(srctree)/arch/$(SRCARCH)/configs/*/*_defconfig)
 board-dirs := $(sort $(notdir $(board-dirs:/=)))
 
 PHONY += help
+debug:
+	@echo  'Cleaning machine:$(CLEAN_FILES)'
+
 help:
 	@echo  'Cleaning targets:'
 	@echo  '  clean		  - Remove most generated files but keep the config and'
@@ -1603,6 +1666,11 @@ $(objtree)/Module.symvers:
 	echo )
 
 module-dirs := $(addprefix _module_,$(KBUILD_EXTMOD))
+
+ifdef MTK_EXTMOD_OBJ
+module-dirs := $(addprefix _module_,$(MTK_EXTMOD_OBJ))
+endif
+
 PHONY += $(module-dirs) modules
 $(module-dirs): crmodverdir $(objtree)/Module.symvers
 	$(Q)$(MAKE) $(build)=$(patsubst _module_%,%,$@)
@@ -1652,7 +1720,7 @@ endif # KBUILD_EXTMOD
 clean: $(clean-dirs)
 	$(call cmd,rmdirs)
 	$(call cmd,rmfiles)
-	@find $(if $(KBUILD_EXTMOD), $(KBUILD_EXTMOD), .) $(RCS_FIND_IGNORE) \
+	@find -L $(if $(KBUILD_EXTMOD), $(KBUILD_EXTMOD), .) $(RCS_FIND_IGNORE) \
 		\( -name '*.[oas]' -o -name '*.ko' -o -name '.*.cmd' \
 		-o -name '*.ko.*' \
 		-o -name '*.dwo'  \
@@ -1661,9 +1729,10 @@ clean: $(clean-dirs)
 		-o -name '*.symtypes' -o -name 'modules.order' \
 		-o -name modules.builtin -o -name '.tmp_*.o.*' \
 		-o -name '*.c.[012]*.*' \
-		-o -name '*.ll' \
-		-o -name '*.gcno' \
-		-o -name '*.*.symversions' \) -type f -print | xargs rm -f
+                -o -name '*.gcno' \
+                -o -name '*.*.symversions' \) -type f -print | xargs rm -f
+
+#	$(Q)$(MAKE) -C ./drivers/mstar2 clean
 
 # Generate tags for editors
 # ---------------------------------------------------------------------------

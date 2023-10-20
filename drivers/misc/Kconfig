@@ -499,6 +499,13 @@ config PANEL
 	  the kernel and started at boot. If you don't understand what all this
 	  is about, say N.
 
+config IDME
+	bool "IDME support"
+	depends on PROC_FS
+	help
+	  Select Y here to enable IDME support to read the data
+	  via userspace (i.e. /proc/idme/* entries)
+
 config PANEL_PARPORT
 	int "Default parallel port number (0=LPT1)"
 	depends on PANEL

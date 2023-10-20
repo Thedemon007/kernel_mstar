@@ -87,3 +87,13 @@ config PSTORE_RAM
 	  "ramoops.ko".
 
 	  For more information, see Documentation/ramoops.txt.
+
+config PSTORE_TVMSG
+    bool "Log tvos user space messages"
+    depends on PSTORE
+    help
+      When the option is enabled, pstore will export a character
+      interface /dev/tvmsg0 to log user space tv messages. On reboot
+      data can be retrieved from /sys/fs/pstore/console-ramoops-[ID].
+
+      If unsure, say N.

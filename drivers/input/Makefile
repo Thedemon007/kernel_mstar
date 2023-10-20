@@ -17,6 +17,7 @@ obj-$(CONFIG_INPUT_MOUSEDEV)	+= mousedev.o
 obj-$(CONFIG_INPUT_JOYDEV)	+= joydev.o
 obj-$(CONFIG_INPUT_EVDEV)	+= evdev.o
 obj-$(CONFIG_INPUT_EVBUG)	+= evbug.o
+obj-$(CONFIG_EVDEV_MISC)	+= evdev_misc.o
 
 obj-$(CONFIG_INPUT_KEYBOARD)	+= keyboard/
 obj-$(CONFIG_INPUT_MOUSE)	+= mouse/
@@ -30,3 +31,10 @@ obj-$(CONFIG_INPUT_KEYRESET)	+= keyreset.o
 obj-$(CONFIG_INPUT_KEYCOMBO)	+= keycombo.o
 
 obj-$(CONFIG_RMI4_CORE)		+= rmi4/
+ifdef CONFIG_MSTAR_DVFS
+EXTRA_CFLAGS += -Idrivers/mstar2/drv/dvfs/include
+EXTRA_CFLAGS += -Idrivers/mstar2/include
+EXTRA_CFLAGS += -Idrivers/mstar2/hal/$(CONFIG_MSTAR_CHIP_NAME)/dvfs
+endif
+
+EXTRA_CFLAGS += -Idrivers/mstar2/drv/ir_mirc/ir_dynamic_config

@@ -11,6 +11,9 @@ CFLAGS_REMOVE_insn.o = -pg
 CFLAGS_REMOVE_return_address.o = -pg
 
 CFLAGS_setup.o = -DUTS_MACHINE='"$(UTS_MACHINE)"'
+ifeq ($(CONFIG_MP_PLATFORM_ARM_64bit_PORTING),y)
+EXTRA_CFLAGS      +=  -Idrivers/mstar2/include
+endif
 
 # Object file lists.
 arm64-obj-y		:= debug-monitors.o entry.o irq.o fpsimd.o		\
@@ -40,6 +43,7 @@ arm64-obj-$(CONFIG_CPU_IDLE)		+= cpuidle.o
 arm64-obj-$(CONFIG_JUMP_LABEL)		+= jump_label.o
 arm64-obj-$(CONFIG_KGDB)		+= kgdb.o
 arm64-obj-$(CONFIG_EFI)			+= efi.o efi-entry.stub.o
+arm64-obj-$(CONFIG_MP_PCI_MSTAR)		+= bios32.o
 arm64-obj-$(CONFIG_PCI)			+= pci.o
 arm64-obj-$(CONFIG_ARMV8_DEPRECATED)	+= armv8_deprecated.o
 arm64-obj-$(CONFIG_ACPI)		+= acpi.o
@@ -50,6 +54,8 @@ arm64-obj-$(CONFIG_RANDOMIZE_BASE)	+= kaslr.o
 arm64-obj-$(CONFIG_HIBERNATION)		+= hibernate.o hibernate-asm.o
 arm64-obj-$(CONFIG_KEXEC)		+= machine_kexec.o relocate_kernel.o	\
 					   cpu-reset.o
+arm64-obj-$(CONFIG_MSTAR_FASTBOOT) += mstar_hibernate.o
+obj-$(CONFIG_MP_PLATFORM_MSTAR_LEGANCY_INTR)		+= mstar_irq.o
 arm64-obj-$(CONFIG_ARM64_SSBD)		+= ssbd.o
 
 ifeq ($(CONFIG_KVM),y)
