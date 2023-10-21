@@ -537,6 +537,7 @@ void setup_mm_for_reboot(void)
 }
 
 /*
+/*
  * Check whether a kernel address is valid (derived from arch/x86/).
  */
 int kern_addr_valid(unsigned long addr)
